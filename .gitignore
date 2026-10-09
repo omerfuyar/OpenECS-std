@@ -1,0 +1,15 @@
+.vscode
+*.exe
+*.old
+ignore/
+ignore.*
+*.ignore
+shuild
+*.pdb
+build/
+*.o
+*.obj
+*.shu
+*.out
+*.log
+dist/
