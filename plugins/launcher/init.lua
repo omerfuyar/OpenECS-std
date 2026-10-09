@@ -1,12 +1,9 @@
--- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 13.8).
--- It draws with the ui standard plugin.
+-- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 5).
+-- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
 
-local fill = assert(ecs.service.get("ui.fill", "void(handle<ecs.surface>, float, float, float, float, int64)"))
-local text = assert(ecs.service.get("ui.text", "float(handle<ecs.surface>, string, float, float, float, int64)"))
-local measure = assert(ecs.service.get("ui.measure", "void(string, float, out float, out float)"))
-local color = assert(ecs.service.get("ui.color", "int64(string)"))
+local ui = require("ui")
 
 local function name(localName)
   return "launcher." .. localName
@@ -18,6 +15,9 @@ local TITLE_SIZE = 22
 local HEADING_SIZE = 13
 local ENTRY_SIZE = 16
 local ROW_PADDING = 8
+
+-- the id of the list of entries, which scrolls
+local LIST = "list"
 
 -- version of a list's saved state: the entry that was chosen
 local STATE_VERSION = 1
@@ -77,17 +77,6 @@ local function refresh(list)
   list.panel:redraw()
 end
 
--- the height of an entry's row, and where the rows start
-local function rowHeight()
-  local _, line = measure("Ag", ENTRY_SIZE)
-  return line + 2 * ROW_PADDING
-end
-
-local function rowsTop()
-  local _, title = measure("Ag", TITLE_SIZE)
-  return MARGIN + title + MARGIN
-end
-
 -- opens an entry: a preset's tool, or a saved session
 local function open(entry)
   if not entry then
@@ -122,8 +111,41 @@ local function move(panel, step)
 
   if list and #list.entries > 0 then
     list.selected = math.min(math.max(list.selected + step, 1), #list.entries)
+    ui.reveal(panel, LIST, "entry:" .. list.selected)
     panel:redraw()
   end
+end
+
+-- the list's elements: the title, then one row for each entry, which a click chooses and opens
+local function tree(list)
+  local rows = {}
+
+  for i, entry in ipairs(list.entries) do
+    rows[#rows + 1] = ui.row({
+      id = "entry:" .. i,
+      padding = ROW_PADDING,
+      gap = MARGIN / 2,
+      background = i == list.selected and "selected" or nil,
+      hoverBackground = "tab",
+      onClick = function()
+        list.selected = i
+        list.panel:redraw()
+        open(entry)
+      end,
+    }, {
+      ui.text(entry.title, { size = ENTRY_SIZE }),
+      ui.text(entry.kind == "preset" and "preset" or entry.detail, { size = HEADING_SIZE, color = "textDim" }),
+    })
+  end
+
+  if #rows == 0 then
+    rows[1] = ui.text("There are no presets and no saved sessions.", { size = ENTRY_SIZE, color = "textDim" })
+  end
+
+  return ui.column({ padding = MARGIN, gap = MARGIN / 2, background = "background" }, {
+    ui.text("OpenECS", { size = TITLE_SIZE }),
+    ui.scroll({ id = LIST }, rows),
+  })
 end
 
 ecs.panel.registerType({
@@ -131,7 +153,7 @@ ecs.panel.registerType({
   title = "Launcher",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local list = { panel = panel, entries = {}, selected = 1, scroll = 0, height = 0 }
+    local list = { panel = panel, entries = {}, selected = 1 }
     lists[panel] = list
     refresh(list)
 
@@ -147,6 +169,7 @@ ecs.panel.registerType({
     return list
   end,
   destroy = function(list)
+    ui.forget(list.panel)
     lists[list.panel] = nil
   end,
   saveState = function(list)
@@ -154,54 +177,14 @@ ecs.panel.registerType({
     return { selected = chosen and { kind = chosen.kind, name = chosen.name } or nil }
   end,
   draw = function(list, surface)
-    local width, height = surface.width / surface.scale, surface.height / surface.scale
-    local textColor, dimColor = color("text"), color("textDim")
-    list.height = height
-
-    fill(surface, 0, 0, width, height, color("background"))
-    text(surface, "OpenECS", MARGIN, MARGIN, TITLE_SIZE, textColor)
-
-    local row = rowHeight()
-    local top = rowsTop()
-
-    if #list.entries == 0 then
-      text(surface, "There are no presets and no saved sessions.", MARGIN, top, ENTRY_SIZE, dimColor)
-      return
-    end
-
-    -- the chosen entry stays in view
-    local visible = math.max(1, math.floor((height - top) / row))
-    list.scroll = math.min(math.max(list.scroll, list.selected - visible), list.selected - 1)
-
-    local y = top
-
-    for i = list.scroll + 1, math.min(#list.entries, list.scroll + visible) do
-      local entry = list.entries[i]
-
-      if i == list.selected then
-        fill(surface, MARGIN / 2, y, width - MARGIN, row, color("selected"))
-      end
-
-      local x = MARGIN
-      x = x + text(surface, entry.title, x, y + ROW_PADDING, ENTRY_SIZE, textColor) + MARGIN / 2
-      text(surface, entry.kind == "preset" and "preset" or entry.detail, x, y + ROW_PADDING + 3, HEADING_SIZE, dimColor)
-      y = y + row
-    end
+    ui.show(list.panel, surface, tree(list))
   end,
   event = function(list, event)
     if event.type == "shown" then
       refresh(list)
-    elseif event.type == "pointerDown" and event.button == 1 then
-      local index = list.scroll + math.floor((event.y - rowsTop()) / rowHeight()) + 1
-
-      if event.y >= rowsTop() and list.entries[index] then
-        list.selected = index
-        list.panel:redraw()
-        open(list.entries[index])
-      end
-    elseif event.type == "wheel" then
-      move(list.panel, event.wheelY > 0 and -1 or 1)
     end
+
+    ui.event(list.panel, event)
   end,
 })
 
