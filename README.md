@@ -2,7 +2,8 @@
 
 The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its first-party plugins and presets:
 
-- **ui:** draws shapes, text, images and user-interface elements into other plugins' panels.
+- **draw:** draws shapes, text and images into other plugins' panels.
+- **ui:** user-interface elements with layout, which call back on clicks and edits.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 

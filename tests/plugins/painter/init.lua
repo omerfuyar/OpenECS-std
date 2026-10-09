@@ -1,12 +1,11 @@
--- a board that draws with the ui plugin, then reads its own pixels to tell what ui drew; the results are kept in the plugin state
+-- a board that draws with the draw plugin, then reads its own pixels to tell what draw drew; the results are kept in the plugin state
 
 local ecs = require("ecs")
 
 -- require gives the functions of a plugin the manifest depends on
-local ui = require("ui")
-local fill, text, measure, color = ui.fill, ui.text, ui.measure, ui.color
-local outline, image, imageSize = ui.outline, ui.image, ui.imageSize
-local check, field, scrollbar, thumb = ui.check, ui.field, ui.scrollbar, ui.thumb
+local draw = require("draw")
+local fill, text, measure, color = draw.fill, draw.text, draw.measure, draw.color
+local outline, image, imageSize = draw.outline, draw.image, draw.imageSize
 
 -- the plugin's own image, a green square
 local GREEN = ecs.plugin.folder .. "green.png"
@@ -61,13 +60,14 @@ ecs.panel.registerType({
     results.missing = image(surface, "nope.png", 40, 80, 20, 20)
     results.size = { imageSize(GREEN) }
 
-    -- a check box is filled when it is on, a field gives its cursor's x after its text, and a scrollbar draws its thumb
-    check(surface, 70, 80, 20, true)
-    results.checked = surface:getPixel(80, 90) == color("accent")
-    results.cursor = field(surface, "Hi", 100, 80, 200, 24, true) > 100
-    scrollbar(surface, 310, 80, 8, 100, 400, 100, 0)
-    results.thumb = surface:getPixel(314, 85) == color("tabShown") and surface:getPixel(314, 170) == color("tabRow")
-    results.thumbPlace = { thumb(100, 400, 100, 300) }
+    -- a clip keeps a fill inside it until unclip
+    draw.clip(surface, 200, 10, 10, 10)
+    fill(surface, 190, 10, 30, 10, 0xFFFFFFFF)
+    results.clipped = surface:getPixel(195, 15)
+    results.inClip = surface:getPixel(205, 15)
+    draw.unclip(surface)
+    fill(surface, 190, 30, 30, 10, 0xFFFFFFFF)
+    results.unclipped = surface:getPixel(195, 35)
 
     -- the core's own fill replaces pixels, in pixels, and clips
     surface:fill(-5, 120, 15, 10, 0xFF0000FF)
@@ -90,7 +90,7 @@ end
 
 assert(ecs.service.register("painter", {
   useKept = { sig = "void()", doc = "Uses a surface handle after draw returned", fn = useKept },
-  readColors = { sig = "void()", doc = "Reads colours with ui.color", fn = readColors },
+  readColors = { sig = "void()", doc = "Reads colours with draw.color", fn = readColors },
 }))
 
 ecs.plugin.registerState({
