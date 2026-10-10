@@ -8,8 +8,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 2. draw
 3. ui
 4. tty
-5. The settings window
-6. The launcher
+5. image
+6. audio
+7. net
+8. gltf
+9. The settings window
+10. The launcher
 
 ## 1. Rules
 
@@ -18,28 +22,29 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `build.c` is the build of this repository. OpenECS's build includes it when this repository is checked out in its `std/` folder (OpenECS DESIGN 17.7): it builds each plugin into `bin/plugins/`, copies the presets into `bin/presets/`, and, with `--tests`, the tests beside OpenECS's own.
 - Tests and test plugins have names that OpenECS's tests do not use, because both are copied into one folder.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
+- The libraries that plugins use are submodules in `dependencies/`, which is never edited. Small libraries of one or two headers are compiled into the plugin that uses them: stb_image and stb_vorbis from stb, nanosvg, dr_libs and cgltf. SDL_net is built once as a shared library, beside OpenECS's SDL libraries, and linked by net. SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
+- `build.c` names, for each plugin that needs them, the folders of `dependencies/` whose headers it includes and the libraries it links. Their headers are system headers, so their warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries compiled into them; warnings and sanitizers stay.
+- A plugin keeps C allocations in SDL's allocator, and gives its libraries SDL's allocator where they take one.
+- A relative path that a plugin's function reads starts at the executable's folder; a plugin reads its own files by its folder (OpenECS DESIGN 11.3).
 
 ## 2. draw
 
-- The `draw` plugin draws shapes, text and images into the pixels surface of another plugin's panel. A panel's `Draw` passes its surface handle (OpenECS DESIGN 10.6) to draw's functions.
+- The `draw` plugin draws shapes and text into the pixels surface of another plugin's panel. A panel's `Draw` passes its surface handle (OpenECS DESIGN 10.6) to draw's functions.
 - Positions and sizes are in layout units; draw multiplies them by the surface's scale. Colours are ARGB integers.
 - It is a native plugin. It calls SDL3 and SDL3_ttf itself (OpenECS DESIGN 17.2): it wraps the surface's pixels in an SDL surface for each call, and draws text with one SDL3_ttf surface text engine, which keeps the glyphs it has drawn.
 - Its font is the core's `ecs.font`, at the size the caller asks for; a relative path starts at the executable's folder.
-- It reads image files, PNG, JPG or BMP, with SDL, the first time they are drawn, and keeps them until it shuts down. A relative path starts at the executable's folder; a plugin draws its own images by its folder (OpenECS DESIGN 11.3). A file that cannot be read is reported once.
 - A surface can have a clip rectangle: drawing into the surface stays inside it until `unclip`. A plugin that clips unclips before its `Draw` returns.
 - Its functions:
 
-  | Function         | Does                                                                                                                           |
-  | ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-  | `draw.fill`      | Fills a rectangle with a colour, blending by its alpha.                                                                        |
-  | `draw.outline`   | Draws the edge of a rectangle, in a thickness and a colour.                                                                    |
-  | `draw.text`      | Draws text at `x, y`, the top left of its line, in a size and a colour, and gives its width.                                   |
-  | `draw.measure`   | Gives the width and the line height of a text in a size, without drawing it.                                                   |
-  | `draw.color`     | Reads a colour: `"#RRGGBB"`, `"#RRGGBBAA"`, or the name of a colour of the core's theme, such as `"text"` for `ecs.colorText`. |
-  | `draw.image`     | Draws an image file stretched to a rectangle. Gives false if the file cannot be read.                                          |
-  | `draw.imageSize` | Gives an image file's width and height in pixels. Gives false if the file cannot be read.                                      |
-  | `draw.clip`      | Limits later drawing into the surface to a rectangle. A new clip replaces the old one.                                         |
-  | `draw.unclip`    | Lets drawing reach the whole surface again.                                                                                    |
+  | Function       | Does                                                                                                                           |
+  | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+  | `draw.fill`    | Fills a rectangle with a colour, blending by its alpha.                                                                        |
+  | `draw.outline` | Draws the edge of a rectangle, in a thickness and a colour.                                                                    |
+  | `draw.text`    | Draws text at `x, y`, the top left of its line, in a size and a colour, and gives its width.                                   |
+  | `draw.measure` | Gives the width and the line height of a text in a size, without drawing it.                                                   |
+  | `draw.color`   | Reads a colour: `"#RRGGBB"`, `"#RRGGBBAA"`, or the name of a colour of the core's theme, such as `"text"` for `ecs.colorText`. |
+  | `draw.clip`    | Limits later drawing into the surface to a rectangle. A new clip replaces the old one.                                         |
+  | `draw.unclip`  | Lets drawing reach the whole surface again.                                                                                    |
 
 - Their signatures are in the plugin's code and its definition files (OpenECS DESIGN 10.10).
 - A colour that cannot be read is reported, and gives opaque magenta, so the mistake shows.
@@ -61,7 +66,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `ui.choice(value, choices, props)` | One of a list of texts; a click moves to the next. `onChange(value)` gets it.                                                                                                                                                |
   | `ui.field(text, props)`            | A line of text that the user types. It needs an `id`. `onChange(text)` gets each edit, and `onSubmit(text)` the text when Return is pressed; `onSubmit` gives false to keep typing. `valid = false` marks the text as wrong. |
   | `ui.key(combination, props)`       | A key combination. It needs an `id`. A click, then a key press, changes it: `onChange(combination)`.                                                                                                                         |
-  | `ui.image(path, props)`            | An image file, at its size.                                                                                                                                                                                                  |
+  | `ui.image(path, props)`            | An image file, at its size, drawn with image (5).                                                                                                                                                                            |
   | `ui.space(props)`                  | Empty room, which grows.                                                                                                                                                                                                     |
 
 - Properties of every element: `id`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours, or names of theme colours), `color` and `size` (for text). A column or a row with `onClick` is clicked like a button.
@@ -83,7 +88,49 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The font is the setting `tty.font`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font tty ships with in its folder, Roboto Mono, under the SIL Open Font License, which is beside it.
 - It draws each character once in each colour and size, and keeps the drawing for later cells, up to 4096 of them; then it starts again.
 
-## 5. The settings window
+## 5. image
+
+- The `image` plugin reads image files and draws them into the pixels surface of another plugin's panel. It is a native plugin.
+- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. A GIF gives its first frame.
+- `image.load(path)` reads a file the first time and gives a handle of type `image.picture` (OpenECS DESIGN 10.6); later calls with the same path give the same picture. Pictures are kept until the plugin shuts down. A file that cannot be read is reported and gives nil, and is tried again at the next call.
+- `image.size(picture)` gives a picture's width and height in pixels; an SVG file's are its own size at 96 dots per inch. `image.pixel(picture, x, y)` gives a pixel's colour, ARGB.
+- `image.draw(surface, picture, x, y, width, height)` draws a picture stretched to a rectangle, in layout units, blending by its alpha. An SVG file is drawn again at the size it is drawn at, so it stays sharp; the last drawing is kept for the next one at that size.
+
+## 6. audio
+
+- The `audio` plugin reads sound files and plays them on the computer's default output. It is a native plugin.
+- dr_wav, dr_mp3 and dr_flac from dr_libs read WAV, MP3 and FLAC files, and stb_vorbis reads Ogg Vorbis files. A file is read whole into 32-bit float samples.
+- `audio.load(path)` reads a file the first time and gives a handle of type `audio.sound`; later calls with the same path give the same sound. Sounds are kept until the plugin shuts down. A file that cannot be read is reported and gives nil.
+- `audio.play(sound, volume, loop)` plays a sound and gives a voice: a number above 0 that stands for this playing of it. A volume of 1 is the sound's own. A sound can play in many voices at once. It gives 0 when there is no output to play on.
+- `audio.stop(voice)`, `audio.stopAll()`, `audio.playing(voice)` and `audio.volume(voice, volume)` act on voices. A voice that has ended is forgotten; its number is not given again.
+- The output opens the first time a sound plays. Each voice is an SDL audio stream bound to it, which SDL converts to the output's format and mixes with the others; a voice gives its stream samples as the stream asks for them.
+- Tests and definitions run with SDL's dummy audio driver (OpenECS DESIGN 17.5), so they make no sound.
+
+## 7. net
+
+- The `net` plugin makes TCP connections and servers with SDL_net. It is a native plugin. Nothing it does blocks the program: a plugin asks for the state of a connection, and takes what arrived, when it wants, such as from a timer.
+- `net.connect(host, port)` starts a connection and gives a handle of type `net.connection`. The host's name resolves in the background. `net.status(connection)` gives 1 once it is connected, 0 while it waits, and -1 if it failed or closed.
+- `net.send(connection, data)` queues data to go out, and gives false if the connection has no socket yet or is closed. `net.receive(connection, most)` takes what has arrived, at most a number of bytes, and gives an empty buffer if nothing has. The buffer is kept until the next receive on the connection. A connection that the other side closed fails.
+- `net.listen(port)` waits for connections on a port of every address of this computer and gives a handle of type `net.server`, or nil if it cannot; SDL_net listens on every family of addresses at once, and fails if one is missing, so then IPv4 alone is tried. `net.accept(server)` gives a connection that a client made, or nil.
+- `net.close(connection)` closes a connection. Lua's garbage collector, or the plugin that made it, frees a connection or a server, and closes it.
+
+## 8. gltf
+
+- The `gltf` plugin reads glTF 2.0 models with cgltf: `.gltf` files with the files they name, and `.glb` files. It is a native plugin. It gives a model's parts and their data; drawing them is for the plugin that asks.
+- `gltf.load(path)` reads a model and gives a handle of type `gltf.model`, which owns all of it. Each call reads the file again. A file that cannot be read, or that is not valid glTF, is reported and gives nil.
+- `gltf.describe(model)` gives a table of the model's parts. Meshes, materials and nodes are lists, and they name each other by their numbers in those lists, from 1:
+
+  | Field       | Holds                                                                                                                                                                                                                                                                                         |
+  | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `meshes`    | Each mesh's `name` and `primitives`. A primitive has a `mode` (`"triangles"`, `"triangleStrip"`, `"triangleFan"`, `"points"`, `"lines"`, `"lineLoop"` or `"lineStrip"`), a `material`, the names of its vertex `attributes`, such as `POSITION`, and its numbers of `vertices` and `indices`. |
+  | `materials` | Each material's `name`, its base `color`, as four numbers from 0 to 1, and its `texture`, the base colour's image file, when it is a file.                                                                                                                                                    |
+  | `nodes`     | Each node's `name`, its `mesh`, its `children`, and its `matrix`: 16 numbers, column by column, that place it in its parent.                                                                                                                                                                  |
+  | `roots`     | The nodes that the model's scene starts from.                                                                                                                                                                                                                                                 |
+
+- `gltf.attribute(model, mesh, primitive, name)` gives a vertex attribute of a primitive as 32-bit floats, one after another for each vertex: three for a `POSITION`, two for a `TEXCOORD_0`. Whole numbers and sparse data are converted. `gltf.indices(model, mesh, primitive)` gives its indices as 32-bit whole numbers, from 0; a primitive without indices gives its vertices in order. Both give an empty buffer for a missing mesh, primitive or attribute, and their buffer is kept until the next of these calls on the model.
+- In Lua a buffer is a string, which `string.unpack` reads, such as `string.unpack("<fff", positions)` for the first position.
+
+## 9. The settings window
 
 - The first-party Lua plugin `settings` is built with ui (3). The core's settings file loads it in every tool (OpenECS DESIGN 12.3), and binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), which opens the window as a panel of type `settings.window`, or shows the one that is open.
 - The window lists every declared setting under a title for its owner: the core's first, then each plugin's, each by name. A row shows the setting's name and description on its left, and a control with its value in effect on its right. The two sides share the row's width, so the controls line up and grow with the window.
@@ -94,7 +141,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The list scrolls under the window's title (3). Choosing a setting with the keys scrolls it into view, and a click chooses the setting under it.
 - The panel's saved state is the chosen setting.
 
-## 6. The launcher
+## 10. The launcher
 
 - When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
