@@ -1,10 +1,14 @@
 // The net standard plugin: TCP connections and servers that never block the program (DESIGN 7).
-// SDL3_net resolves names and moves data in the background; a plugin asks for the state of a connection and takes what arrived when it wants, such as from a timer.
+// SDL_net resolves names and moves data in the background; a plugin asks for the state of a connection and takes what arrived when it wants, such as from a timer.
+
+// SDL_net is compiled into this plugin (DESIGN 1); its functions stay inside it, and it finds the network interfaces with getifaddrs, as its own build does on Linux
+// its socket code needs the POSIX names that strict C23 leaves out
+#define _DEFAULT_SOURCE
+#define SDL_DECLSPEC
+#define HAVE_GETIFADDRS
+#include "src/SDL_net.c"
 
 #include "OpenECS.h"
-
-#include "SDL3/SDL.h"
-#include "SDL3_net/SDL_net.h"
 
 #pragma region Source Only
 

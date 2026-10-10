@@ -1,5 +1,5 @@
 # Checks every change to dev and main: OpenECS's dev is checked out with its submodules, this repository's commit is put in its std/ folder,
-# and OpenECS's Debug and Release checks run, so this repository's tests run with OpenECS's.
+# OpenECS is built in Debug and Release with this repository, and this repository's tests run, apart from OpenECS's own.
 name: Checks
 
 on:
@@ -34,7 +34,7 @@ jobs:
         run: .github/scripts/build.sh D
 
       - name: Run the tests with the sanitizers
-        run: .github/scripts/test.sh build/Debug/bin/OpenECS
+        run: .github/scripts/test.sh build/Debug/bin/OpenECS std
 
       - name: Keep the build log
         if: failure()
@@ -84,8 +84,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/luals"
           curl -sSL "https://github.com/LuaLS/lua-language-server/releases/download/$LUALS_VERSION/lua-language-server-$LUALS_VERSION-linux-x64.tar.gz" | tar -xz -C "$RUNNER_TEMP/luals"
 
-      # inside OpenECS's checkout, the check reads ecs.lua, so it finds code that misuses the ecs module
+      # the check reads OpenECS's ecs.lua as a library, so it finds code that misuses the ecs module
       - name: Check the Lua files
         run: |
+          echo '{ "workspace.library": ["../include"] }' > std/.luarc.json
           "$RUNNER_TEMP/luals/bin/lua-language-server" --check="$GITHUB_WORKSPACE/std" --checklevel=Warning --logpath="$RUNNER_TEMP/luals-log" | tee luals.log
           grep -q "no problems found" luals.log

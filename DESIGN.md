@@ -12,20 +12,36 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 6. audio
 7. net
 8. gltf
-9. The settings window
-10. The launcher
+9. fs
+10. The settings window
+11. The launcher
 
 ## 1. Rules
 
 - The plugins follow the rules of standard plugins (OpenECS DESIGN 20).
 - Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets, and `tests/` the tests of these plugins, with their own presets and test plugins.
-- `build.c` is the build of this repository. OpenECS's build includes it when this repository is checked out in its `std/` folder (OpenECS DESIGN 17.7): it builds each plugin into `bin/plugins/`, copies the presets into `bin/presets/`, and, with `--tests`, the tests beside OpenECS's own.
-- Tests and test plugins have names that OpenECS's tests do not use, because both are copied into one folder.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
-- The libraries that plugins use are submodules in `dependencies/`, which is never edited. Small libraries of one or two headers are compiled into the plugin that uses them: stb_image and stb_vorbis from stb, nanosvg, dr_libs and cgltf. SDL_net is built once as a shared library, beside OpenECS's SDL libraries, and linked by net. SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
-- `build.c` names, for each plugin that needs them, the folders of `dependencies/` whose headers it includes and the libraries it links. Their headers are system headers, so their warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries compiled into them; warnings and sanitizers stay.
+- A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf and SDL_net. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
+
+### 1.1 Building
+
+- `shuild.c` is the build of this repository. It runs inside a checkout of OpenECS, in its `std/` folder. OpenECS's build compiles it with shu and shuild from OpenECS's `dependencies/` into `shuild.ignore` in this folder, and runs it with the build type and OpenECS's build folder (OpenECS DESIGN 17.7).
+- It builds each plugin into `bin/plugins/` and copies the presets into `bin/presets/`. With `--tests`, it copies `tests/` into `std/tests/` beside `bin/`, apart from OpenECS's own tests, and builds the test plugins there.
+- A plugin's C files compile into its native library with OpenECS's flags: its warnings, and in Debug its static analyzer and sanitizers. The plugin sees OpenECS's plugin interface and SDL from the build's `include/` folder.
+- `shuild.c` names, for each plugin that compiles a library in, the folders of `dependencies/` that its C files include. They are system include folders, so the library's warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries in them; the warnings and sanitizers stay.
+
+### 1.2 Tests
+
+- This repository's tests run on their own: OpenECS's `.github/scripts/test.sh` with `std` runs every test in `std/tests/`. Its checks build OpenECS's `dev` with this repository in `std/`, and run these tests only.
+- A test loads only the plugins its preset names (OpenECS DESIGN 17.5), so a test's preset names every plugin the test uses, such as `settings` for the settings window.
+
+### 1.3 Plugins
+
 - A plugin keeps C allocations in SDL's allocator, and gives its libraries SDL's allocator where they take one.
 - A relative path that a plugin's function reads starts at the executable's folder; a plugin reads its own files by its folder (OpenECS DESIGN 11.3).
+- Lua plugins have Lua's standard libraries (OpenECS DESIGN 9.6): `io` reads and writes files, and `os` renames and removes them and gives the time. A standard plugin does not offer what they already do; fs (9) adds what they cannot.
 
 ## 2. draw
 
@@ -108,7 +124,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 7. net
 
-- The `net` plugin makes TCP connections and servers with SDL_net. It is a native plugin. Nothing it does blocks the program: a plugin asks for the state of a connection, and takes what arrived, when it wants, such as from a timer.
+- The `net` plugin makes TCP connections and servers with SDL_net, which is compiled into it. It is a native plugin. Nothing it does blocks the program: a plugin asks for the state of a connection, and takes what arrived, when it wants, such as from a timer.
 - `net.connect(host, port)` starts a connection and gives a handle of type `net.connection`. The host's name resolves in the background. `net.status(connection)` gives 1 once it is connected, 0 while it waits, and -1 if it failed or closed.
 - `net.send(connection, data)` queues data to go out, and gives false if the connection has no socket yet or is closed. `net.receive(connection, most)` takes what has arrived, at most a number of bytes, and gives an empty buffer if nothing has. The buffer is kept until the next receive on the connection. A connection that the other side closed fails.
 - `net.listen(port)` waits for connections on a port of every address of this computer and gives a handle of type `net.server`, or nil if it cannot; SDL_net listens on every family of addresses at once, and fails if one is missing, so then IPv4 alone is tried. `net.accept(server)` gives a connection that a client made, or nil.
@@ -130,7 +146,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `gltf.attribute(model, mesh, primitive, name)` gives a vertex attribute of a primitive as 32-bit floats, one after another for each vertex: three for a `POSITION`, two for a `TEXCOORD_0`. Whole numbers and sparse data are converted. `gltf.indices(model, mesh, primitive)` gives its indices as 32-bit whole numbers, from 0; a primitive without indices gives its vertices in order. Both give an empty buffer for a missing mesh, primitive or attribute, and their buffer is kept until the next of these calls on the model.
 - In Lua a buffer is a string, which `string.unpack` reads, such as `string.unpack("<fff", positions)` for the first position.
 
-## 9. The settings window
+## 9. fs
+
+- The `fs` plugin does with files and folders what Lua's `io` and `os` cannot: it lists folders, tells what a path is, makes folders, and copies, moves and removes files and folders. It is a native plugin, built on SDL's filesystem functions, so it needs no library.
+- `fs.info(path)` gives a table of what a path is: its `type`, `"file"`, `"folder"` or `"other"`, its `size` in bytes, and `modified`, when it last changed, in seconds since 1970. A path that does not exist gives nil.
+- `fs.list(folder, pattern)` gives the entries of a folder whose names match a pattern, sorted by name: each a table of its `name` and the fields of `fs.info`. In a pattern, `*` stands for any characters but `/`, and `?` for one; an empty pattern matches every name. The entries of the folder's folders are not listed. A folder that cannot be read gives nil.
+- `fs.makeFolder(path)` makes a folder, and the folders above it that are missing. `fs.copy(from, to)` copies a file, replacing what is at the new path. `fs.move(from, to)` moves or renames a file or a folder. `fs.remove(path)` removes a file or an empty folder. Each gives false when it fails.
+- `fs.folder(name)` gives a folder of the computer, ending with `/`: `executable`, the executable's folder, or one of the user's folders, `home`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `screenshots` or `templates`. A folder the system does not have gives nil.
+- Reading and writing what files hold is Lua's `io` in Lua, and SDL's `SDL_LoadFile` and `SDL_SaveFile` in C.
+
+## 10. The settings window
 
 - The first-party Lua plugin `settings` is built with ui (3). The core's settings file loads it in every tool (OpenECS DESIGN 12.3), and binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), which opens the window as a panel of type `settings.window`, or shows the one that is open.
 - The window lists every declared setting under a title for its owner: the core's first, then each plugin's, each by name. A row shows the setting's name and description on its left, and a control with its value in effect on its right. The two sides share the row's width, so the controls line up and grow with the window.
@@ -141,7 +166,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The list scrolls under the window's title (3). Choosing a setting with the keys scrolls it into view, and a click chooses the setting under it.
 - The panel's saved state is the chosen setting.
 
-## 10. The launcher
+## 11. The launcher
 
 - When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
