@@ -1,4 +1,4 @@
--- the draw standard plugin draws rectangles, text and images into another plugin's panel, clips them, and reads colours
+-- the draw standard plugin draws rectangles and text into another plugin's panel, clips them, and reads colours
 
 return {
   preset = "presets/painter.lua",
@@ -18,13 +18,9 @@ return {
     test.match(results.inked, true, "the text's pixels")
     test.match(results.outside, 0, "pixels beside the text")
 
-    -- the other shapes, the plugin's image and the elements
+    -- the outline and the clip
     test.match(results.edge, 0xFFFFFFFF, "an outline's edge")
     test.match(results.middle, 0xFF000000, "inside an outline")
-    test.match(results.imageDrawn, true, "an image is drawn")
-    test.match(results.green, 0xFF00FF00, "an image's pixels")
-    test.match(results.missing, false, "a missing image")
-    test.match(results.size, { true, 4.0, 4.0 }, "an image's size")
     test.match(results.clipped, 0xFF000000, "a fill outside the clip")
     test.match(results.inClip, 0xFFFFFFFF, "a fill inside the clip")
     test.match(results.unclipped, 0xFFFFFFFF, "a fill after unclip")

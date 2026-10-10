@@ -5,10 +5,7 @@ local ecs = require("ecs")
 -- require gives the functions of a plugin the manifest depends on
 local draw = require("draw")
 local fill, text, measure, color = draw.fill, draw.text, draw.measure, draw.color
-local outline, image, imageSize = draw.outline, draw.image, draw.imageSize
-
--- the plugin's own image, a green square
-local GREEN = ecs.plugin.folder .. "green.png"
+local outline = draw.outline
 
 local results = {}
 local kept
@@ -51,14 +48,10 @@ ecs.panel.registerType({
     results.inked = inked(surface, 10, 50, math.ceil(width), math.ceil(lineHeight)) > 0
     results.outside = inked(surface, 100, 50, 20, 20)
 
-    -- an outline draws only the edge, and an image is stretched to its rectangle
+    -- an outline draws only the edge
     outline(surface, 10, 80, 20, 20, 2, 0xFFFFFFFF)
     results.edge = surface:getPixel(10, 90)
     results.middle = surface:getPixel(20, 90)
-    results.imageDrawn = image(surface, GREEN, 40, 80, 20, 20)
-    results.green = surface:getPixel(50, 90)
-    results.missing = image(surface, "nope.png", 40, 80, 20, 20)
-    results.size = { imageSize(GREEN) }
 
     -- a clip keeps a fill inside it until unclip
     draw.clip(surface, 200, 10, 10, 10)

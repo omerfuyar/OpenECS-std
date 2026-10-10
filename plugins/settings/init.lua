@@ -1,4 +1,4 @@
--- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 5).
+-- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 9).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
