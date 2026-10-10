@@ -7,8 +7,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 1. Rules
 2. draw
 3. ui
-4. The settings window
-5. The launcher
+4. tty
+5. The settings window
+6. The launcher
 
 ## 1. Rules
 
@@ -71,7 +72,18 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `ui.rect(panel, id)` gives an element's rectangle in the last layout, and `ui.reveal(panel, scroll, child)` scrolls a scroll element so a child shows.
 - Positions are in layout units, and colours are the core's theme's. ui fills the surface with the theme's background first.
 
-## 4. The settings window
+## 4. tty
+
+- The `tty` plugin keeps grids of characters and draws them into the pixels surface of another plugin's panel, at any font size. Terminals, consoles and logs build on it.
+- It is a native plugin. A grid is a handle of type `tty.grid` (OpenECS DESIGN 10.6): `tty.new(columns, rows)` makes one, and Lua's garbage collector, or the plugin that made it, frees it.
+- A cell holds one character, a Unicode code point, and its foreground and background colours, ARGB. A grid starts with every cell empty: a space in light grey on the core's dark background.
+- `tty.put(grid, column, row, text)` writes text from a cell to the right, and cuts it at the grid's edge. `tty.print(grid, text)` writes at the cursor, as a terminal does: a new line moves the cursor to the start of the next row, a full row goes on in the next one, a tab moves to the next column that is a multiple of 8, and writing past the last row moves every row up by one.
+- `tty.colors(grid, foreground, background)` sets the colours that later writing uses. `tty.clear(grid)` empties every cell and moves the cursor to the top left. `tty.setCursor` and `tty.cursor` move the cursor and give where it is. `tty.resize` changes a grid's size and keeps the cells that still fit, at the same places, and `tty.size` gives it.
+- `tty.draw(surface, grid, x, y, size, cursor)` draws a grid with its top left at `x, y`, in layout units, with the font at a size; with `cursor`, a line under the cursor's cell shows it. `tty.cell(size)` gives the size of a cell, and `tty.fit(width, height, size)` how many columns and rows fit a rectangle, so a panel can make its grid as large as itself.
+- The font is the setting `tty.font`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font tty ships with in its folder, Roboto Mono, under the SIL Open Font License, which is beside it.
+- It draws each character once in each colour and size, and keeps the drawing for later cells, up to 4096 of them; then it starts again.
+
+## 5. The settings window
 
 - The first-party Lua plugin `settings` is built with ui (3). The core's settings file loads it in every tool (OpenECS DESIGN 12.3), and binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), which opens the window as a panel of type `settings.window`, or shows the one that is open.
 - The window lists every declared setting under a title for its owner: the core's first, then each plugin's, each by name. A row shows the setting's name and description on its left, and a control with its value in effect on its right. The two sides share the row's width, so the controls line up and grow with the window.
@@ -82,7 +94,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The list scrolls under the window's title (3). Choosing a setting with the keys scrolls it into view, and a click chooses the setting under it.
 - The panel's saved state is the chosen setting.
 
-## 5. The launcher
+## 6. The launcher
 
 - When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.

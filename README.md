@@ -4,6 +4,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 
 - **draw:** draws shapes, text and images into other plugins' panels.
 - **ui:** user-interface elements with layout, which call back on clicks and edits.
+- **tty:** grids of characters for terminals, consoles and logs, drawn at any size.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 
