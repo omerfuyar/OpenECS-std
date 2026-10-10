@@ -23,9 +23,11 @@ jobs:
           ref: dev
           submodules: recursive
 
+      # the plugins compile the libraries of this repository's own submodules in
       - uses: actions/checkout@v4
         with:
           path: std
+          submodules: recursive
 
       - name: Install the build tools
         run: .github/scripts/install-linux.sh
@@ -53,9 +55,11 @@ jobs:
           ref: dev
           submodules: recursive
 
+      # the plugins compile the libraries of this repository's own submodules in
       - uses: actions/checkout@v4
         with:
           path: std
+          submodules: recursive
 
       - name: Install the build tools
         run: .github/scripts/install-linux.sh
