@@ -11,3 +11,4 @@ What is not decided yet, and work that is waiting. When an item is settled, writ
 - **net.** UDP, and TLS for secure connections.
 - **gltf.** Images inside a `.glb` file, skins and animations.
 - **tty.** Bold and underlined cells, and wide characters that take two cells.
+- **fs.** Watching a folder for changes.
