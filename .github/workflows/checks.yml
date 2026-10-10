@@ -1,0 +1,96 @@
+# Checks every change to dev and main: OpenECS's dev is checked out with its submodules, this repository's commit is put in its std/ folder,
+# OpenECS is built in Debug and Release with this repository, and this repository's tests run, apart from OpenECS's own.
+name: Checks
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug-linux:
+    name: Debug (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: omerfuyar/OpenECS
+          ref: dev
+          submodules: recursive
+
+      # the plugins compile the libraries of this repository's own submodules in
+      - uses: actions/checkout@v4
+        with:
+          path: std
+          submodules: recursive
+
+      - name: Install the build tools
+        run: .github/scripts/install-linux.sh
+
+      - name: Build with the static analyzer
+        run: .github/scripts/build.sh D
+
+      - name: Run the tests with the sanitizers
+        run: .github/scripts/test.sh build/Debug/bin/OpenECS std
+
+      - name: Keep the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-linux-logs
+          path: build/*.log
+
+  release-linux:
+    name: Release (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: omerfuyar/OpenECS
+          ref: dev
+          submodules: recursive
+
+      # the plugins compile the libraries of this repository's own submodules in
+      - uses: actions/checkout@v4
+        with:
+          path: std
+          submodules: recursive
+
+      - name: Install the build tools
+        run: .github/scripts/install-linux.sh
+
+      - name: Build
+        run: .github/scripts/build.sh R
+
+  lua:
+    name: Lua (LuaLS)
+    runs-on: ubuntu-24.04
+    env:
+      LUALS_VERSION: 3.15.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: omerfuyar/OpenECS
+          ref: dev
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        with:
+          path: std
+
+      - name: Install the Lua language server
+        run: |
+          mkdir -p "$RUNNER_TEMP/luals"
+          curl -sSL "https://github.com/LuaLS/lua-language-server/releases/download/$LUALS_VERSION/lua-language-server-$LUALS_VERSION-linux-x64.tar.gz" | tar -xz -C "$RUNNER_TEMP/luals"
+
+      # the check reads OpenECS's ecs.lua as a library, so it finds code that misuses the ecs module
+      - name: Check the Lua files
+        run: |
+          echo '{ "workspace.library": ["../include"] }' > std/.luarc.json
+          "$RUNNER_TEMP/luals/bin/lua-language-server" --check="$GITHUB_WORKSPACE/std" --checklevel=Warning --logpath="$RUNNER_TEMP/luals-log" | tee luals.log
+          grep -q "no problems found" luals.log

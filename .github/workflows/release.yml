@@ -1,0 +1,39 @@
+# Makes a release from a version tag on main, such as v0.2.0, with OpenECS's release of the same version: the source with its submodules, and its checksum.
+# The release is a draft, so its description can be checked before it is published. OpenECS's release ships the built plugins.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Draft release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # GitHub's own source archives leave the submodules out, so they cannot be built
+      - name: Package the source with its submodules
+        run: |
+          name="openecs-std-${GITHUB_REF_NAME#v}-source"
+          mkdir -p dist
+          git ls-files --recurse-submodules -z | tar --null -T - --transform "s,^,$name/," -czf "dist/$name.tar.gz"
+          cd dist && sha256sum *.tar.gz > SHA256SUMS
+
+      # the description is .github/release-notes/TAG.md; a version below 1.0.0, or with a suffix such as -rc.1, is a pre-release
+      - name: Make the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          notes=".github/release-notes/$tag.md"
+          test -f "$notes" || { echo "$notes is missing."; exit 1; }
+          prerelease=""
+          case "$tag" in v0.* | *-*) prerelease="--prerelease" ;; esac
+          gh release create "$tag" dist/* --draft $prerelease --title "OpenECS-std ${tag#v}" --notes-file "$notes"
