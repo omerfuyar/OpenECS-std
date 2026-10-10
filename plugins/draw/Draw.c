@@ -1,4 +1,4 @@
-// The draw standard plugin: draws rectangles, text and images into the pixels surface of another plugin's panel (DESIGN 2).
+// The draw standard plugin: draws rectangles and text into the pixels surface of another plugin's panel (DESIGN 2).
 // It is built like a third-party plugin, against the plugin interface; it calls SDL3 and SDL3_ttf itself, using the executable's copy.
 
 #include "OpenECS.h"
@@ -28,21 +28,12 @@ typedef struct DrawFont
     TTF_Font *font;
 } DrawFont;
 
-/// @brief An image file, read once.
-typedef struct DrawImageFile
-{
-    char *path;
-    SDL_Surface *surface; // NULL if the file cannot be read, so it is reported once
-} DrawImageFile;
-
 static struct
 {
     ECSPlugin plugin;
     char *fontPath;
     DrawFont *fonts; // every size asked for so far, opened once
     usz fontCount;
-    DrawImageFile *images; // every image asked for so far
-    usz imageCount;
     DrawClip *clips; // the surfaces that have a clip rectangle
     usz clipCount;
     TTF_TextEngine *engine; // draws text into surfaces, and keeps the glyphs it drew
@@ -274,80 +265,6 @@ static i64 DrawColor(const char *name)
     return DRAW_BAD_COLOR;
 }
 
-/// @brief Gets an image file, reading it the first time; a relative path starts at the executable's folder.
-/// @return The image in ARGB, or NULL if it cannot be read; the reason is logged the first time.
-static SDL_Surface *DrawGetImage(const char *path)
-{
-    for (usz i = 0; i < DRAW.imageCount; i++)
-    {
-        if (SDL_strcmp(DRAW.images[i].path, path) == 0)
-        {
-            return DRAW.images[i].surface;
-        }
-    }
-
-    char *full = NULL;
-    DrawImageFile *images = SDL_realloc(DRAW.images, (DRAW.imageCount + 1) * sizeof(DrawImageFile));
-
-    if (images == NULL || SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
-    {
-        DRAW.images = images == NULL ? DRAW.images : images;
-        ECS_Log(DRAW.plugin, ECSLogLevel_Error, "Cannot read the image '%s': out of memory.", path);
-        return NULL;
-    }
-
-    DRAW.images = images;
-    SDL_Surface *loaded = SDL_LoadSurface(full);
-    SDL_Surface *image = loaded == NULL ? NULL : SDL_ConvertSurface(loaded, SDL_PIXELFORMAT_ARGB8888);
-
-    if (image == NULL)
-    {
-        ECS_Log(DRAW.plugin, ECSLogLevel_Error, "Cannot read the image '%s': %s", full, SDL_GetError());
-    }
-
-    SDL_DestroySurface(loaded);
-    SDL_free(full);
-    DRAW.images[DRAW.imageCount++] = (DrawImageFile){.path = SDL_strdup(path), .surface = image};
-
-    if (DRAW.images[DRAW.imageCount - 1].path == NULL)
-    {
-        SDL_DestroySurface(image);
-        DRAW.imageCount--;
-        return NULL;
-    }
-
-    return image;
-}
-
-/// @brief Draws an image file, PNG, JPG or BMP, stretched to a rectangle in layout units.
-/// @return true if it was drawn.
-static bool DrawImage(ECSSurface *surface, const char *path, f32 x, f32 y, f32 width, f32 height)
-{
-    SDL_Surface *image = DrawGetImage(path);
-    SDL_Surface *target = image == NULL ? NULL : DrawWrap(surface);
-
-    if (target == NULL)
-    {
-        return false;
-    }
-
-    SDL_Rect rect = DrawPixels(surface->scale, x, y, width, height);
-    bool drawn = SDL_BlitSurfaceScaled(image, NULL, target, &rect, SDL_SCALEMODE_LINEAR);
-    SDL_DestroySurface(target);
-    return drawn;
-}
-
-/// @brief Gives an image file's size in pixels.
-/// @return true if the file can be read.
-static bool DrawImageSize(const char *path, f32 *retWidth, f32 *retHeight)
-{
-    SDL_Surface *image = DrawGetImage(path);
-
-    *retWidth = image == NULL ? 0.0f : (f32)image->w;
-    *retHeight = image == NULL ? 0.0f : (f32)image->h;
-    return image != NULL;
-}
-
 /// @brief Limits the later drawing into a surface to a rectangle, in layout units, until DrawUnclip. A new clip replaces the old one.
 static void DrawSetClip(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height)
 {
@@ -395,12 +312,6 @@ static void DrawFree(void)
         TTF_CloseFont(DRAW.fonts[i].font);
     }
 
-    for (usz i = 0; i < DRAW.imageCount; i++)
-    {
-        SDL_free(DRAW.images[i].path);
-        SDL_DestroySurface(DRAW.images[i].surface);
-    }
-
     if (DRAW.engine != NULL)
     {
         TTF_DestroySurfaceTextEngine(DRAW.engine);
@@ -413,7 +324,6 @@ static void DrawFree(void)
     }
 
     SDL_free(DRAW.fonts);
-    SDL_free(DRAW.images);
     SDL_free(DRAW.clips);
     SDL_free(DRAW.fontPath);
     SDL_zero(DRAW);
@@ -457,10 +367,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {DRAW_NAME("measure"), (ECSFunction)DrawMeasure, "void(string text, float size, out float width, out float lineHeight)", "Give the width and line height of a text"},
         {DRAW_NAME("color"), (ECSFunction)DrawColor, "int64(string color)", "Read a colour, or a colour of the theme by name"},
         {DRAW_NAME("outline"), (ECSFunction)DrawOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, int64 color)", "Draw the edge of a rectangle"},
-        {DRAW_NAME("image"), (ECSFunction)DrawImage, "bool(handle<ecs.surface> surface, string path, float x, float y, float width, float height)", "Draw an image file stretched to a rectangle"},
         {DRAW_NAME("clip"), (ECSFunction)DrawSetClip, "void(handle<ecs.surface> surface, float x, float y, float width, float height)", "Limit later drawing into a surface to a rectangle"},
         {DRAW_NAME("unclip"), (ECSFunction)DrawUnclip, "void(handle<ecs.surface> surface)", "Let drawing reach the whole surface again"},
-        {DRAW_NAME("imageSize"), (ECSFunction)DrawImageSize, "bool(string path, out float width, out float height)", "Give an image file's size in pixels"},
     };
 
     // a plugin whose Init fails gets no Shutdown, so it cleans up here

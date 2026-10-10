@@ -3,6 +3,7 @@
 
 local ecs = require("ecs")
 local draw = require("draw")
+local image = require("image")
 
 -- sizes in layout units
 local PADDING_X, PADDING_Y = 10, 5
@@ -203,8 +204,13 @@ local function measure(node, state)
   elseif node.kind == "field" or node.kind == "key" then
     width, height = FIELD_WIDTH, line + 2 * PADDING_Y
   elseif node.kind == "image" then
-    local ok, imageWidth, imageHeight = draw.imageSize(node.path)
-    width, height = ok and imageWidth or 0, ok and imageHeight or 0
+    node.picture = image.load(node.path)
+
+    if node.picture then
+      width, height = image.size(node.picture)
+    else
+      width, height = 0, 0
+    end
   elseif node.kind == "space" then
     width, height = 0, 0
   else
@@ -427,7 +433,9 @@ local function paint(node, surface, state, clip)
     local edge = node.valid == false and INVALID or focused and "accent" or "tabShown"
     draw.outline(surface, node.x, node.y, node.w, node.h, 1, colorOf(edge))
   elseif node.kind == "image" then
-    draw.image(surface, node.path, node.x, node.y, node.w, node.h)
+    if node.picture then
+      image.draw(surface, node.picture, node.x, node.y, node.w, node.h)
+    end
   elseif node.kind == "scroll" then
     -- the children draw inside the scroll element only
     local inner = intersect({ x = node.x, y = node.y, w = node.w, h = node.h }, clip)
