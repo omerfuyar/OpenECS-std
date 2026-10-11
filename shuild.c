@@ -18,16 +18,15 @@ typedef enum BuildType
     BuildType_MinSizeRel,
 } BuildType;
 
-static const char *const BUILD_TYPE_NAMES[] = {"debug", "release", "relwithdebinfo", "minsizerel"};
-static const char *const BUILD_TYPE_FOLDERS[] = {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"};
+static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"};
+#define BuildType_String(buildType) BUILD_TYPE_STRINGS[(buildType)]
 
 /// @brief What the flags choose.
 static struct
 {
     BuildType type;
     const char *output; // OpenECS's build folder, such as ../build/Debug/
-    bool tests;         // also build the tests
-} CONFIG = {BuildType_Debug, NULL, false};
+} CONFIG = {BuildType_Debug, NULL};
 
 /// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ that its C files include.
 typedef struct PluginNeeds
@@ -46,7 +45,9 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
 
 #pragma endregion Setup
 
-static void PrintUsage(void)
+#define RunCheck(cmd, ...) SHU_Assert(!SHU_UtilRun(cmd, ##__VA_ARGS__), "Runing " SHUM_COLOR_RED("'%s'") "failed", cmd)
+
+static void PrintUsageAndExit(void)
 {
     printf("Usage: ./shuild.ignore -o FOLDER [FLAG...]\n\n"
            "OpenECS's shuild.c runs this build; see OpenECS's README.md.\n\n"
@@ -61,7 +62,7 @@ static void PrintUsage(void)
 static void Refuse(const char *what, const char *argument)
 {
     SHU_LogError(0, "%s: " SHUM_COLOR_RED("'%s'"), what, argument);
-    PrintUsage();
+    PrintUsageAndExit();
     exit(1);
 }
 
@@ -76,12 +77,12 @@ static void SetupConfiguration(int argc, char **argv)
             const char *name = i + 1 < argc ? argv[++i] : "";
             usz type = 0;
 
-            while (type < sizeof(BUILD_TYPE_NAMES) / sizeof(*BUILD_TYPE_NAMES) && strcasecmp(name, BUILD_TYPE_NAMES[type]) != 0)
+            while (type < sizeof(BUILD_TYPE_STRINGS) / sizeof(*BUILD_TYPE_STRINGS) && strcasecmp(name, BuildType_String(type)) != 0)
             {
                 type++;
             }
 
-            if (type == sizeof(BUILD_TYPE_NAMES) / sizeof(*BUILD_TYPE_NAMES))
+            if (type == sizeof(BUILD_TYPE_STRINGS) / sizeof(*BUILD_TYPE_STRINGS))
             {
                 Refuse("Unknown build type", name);
             }
@@ -92,13 +93,9 @@ static void SetupConfiguration(int argc, char **argv)
         {
             CONFIG.output = i + 1 < argc ? argv[++i] : NULL;
         }
-        else if (!strcmp(flag, "-t") || !strcmp(flag, "--tests"))
-        {
-            CONFIG.tests = true;
-        }
         else if (!strcmp(flag, "-h") || !strcmp(flag, "--help"))
         {
-            PrintUsage();
+            PrintUsageAndExit();
             exit(0);
         }
         else
@@ -113,7 +110,7 @@ static void SetupConfiguration(int argc, char **argv)
     }
 
     SHUI_String cache;
-    SHUI_SFormat(&cache, ".shu/%s/", BUILD_TYPE_FOLDERS[CONFIG.type]);
+    SHUI_SFormat(&cache, ".shu/%s/", BUILD_TYPE_STRINGS[CONFIG.type]);
     SHU_CacheConfigure(cache.data);
 }
 
@@ -254,7 +251,7 @@ static void BuildPlugin(const char *path, const char *name)
     SHUI_SFormat(&root, "%s%s/", path, name);
     SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilCreateDirectory(output.data);
-    SHU_UtilRun("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -r {} %s \\;", root.data, output.data);
+    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -r {} %s \\;", root.data, output.data);
     BuildNative(name, root.data, output.data);
 }
 
@@ -268,6 +265,8 @@ static void BuildTestPlugin(const char *path, const char *name)
     BuildNative(name, root.data, output.data);
 }
 
+// todo split definitions and declarations, move definitions under main
+
 int main(int argc, char **argv)
 {
     SHU_CompilerTryConfigure("gcc");
@@ -280,15 +279,7 @@ int main(int argc, char **argv)
     SHUI_String folder;
     SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
     SHU_UtilCreateDirectory(folder.data);
-    SHU_UtilRun("cp -r presets/. %s", folder.data);
-
-    // the tests go to std/tests/ beside bin/, apart from OpenECS's own, with their presets and test plugins
-    if (CONFIG.tests)
-    {
-        SHUI_SFormat(&folder, "%sstd/", CONFIG.output);
-        SHU_UtilRun("rm -rf %s && mkdir -p %s && cp -r tests %s", folder.data, folder.data, folder.data);
-        ForEachFolder("tests/plugins/", BuildTestPlugin);
-    }
+    RunCheck("cp -r presets/. %s", folder.data);
 
     return 0;
 }
