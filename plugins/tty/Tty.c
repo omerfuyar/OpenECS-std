@@ -1,6 +1,8 @@
 // The tty standard plugin: grids of characters, which it draws into the pixels surface of another plugin's panel at any size (DESIGN 4).
 // Terminals, consoles and logs build on it. It calls SDL3 and SDL3_ttf itself, using the executable's copy.
 
+// !!! why tty doesn't use draw plugin to draw text ???
+
 #include "OpenECS.h"
 
 #include "SDL3/SDL.h"
@@ -100,7 +102,8 @@ static void TtyReadFont(void *data)
     (void)data;
 
     const char *font = ECSValue_GetString(ECSSetting_Get(TTY_NAME("font")), "");
-    const char *folder = font[0] == '\0' ? ECSPlugin_GetFolder(TTY.plugin) : font[0] == '/' ? "" : SDL_GetBasePath();
+    const char *folder = font[0] == '\0' ? ECSPlugin_GetFolder(TTY.plugin) : font[0] == '/' ? ""
+                                                                                            : SDL_GetBasePath();
     char *path = NULL;
 
     if (SDL_asprintf(&path, "%s%s", folder, font[0] == '\0' ? TTY_FONT : font) < 0)

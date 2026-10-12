@@ -37,6 +37,7 @@ typedef struct ImagePicture
 static struct
 {
     ECSPlugin plugin;
+    // ??? why not use a data structure from stb or just a linked list ???
     ImagePicture **pictures; // every file read so far, kept until the plugin shuts down
     usz pictureCount;
     NSVGrasterizer *rasterizer;
@@ -241,6 +242,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
+        // !!! where is free, forget ???
+        // todo add image freeing
         {IMAGE_NAME("load"), (ECSFunction)ImageLoad, "handle<image.picture>(string path)", "Read an image file, once; nothing if it cannot be read"},
         {IMAGE_NAME("size"), (ECSFunction)ImageSize, "void(handle<image.picture> picture, out int width, out int height)", "Give a picture's size in pixels"},
         {IMAGE_NAME("draw"), (ECSFunction)ImageDraw, "void(handle<ecs.surface> surface, handle<image.picture> picture, float x, float y, float width, float height)", "Draw a picture stretched to a rectangle"},

@@ -260,7 +260,8 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     }
 
     // the nodes the scene starts from: the file's scene, or its first one
-    const cgltf_scene *scene = data->scene != NULL ? data->scene : data->scenes_count > 0 ? &data->scenes[0] : NULL;
+    const cgltf_scene *scene = data->scene != NULL ? data->scene : data->scenes_count > 0 ? &data->scenes[0]
+                                                                                          : NULL;
 
     for (usz i = 0; scene != NULL && i < scene->nodes_count; i++)
     {
@@ -339,7 +340,9 @@ static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
     }
 
     // a primitive without indices draws its vertices in order
-    usz count = part == NULL ? 0 : part->indices != NULL ? part->indices->count : position != NULL ? position->count : 0;
+    usz count = part == NULL ? 0 : part->indices != NULL ? part->indices->count
+                               : position != NULL        ? position->count
+                                                         : 0;
     u32 *indices = count == 0 ? NULL : SDL_malloc(count * sizeof(u32));
 
     for (usz i = 0; indices != NULL && i < count; i++)
@@ -372,6 +375,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
+        // !!! where is free ???
         {GLTF_NAME("load"), (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
         {GLTF_NAME("describe"), (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
         {GLTF_NAME("attribute"), (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute or indices call on the model"},

@@ -10,6 +10,7 @@ local function name(localName)
 end
 
 -- sizes in layout units
+-- todo move these to a common compile time configurations, or directly pull it from dynamic settings !!!
 local MARGIN = 24
 local TITLE_SIZE = 22
 local HEADING_SIZE = 13
@@ -17,6 +18,7 @@ local ENTRY_SIZE = 16
 local ROW_PADDING = 8
 
 -- the id of the list of entries, which scrolls
+-- todo make such elements plugins. always abstract useful layers so we can use it anywhere !!!
 local LIST = "list"
 
 -- version of a list's saved state: the entry that was chosen
@@ -56,7 +58,14 @@ local function readEntries()
 
   for _, session in ipairs(sessions) do
     local saved = os.date("%Y-%m-%d %H:%M", session.saved)
-    entries[#entries + 1] = { kind = "session", name = session.name, path = session.path, title = session.appName, detail = session.name .. ", " .. saved }
+    entries[#entries + 1] = {
+      kind = "session",
+      name = session.name,
+      path = session.path,
+      title = session.appName,
+      detail =
+          session.name .. ", " .. saved
+    }
   end
 
   return entries
