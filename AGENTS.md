@@ -10,9 +10,8 @@ This repository is part of OpenECS. OpenECS's [AGENTS.md](https://github.com/ome
 | ---------------------- | --------------------------------------------------------------------------------- |
 | [README.md](README.md) | Short introduction, and how to build and test.                                    |
 | [DESIGN.md](DESIGN.md) | How the plugins are built. OpenECS's DESIGN.md holds the conventions they follow. |
-| [TODO.md](TODO.md)     | Open questions and pending tasks.                                                 |
 
-OpenECS's OVERVIEW.md holds the product decisions for these plugins too. Read it, OpenECS's DESIGN.md and this DESIGN.md before you propose or change anything.
+OpenECS's OVERVIEW.md holds the product decisions for these plugins too, and OpenECS's [TODO.md](https://github.com/omerfuyar/OpenECS/blob/dev/TODO.md) their open questions and pending tasks, in its section Standard plugins. Read it, OpenECS's DESIGN.md and this DESIGN.md before you propose or change anything.
 
 | Path         | What it holds                                                          |
 | ------------ | ---------------------------------------------------------------------- |
