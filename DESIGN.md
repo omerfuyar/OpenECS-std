@@ -28,7 +28,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, SDL_net, libcurl and mbedTLS. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too.
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
-- A submodule follows its development branch (OpenECS DESIGN 17.4), except mbedTLS, which follows the release tags of its long-term branch, 3.6: its branch lacks the C files that its release makes with Python scripts.
+- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
 ### 1.1 Building
@@ -190,11 +190,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 11. web
 
 - The `web` plugin makes HTTP and HTTPS requests. It is a native plugin: libcurl makes the requests, with TLS from mbedTLS, and both are compiled into it (1). libcurl is built for HTTP and HTTPS only, with HTTP/1.1, and resolves names on a thread of its own.
-- Nothing it does blocks the program: one thread of the plugin runs every request, many at once, and a plugin asks for a request's state and takes its answer when it wants, such as from a timer, as with net (9).
-- `web.get(url)` starts a GET request and gives a handle of type `web.request`. `web.request(method, url, headers, body)` starts a request with any method, such as `"POST"`; the headers are a list of texts, such as `{ "Content-Type: application/json" }`, and a body that is not empty is sent. A request that cannot be made gives nil; one to a URL that is not HTTP or HTTPS fails, as one to a host that cannot be reached does.
+- Nothing it does blocks the program: one thread of the plugin runs every request, many at once.
+- `web.get(url, done)` starts a GET request and gives a handle of type `web.request`. `web.request(method, url, headers, body, done)` starts a request with any method, such as `"POST"`; the headers are a list of texts, such as `{ "Content-Type: application/json" }`, and a body that is not empty is sent. A request that cannot be made gives nil; one to a URL that is not HTTP or HTTPS fails, as one to a host that cannot be reached does.
+- `done`, if given, is a kept callback (OpenECS DESIGN 10.4): web calls it on the main thread with the request once it is done, and then releases it. The request goes on when its handle is dropped, and `done` gets it in a new handle. Without `done`, a plugin asks for the request's state when it wants, such as from a timer, as with net (9).
 - `web.status(request)` gives 0 while the request runs, the answer's HTTP status once it is done, such as 200 or 404, and -1 if it failed, such as when the host cannot be reached or its certificate is not trusted. `web.error(request)` gives why it failed.
 - Once it is done, `web.body(request)` gives the answer's body as a buffer, a string in Lua, and `web.header(request, name)` one of its headers, or nothing. A request follows up to 10 redirects, and these are the last answer's.
-- `web.free(request)` frees a request now, and stops one that runs. Lua's garbage collector, or the plugin that made it, frees it otherwise.
+- `web.free(request)` frees a request now, and stops one that runs; its `done` is not called. Lua's garbage collector, or the plugin that made it, frees it otherwise.
 - The setting `web.timeout` is the number of seconds a request may take before it fails; 0 means no limit.
 - HTTPS checks a server's certificate against the system's trusted certificates: the file that `SSL_CERT_FILE` names, or the one where Debian, Ubuntu, Arch, Fedora, openSUSE or Alpine keep it. The proxies that `http_proxy`, `https_proxy` and `no_proxy` name are used.
 - The plugin gives libcurl and mbedTLS SDL's allocator.
