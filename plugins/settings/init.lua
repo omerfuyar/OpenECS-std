@@ -1,18 +1,13 @@
--- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 10).
+-- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 11).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
 local ui = require("ui")
 
-local function name(localName)
-  return "settings." .. localName
+-- a size of the ui plugin's settings, in layout units, which every first-party view shares
+local function size(name)
+  return ecs.settings.get("ui." .. name)
 end
-
--- sizes in layout units
-local MARGIN = 24
-local TITLE_SIZE = 22
-local SECTION_SIZE = 13
-local NOTE_SIZE = 12
 
 -- version of a window's saved state: the setting that was chosen
 local STATE_VERSION = 1
@@ -180,9 +175,9 @@ local function control(window, setting)
   local id = "value:" .. setting.name
 
   if setting.type == "bool" then
-    return ui.check(setting.value, { id = id, onChange = function(on) set(window, setting, on) end })
+    return ui.toggle(setting.value, { id = id, look = "switch", onChange = function(on) set(window, setting, on) end })
   elseif setting.type == "choice" then
-    return ui.choice(setting.value, setting.choices, { id = id, grow = 1, onChange = function(value) set(window, setting, value) end })
+    return ui.dropdown(setting.value, setting.choices, { id = id, grow = 1, onChange = function(value) set(window, setting, value) end })
   elseif setting.type == "key" then
     return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) set(window, setting, key) end })
   end
@@ -217,14 +212,12 @@ local function control(window, setting)
   return fieldElement
 end
 
-local function settingRow(window, index, setting)
-  local chosen = index == window.selected
-
-  return ui.row({ id = "row:" .. setting.name, padding = 6, gap = 12, background = chosen and "selected" or nil }, {
+local function settingRow(window, setting)
+  return ui.row({ id = "row:" .. setting.name, padding = 6, gap = 12 }, {
     -- both columns start from no width and share the row, so every row's control has the same place
     ui.column({ width = 0, grow = 3, gap = 2 }, {
       ui.text(setting.name),
-      ui.text(setting.description, { size = NOTE_SIZE, color = "textDim" }),
+      ui.text(setting.description, { size = size("noteSize"), color = "textDim" }),
     }),
     ui.row({ width = 0, grow = 2 }, { control(window, setting) }),
   })
@@ -233,31 +226,30 @@ end
 local function tree(window)
   local rows, owner = {}, nil
 
-  for i, setting in ipairs(window.settings) do
+  for _, setting in ipairs(window.settings) do
     if setting.owner ~= owner then
       owner = setting.owner
-      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { size = SECTION_SIZE, color = "accent" })
+      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { size = size("noteSize"), color = "accent", selectable = false })
     end
 
-    rows[#rows + 1] = settingRow(window, i, setting)
+    rows[#rows + 1] = settingRow(window, setting)
   end
 
-  return ui.column({ padding = MARGIN, gap = MARGIN / 2, background = "background" }, {
-    ui.text("Settings", { size = TITLE_SIZE }),
-    ui.scroll({ id = LIST, gap = 4 }, rows),
+  -- a press on a row chooses its setting, and the row's control gets the press too
+  local list = ui.list({
+    id = LIST,
+    gap = 4,
+    selected = window.selected,
+    onSelect = function(index)
+      window.selected = index
+      window.panel:redraw()
+    end,
+  }, rows)
+
+  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
+    ui.text("Settings", { size = size("titleSize") }),
+    list,
   })
-end
-
--- chooses a setting, and scrolls it into view
-local function choose(window, index)
-  window.selected = math.min(math.max(index, 1), #window.settings)
-  local setting = window.settings[window.selected]
-
-  if setting then
-    ui.reveal(window.panel, LIST, "row:" .. setting.name)
-  end
-
-  window.panel:redraw()
 end
 
 -- changes the chosen setting one step, in the user's settings file
@@ -284,7 +276,7 @@ local function edit(window)
 end
 
 ecs.panel.registerType({
-  name = name("window"),
+  name = "window",
   title = "Settings",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
@@ -311,25 +303,11 @@ ecs.panel.registerType({
     return { selected = chosen and chosen.name or nil }
   end,
   draw = function(window, surface)
-    window.scale = surface.scale
     ui.show(window.panel, surface, tree(window))
   end,
   event = function(window, event)
     if event.type == "shown" then
       refresh(window)
-    end
-
-    -- a click on a row chooses its setting, and the row's control gets the click too
-    if event.type == "pointerDown" and event.button == 1 then
-      for i, setting in ipairs(window.settings) do
-        local ok, x, y, width, height = ui.rect(window.panel, "row:" .. setting.name)
-        local px, py = event.x / (window.scale or 1), event.y / (window.scale or 1)
-
-        if ok and px >= x and px < x + width and py >= y and py < y + height then
-          window.selected = i
-          window.panel:redraw()
-        end
-      end
     end
 
     ui.event(window.panel, event)
@@ -347,7 +325,7 @@ function services.open()
     return
   end
 
-  local panel, message = ecs.layout.open(name("window"))
+  local panel, message = ecs.layout.open("settings.window")
 
   if not panel then
     ecs.log.warn(message or "Cannot open the settings window.")
@@ -366,11 +344,11 @@ local function forWindow(act)
 end
 
 services.up = forWindow(function(window)
-  choose(window, window.selected - 1)
+  ui.move(window.panel, LIST, -1)
 end)
 
 services.down = forWindow(function(window)
-  choose(window, window.selected + 1)
+  ui.move(window.panel, LIST, 1)
 end)
 
 services.previous = forWindow(function(window)
@@ -392,7 +370,7 @@ function services.edit(panel)
   end
 end
 
-assert(ecs.service.register("settings", {
+assert(ecs.service.register({
   open = { sig = "void()", doc = "Open the settings window", fn = services.open },
   up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting above", fn = services.up },
   down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting below", fn = services.down },
@@ -403,5 +381,5 @@ assert(ecs.service.register("settings", {
 
 -- default keys for the window; presets and the user's settings can change them
 for service, key in pairs({ up = "Up", down = "Down", previous = "Left", next = "Right", edit = "Return" }) do
-  assert(ecs.input.bind(name("window"), key, name(service)))
+  assert(ecs.input.bind("settings.window", key, "settings." .. service))
 end

@@ -1,24 +1,16 @@
--- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 11).
+-- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 12).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
 
 local ui = require("ui")
 
-local function name(localName)
-  return "launcher." .. localName
+-- a size of the ui plugin's settings, in layout units, which every first-party view shares
+local function size(name)
+  return ecs.settings.get("ui." .. name)
 end
 
--- sizes in layout units
--- todo move these to a common compile time configurations, or directly pull it from dynamic settings !!!
-local MARGIN = 24
-local TITLE_SIZE = 22
-local HEADING_SIZE = 13
-local ENTRY_SIZE = 16
-local ROW_PADDING = 8
-
--- the id of the list of entries, which scrolls
--- todo make such elements plugins. always abstract useful layers so we can use it anywhere !!!
+-- the id of the list of entries
 local LIST = "list"
 
 -- version of a list's saved state: the entry that was chosen
@@ -115,50 +107,39 @@ local function findList(panel)
   return list
 end
 
-local function move(panel, step)
-  local list = findList(panel)
-
-  if list and #list.entries > 0 then
-    list.selected = math.min(math.max(list.selected + step, 1), #list.entries)
-    ui.reveal(panel, LIST, "entry:" .. list.selected)
-    panel:redraw()
-  end
-end
-
 -- the list's elements: the title, then one row for each entry, which a click chooses and opens
 local function tree(list)
   local rows = {}
 
-  for i, entry in ipairs(list.entries) do
-    rows[#rows + 1] = ui.row({
-      id = "entry:" .. i,
-      padding = ROW_PADDING,
-      gap = MARGIN / 2,
-      background = i == list.selected and "selected" or nil,
-      hoverBackground = "tab",
-      onClick = function()
-        list.selected = i
-        list.panel:redraw()
-        open(entry)
-      end,
-    }, {
-      ui.text(entry.title, { size = ENTRY_SIZE }),
-      ui.text(entry.kind == "preset" and "preset" or entry.detail, { size = HEADING_SIZE, color = "textDim" }),
+  for _, entry in ipairs(list.entries) do
+    rows[#rows + 1] = ui.row({ padding = size("rowPadding"), gap = size("margin") / 2 }, {
+      ui.text(entry.title),
+      ui.text(entry.kind == "preset" and "preset" or entry.detail, { size = size("noteSize"), color = "textDim" }),
     })
   end
 
   if #rows == 0 then
-    rows[1] = ui.text("There are no presets and no saved sessions.", { size = ENTRY_SIZE, color = "textDim" })
+    rows[1] = ui.text("There are no presets and no saved sessions.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ padding = MARGIN, gap = MARGIN / 2, background = "background" }, {
-    ui.text("OpenECS", { size = TITLE_SIZE }),
-    ui.scroll({ id = LIST }, rows),
+  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
+    ui.text("OpenECS", { size = size("titleSize") }),
+    ui.list({
+      id = LIST,
+      selected = list.selected,
+      onSelect = function(index)
+        list.selected = index
+        list.panel:redraw()
+      end,
+      onActivate = function(index)
+        open(list.entries[index])
+      end,
+    }, rows),
   })
 end
 
 ecs.panel.registerType({
-  name = name("list"),
+  name = "list",
   title = "Launcher",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
@@ -200,22 +181,24 @@ ecs.panel.registerType({
 local services = {}
 
 function services.up(panel)
-  move(panel, -1)
-end
-
-function services.down(panel)
-  move(panel, 1)
-end
-
-function services.open(panel)
-  local list = findList(panel)
-
-  if list then
-    open(list.entries[list.selected])
+  if findList(panel) then
+    ui.move(panel, LIST, -1)
   end
 end
 
-assert(ecs.service.register("launcher", {
+function services.down(panel)
+  if findList(panel) then
+    ui.move(panel, LIST, 1)
+  end
+end
+
+function services.open(panel)
+  if findList(panel) then
+    ui.activate(panel, LIST)
+  end
+end
+
+assert(ecs.service.register({
   up = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry above", fn = services.up },
   down = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry below", fn = services.down },
   open = { sig = "void(handle<ecs.panel>)", doc = "Open the chosen preset or session", fn = services.open },
@@ -223,5 +206,5 @@ assert(ecs.service.register("launcher", {
 
 -- default keys for the list; presets and the user's settings can change them
 for service, key in pairs({ up = "Up", down = "Down", open = "Return" }) do
-  assert(ecs.input.bind(name("list"), key, name(service)))
+  assert(ecs.input.bind("launcher.list", key, "launcher." .. service))
 end

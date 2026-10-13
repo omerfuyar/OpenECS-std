@@ -2,14 +2,15 @@
 
 The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its first-party plugins and presets:
 
-- **draw:** draws shapes and text into other plugins' panels.
-- **ui:** user-interface elements with layout, which call back on clicks and edits.
-- **tty:** grids of characters for terminals, consoles and logs, drawn at any size.
-- **image:** reads PNG, JPG, GIF, SVG and other image files, and draws them.
-- **audio:** reads WAV, MP3, FLAC and Ogg Vorbis files, and plays them.
-- **net:** TCP connections and servers that never block the program.
+- **draw:** draws shapes, lines, triangles, images and text into other plugins' panels.
+- **mixer:** plays sounds, many at once.
+- **textgrid:** grids of characters for terminals, consoles, logs and editors, drawn with draw at any size.
+- **ui:** user-interface elements with layout, such as buttons, toggles, sliders, selectors, dropdowns and lists, which call back on clicks and edits.
+- **image:** reads PNG, JPG, GIF, SVG and other image files into images that draw draws.
+- **audio:** reads WAV, MP3, FLAC and Ogg Vorbis files into sounds that mixer plays.
 - **gltf:** reads glTF 2.0 models, and gives their parts and vertex data.
-- **fs:** lists, makes, copies, moves and removes files and folders, which Lua's `io` cannot.
+- **net:** TCP connections and servers, and UDP sockets, that never block the program.
+- **fs:** lists and makes folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
@@ -29,7 +30,7 @@ cd OpenECS
 
 OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `test.sh` runs each example's test, and each plugin has an example.
 
-Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it.
+Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it. The build writes a `.luarc.json` here that names OpenECS's `include/` and the plugins' definition files, so an editor with LuaLS completes and checks the Lua plugins.
 
 ## Releases
 

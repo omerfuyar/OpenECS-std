@@ -1,22 +1,16 @@
--- The panel list: every panel type of the tool, by the plugin that registered it, and opens the one the user chooses (DESIGN 12).
+-- The panel list: every panel type of the tool, by the plugin that registered it, and opens the one the user chooses (DESIGN 13).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
 
 local ui = require("ui")
 
-local function name(localName)
-  return "panels." .. localName
+-- a size of the ui plugin's settings, in layout units, which every first-party view shares
+local function size(name)
+  return ecs.settings.get("ui." .. name)
 end
 
--- sizes in layout units
-local MARGIN = 24
-local TITLE_SIZE = 22
-local HEADING_SIZE = 13
-local ENTRY_SIZE = 16
-local ROW_PADDING = 8
-
--- the id of the list of entries, which scrolls
+-- the id of the list of entries
 local LIST = "list"
 
 -- version of a list's saved state: the panel type that was chosen
@@ -30,7 +24,7 @@ local function readTypes()
   local types = {}
 
   for _, entry in ipairs(ecs.panel.types()) do
-    if entry.name ~= name("list") then
+    if entry.name ~= "panels.list" then
       types[#types + 1] = entry
     end
   end
@@ -79,59 +73,48 @@ local function findList(panel)
   return list
 end
 
-local function move(panel, step)
-  local list = findList(panel)
-
-  if list and #list.types > 0 then
-    list.selected = math.min(math.max(list.selected + step, 1), #list.types)
-    ui.reveal(panel, LIST, "entry:" .. list.selected)
-    panel:redraw()
-  end
-end
-
 -- the list's elements: the title, then for each plugin a heading with its description and a row for each of its panel types, which a click opens
 local function tree(list)
   local rows = {}
   local plugin
 
-  for i, entry in ipairs(list.types) do
+  for _, entry in ipairs(list.types) do
     if entry.plugin ~= plugin then
       plugin = entry.plugin
-      rows[#rows + 1] = ui.column({ id = "plugin:" .. plugin, padding = ROW_PADDING / 2 }, {
-        ui.text(plugin, { size = HEADING_SIZE }),
-        entry.description ~= "" and ui.text(entry.description, { size = HEADING_SIZE, color = "textDim" }) or ui.space({ height = 0 }),
+      rows[#rows + 1] = ui.column({ padding = size("rowPadding") / 2, selectable = false }, {
+        ui.text(plugin, { size = size("noteSize") }),
+        entry.description ~= "" and ui.text(entry.description, { size = size("noteSize"), color = "textDim" }) or ui.space({ height = 0 }),
       })
     end
 
-    rows[#rows + 1] = ui.row({
-      id = "entry:" .. i,
-      padding = ROW_PADDING,
-      gap = MARGIN / 2,
-      background = i == list.selected and "selected" or nil,
-      hoverBackground = "tab",
-      onClick = function()
-        list.selected = i
-        list.panel:redraw()
-        open(entry)
-      end,
-    }, {
-      ui.text(entry.title, { size = ENTRY_SIZE }),
-      ui.text(entry.name, { size = HEADING_SIZE, color = "textDim" }),
+    rows[#rows + 1] = ui.row({ padding = size("rowPadding"), gap = size("margin") / 2 }, {
+      ui.text(entry.title),
+      ui.text(entry.name, { size = size("noteSize"), color = "textDim" }),
     })
   end
 
   if #rows == 0 then
-    rows[1] = ui.text("The tool's plugins have no panel types.", { size = ENTRY_SIZE, color = "textDim" })
+    rows[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ padding = MARGIN, gap = MARGIN / 2, background = "background" }, {
-    ui.text("Open a panel", { size = TITLE_SIZE }),
-    ui.scroll({ id = LIST }, rows),
+  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
+    ui.text("Open a panel", { size = size("titleSize") }),
+    ui.list({
+      id = LIST,
+      selected = list.selected,
+      onSelect = function(index)
+        list.selected = index
+        list.panel:redraw()
+      end,
+      onActivate = function(index)
+        open(list.types[index])
+      end,
+    }, rows),
   })
 end
 
 ecs.panel.registerType({
-  name = name("list"),
+  name = "list",
   title = "Panels",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
@@ -189,7 +172,7 @@ function services.open()
     return
   end
 
-  local panel, message = ecs.layout.open(name("list"))
+  local panel, message = ecs.layout.open("panels.list")
 
   if not panel then
     ecs.log.warn(message or "Cannot open the panel list.")
@@ -197,22 +180,24 @@ function services.open()
 end
 
 function services.up(panel)
-  move(panel, -1)
-end
-
-function services.down(panel)
-  move(panel, 1)
-end
-
-function services.choose(panel)
-  local list = findList(panel)
-
-  if list then
-    open(list.types[list.selected])
+  if findList(panel) then
+    ui.move(panel, LIST, -1)
   end
 end
 
-assert(ecs.service.register("panels", {
+function services.down(panel)
+  if findList(panel) then
+    ui.move(panel, LIST, 1)
+  end
+end
+
+function services.choose(panel)
+  if findList(panel) then
+    ui.activate(panel, LIST)
+  end
+end
+
+assert(ecs.service.register({
   open = { sig = "void()", doc = "Open the panel list", fn = services.open },
   up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type above", fn = services.up },
   down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type below", fn = services.down },
@@ -221,5 +206,5 @@ assert(ecs.service.register("panels", {
 
 -- default keys for the list; presets and the user's settings can change them
 for service, key in pairs({ up = "Up", down = "Down", choose = "Return" }) do
-  assert(ecs.input.bind(name("list"), key, name(service)))
+  assert(ecs.input.bind("panels.list", key, "panels." .. service))
 end
