@@ -1,6 +1,6 @@
 // The web standard plugin: HTTP and HTTPS requests that never block the program (DESIGN 11).
-// libcurl makes the requests, with TLS from mbedTLS; both are compiled into this plugin (DESIGN 1). One thread of the plugin runs every request,
-// and a plugin asks for a request's state and takes its answer when it wants, such as from a timer.
+// libcurl makes the requests, with TLS from mbedTLS; both are compiled into this plugin (DESIGN 1). One thread of the plugin runs every request.
+// A plugin gives a function that gets the request once it is done, or asks for its state and takes its answer when it wants.
 
 #include "OpenECS.h"
 
@@ -13,6 +13,14 @@
 
 /// @brief The most redirects a request follows.
 #define WEB_REDIRECTS 10
+
+/// @brief How often, in seconds, the main thread looks for requests whose function is to be called.
+#define WEB_DONE_INTERVAL 0.02
+
+struct WebRequest;
+
+/// @brief The function that gets a request once it is done: void(handle<web.request>). It is a kept callback (OpenECS DESIGN 10.4).
+typedef void (*WebDoneFunction)(struct WebRequest *request);
 
 /// @brief A request, from the main thread to the plugin's thread and back. The lock guards done, status and the lists; the rest belongs to one thread at a time:
 /// the main thread until the request is queued, the plugin's thread until it is done, and the main thread again then.
@@ -29,6 +37,8 @@ typedef struct WebRequest
     bool forgotten;  // freed by its owner while it runs; the plugin's thread frees it
     bool running;    // given to the multi handle, on the plugin's thread
     struct WebRequest *next; // in the queue of new or of forgotten requests
+    WebDoneFunction Done;     // main thread: the function to call once it is done, or nullptr once called
+    struct WebRequest *after; // main thread: in the list of every request that is not freed
 } WebRequest;
 
 static struct
@@ -42,6 +52,8 @@ static struct
     WebRequest *forgotten; // running, freed by their owner
     bool quit;
     const char *certificates; // the system's file of trusted certificates, or nullptr
+    WebRequest *all;          // main thread: every request that is not freed
+    ECSTimer timer;           // main thread: calls the functions of the requests that are done, while some wait
 } WEB = {0};
 
 /// @brief Keeps what arrives, on the plugin's thread.
@@ -69,9 +81,29 @@ static size_t WebWrite(char *data, size_t size, size_t count, void *user)
     return length;
 }
 
-static void WebDestroy(void *object)
+/// @brief Frees a request's memory, which no thread uses any longer.
+static void WebFreeMemory(WebRequest *request)
 {
-    WebRequest *request = object;
+    curl_easy_cleanup(request->easy);
+    curl_slist_free_all(request->headers);
+    SDL_free(request->body);
+    SDL_free(request);
+}
+
+/// @brief Frees a request on the main thread: it leaves the list, its function is released without a call, and one that runs stops.
+static void WebDelete(WebRequest *request)
+{
+    for (WebRequest **link = &WEB.all; *link != nullptr; link = &(*link)->after)
+    {
+        if (*link == request)
+        {
+            *link = request->after;
+            break;
+        }
+    }
+
+    ECSService_ReleaseCallback((ECSFunction)request->Done);
+    request->Done = nullptr;
 
     // a request that runs is freed by the plugin's thread, which is the one that may touch it now
     SDL_LockMutex(WEB.lock);
@@ -102,10 +134,18 @@ static void WebDestroy(void *object)
         return;
     }
 
-    curl_easy_cleanup(request->easy);
-    curl_slist_free_all(request->headers);
-    SDL_free(request->body);
-    SDL_free(request);
+    WebFreeMemory(request);
+}
+
+/// @brief The destructor of a request's handle. A request whose function waits goes on, and its function gets it in a new handle.
+static void WebDestroy(void *object)
+{
+    WebRequest *request = object;
+
+    if (request->Done == nullptr)
+    {
+        WebDelete(request);
+    }
 }
 
 /// @brief Takes the requests that are queued and forgotten, on the plugin's thread.
@@ -146,8 +186,7 @@ static bool WebTakeQueues(void)
     {
         WebRequest *next = forgotten->next;
         curl_multi_remove_handle(WEB.multi, forgotten->easy);
-        forgotten->running = false;
-        WebDestroy(forgotten);
+        WebFreeMemory(forgotten);
         forgotten = next;
     }
 
@@ -263,7 +302,45 @@ static bool WebSetMethod(CURL *easy, const char *method, SHUSlice body)
     return ok && curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method) == CURLE_OK;
 }
 
-static WebRequest *WebRequestNew(const char *method, const char *url, const ECSValue *headers, SHUSlice body)
+static bool WebDone(WebRequest *request);
+
+/// @brief Calls the functions of the requests that are done, one at a time, because a function may free requests.
+static void WebCallDone(void *data)
+{
+    (void)data;
+    bool waiting = true;
+
+    while (waiting)
+    {
+        WebRequest *request = WEB.all;
+        waiting = false;
+
+        while (request != nullptr && (request->Done == nullptr || !WebDone(request)))
+        {
+            waiting = waiting || request->Done != nullptr;
+            request = request->after;
+        }
+
+        if (request == nullptr)
+        {
+            break;
+        }
+
+        WebDoneFunction Done = request->Done;
+        request->Done = nullptr;
+        Done(request);
+        ECSService_ReleaseCallback((ECSFunction)Done);
+        waiting = true;
+    }
+
+    // the timer runs only while a function waits
+    if (!waiting && WEB.timer != nullptr)
+    {
+        ECSTimer_Stop(&WEB.timer);
+    }
+}
+
+static WebRequest *WebRequestNew(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
 {
     WebRequest *request = SDL_calloc(1, sizeof(WebRequest));
     CURL *easy = request == nullptr ? nullptr : curl_easy_init();
@@ -288,7 +365,7 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
         request->headers = ok ? list : request->headers;
     }
 
-    ok = ok &&curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK &&
+    ok = ok && curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, WebWrite) == CURLE_OK &&
@@ -305,12 +382,22 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
 
     ok = ok && curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
 
+    if (Done != nullptr && WEB.timer == nullptr)
+    {
+        ok = ok && ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok;
+    }
+
     if (!ok)
     {
         ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
-        WebDestroy(request);
+        WebFreeMemory(request);
+        ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
     }
+
+    request->Done = Done;
+    request->after = WEB.all;
+    WEB.all = request;
 
     SDL_LockMutex(WEB.lock);
     request->next = WEB.added;
@@ -320,9 +407,9 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
     return request;
 }
 
-static WebRequest *WebGet(const char *url)
+static WebRequest *WebGet(const char *url, WebDoneFunction Done)
 {
-    return WebRequestNew("GET", url, nullptr, (SHUSlice){0});
+    return WebRequestNew("GET", url, nullptr, (SHUSlice){0}, Done);
 }
 
 static i32 WebStatus(WebRequest *request)
@@ -361,11 +448,11 @@ static const char *WebError(WebRequest *request)
     return WebDone(request) ? request->error : "";
 }
 
-/// @brief Frees a request now, instead of when no one uses its handle; one that runs stops.
+/// @brief Frees a request now, instead of when no one uses its handle; one that runs stops, and its function is not called.
 static void WebFree(WebRequest *request)
 {
     ECSHandle_Forget(request);
-    WebDestroy(request);
+    WebDelete(request);
 }
 
 static void WebQuit(void *data)
@@ -381,7 +468,21 @@ static void WebQuit(void *data)
         SDL_WaitThread(WEB.thread, nullptr);
     }
 
-    // the handles are destroyed before the plugins, so no request is left but those that C plugins keep
+    // the handles are destroyed before the plugins, so the requests left are those whose functions wait, and those that C plugins keep
+    if (WEB.timer != nullptr)
+    {
+        ECSTimer_Stop(&WEB.timer);
+    }
+
+    while (WEB.all != nullptr)
+    {
+        WebRequest *request = WEB.all;
+        WEB.all = request->after;
+        ECSService_ReleaseCallback((ECSFunction)request->Done);
+        curl_multi_remove_handle(WEB.multi, request->easy);
+        WebFreeMemory(request);
+    }
+
     curl_multi_cleanup(WEB.multi);
 
     if (WEB.curl)
@@ -428,8 +529,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"get", (ECSFunction)WebGet, "handle<web.request>(string url)", "Start a GET request to a URL"},
-        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value headers, buffer body)", "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body"},
+        {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done)", "Start a GET request to a URL; done, if given, gets the request once it is done"},
+        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value headers, buffer body, keep fn<void(handle<web.request> request)> done)", "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done"},
         {"status", (ECSFunction)WebStatus, "int(handle<web.request> request)", "Give a request's HTTP status once it is done, 0 while it runs, or -1 if it failed"},
         {"body", (ECSFunction)WebBody, "buffer(handle<web.request> request)", "Give the body of a request's answer once it is done"},
         {"header", (ECSFunction)WebHeader, "string(handle<web.request> request, string name)", "Give a header of a request's answer once it is done, or nothing"},
