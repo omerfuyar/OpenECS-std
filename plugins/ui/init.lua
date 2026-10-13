@@ -106,6 +106,30 @@ local function fit(font, text, textSize, width)
   return text:sub(1, (utf8.offset(text, low + 1) or #text + 1) - 1) .. "…"
 end
 
+-- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own
+local function wrap(font, text, textSize, width)
+  local lines = {}
+
+  for paragraph in (text .. "\n"):gmatch("(.-)\n") do
+    local current = nil
+
+    for word in paragraph:gmatch("%S+") do
+      local joined = current and current .. " " .. word or word
+
+      if current and measureText(font, joined, textSize) > width then
+        lines[#lines + 1] = current
+        current = word
+      else
+        current = joined
+      end
+    end
+
+    lines[#lines + 1] = current or ""
+  end
+
+  return lines
+end
+
 -- images read once for each path and scale, so that they are drawn sharp
 local images = {}
 
@@ -319,14 +343,23 @@ local function segments(node, font, textSize)
 end
 
 -- the size an element needs, without growing; containers measure their children first
-local function measure(node, state)
+-- room is the width a column gives its children, which text that wraps breaks at; nil in a row
+local function measure(node, state, room)
   local textSize = node.size or fontSize()
   local font = fontOf(node)
   local line = lineHeight(font, textSize)
   local boxed = line + 2 * size.paddingY
   local width, height
 
-  if node.kind == "text" then
+  if node.kind == "text" and node.wrap and (node.width or room) then
+    node.lines = wrap(font, node.text, textSize, node.width or room)
+    width, height = 0, #node.lines * line
+
+    for _, text in ipairs(node.lines) do
+      width = math.max(width, measureText(font, text, textSize))
+    end
+  elseif node.kind == "text" then
+    node.lines = nil
     width, height = measureText(font, node.text, textSize), line
   elseif node.kind == "button" then
     width, height = measureText(font, node.label, textSize) + 2 * size.paddingX, boxed
@@ -372,8 +405,15 @@ local function measure(node, state)
     local across, along = 0, 0
     local count = 0
 
+    -- a column's children may take its width less its padding, and a scroll element's less its scroll bar too; a row's take what they need
+    local inner = nil
+
+    if not horizontal(node) and (node.width or room) then
+      inner = (node.width or room) - 2 * padding(node) - (node.kind == "scroll" and size.scrollbarWidth + 4 or 0)
+    end
+
     for _, child in ipairs(node.children) do
-      local childWidth, childHeight = measure(child, state)
+      local childWidth, childHeight = measure(child, state, inner)
       local childAlong, childAcross = childHeight, childWidth
 
       if horizontal(node) then
@@ -574,7 +614,16 @@ local function paint(node, surface, state, clip)
     draw.outline(surface, node.x, node.y, node.w, node.h, 1, node.border)
   end
 
-  if node.kind == "text" then
+  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline
+  if state.ring and state.target == node.id and node.kind ~= "field" and node.kind ~= "key" then
+    draw.outline(surface, node.x - 2, node.y - 2, node.w + 4, node.h + 4, 2, "accent")
+  end
+
+  if node.kind == "text" and node.lines then
+    for i, text in ipairs(node.lines) do
+      draw.text(surface, font, fit(font, text, textSize, node.w), node.x, node.y + (i - 1) * line, textSize, node.color or "text")
+    end
+  elseif node.kind == "text" then
     draw.text(surface, font, fit(font, node.text, textSize, node.w), node.x, textY, textSize, node.color or "text")
   elseif node.kind == "button" then
     draw.fill(surface, node.x, node.y, node.w, node.h, pressed and "accent" or hover and "tabShown" or "tab")
@@ -638,17 +687,18 @@ local function paint(node, surface, state, clip)
     draw.fill(surface, node.x, node.y, node.w, node.h, "tabRow")
     local width = measureText(font, text, textSize)
     local room = node.w - 2 * size.paddingX
+    local before = (focused and node.kind == "field") and measureText(font, text:sub(1, state.at - 1), textSize) or width
 
-    -- the text moves left when it is longer than the field, so its end and the cursor stay in view
-    local textX = node.x + size.paddingX - ((focused and width > room) and width - room or 0)
+    -- the text moves left when the cursor would leave the field, so the cursor stays in view
+    local textX = node.x + size.paddingX - ((focused and before > room) and before - room or 0)
     local inner = intersect({ x = node.x + 1, y = node.y + 1, w = node.w - 2, h = node.h - 2 }, clip)
     draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
     draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
       (focused and node.kind == "key") and "textDim" or node.color or "text")
 
     if focused and node.kind == "field" then
-      draw.fill(surface, textX + width + 1, textY, 2, line, "accent")
-      state.cursor = { x = textX + width, y = textY, h = line }
+      draw.fill(surface, textX + before, textY, 2, line, "accent")
+      state.cursor = { x = textX + before, y = textY, h = line }
     end
 
     restoreClip(surface, clip)
@@ -747,7 +797,7 @@ end
 
 local function blur(panel, state)
   if state.focus then
-    state.focus, state.typed, state.cursor = nil, nil, nil
+    state.focus, state.typed, state.cursor, state.at = nil, nil, nil, nil
     panel:setTextInput(false)
     panel:redraw()
   end
@@ -864,7 +914,7 @@ local function activate(panel, state, node, x)
   elseif node.kind == "field" or node.kind == "key" then
     if state.focus ~= node.id then
       blur(panel, state)
-      state.focus, state.typed = node.id, node.text
+      state.focus, state.typed, state.at = node.id, node.text, #node.text + 1
       panel:setTextInput(node.kind == "field")
     end
   end
@@ -892,14 +942,29 @@ local function typing(panel, state, event)
     return true
   end
 
+  -- the cursor is a byte position before which text goes; a character may take several bytes
+  local typed, at = state.typed, state.at
+
   if event.type == "text" then
-    state.typed = state.typed .. event.text
+    state.typed = typed:sub(1, at - 1) .. event.text .. typed:sub(at)
+    state.at = at + #event.text
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Backspace" then
-    -- the last character, which may take several bytes
-    local last = utf8.offset(state.typed, -1)
-    state.typed = last and state.typed:sub(1, last - 1) or ""
+  elseif event.type == "keyDown" and event.key == "Backspace" and at > 1 then
+    local previous = utf8.offset(typed, -1, at)
+    state.typed, state.at = typed:sub(1, previous - 1) .. typed:sub(at), previous
     call(node.onChange, state.typed)
+  elseif event.type == "keyDown" and event.key == "Delete" and at <= #typed then
+    local next = utf8.offset(typed, 2, at)
+    state.typed = typed:sub(1, at - 1) .. typed:sub(next)
+    call(node.onChange, state.typed)
+  elseif event.type == "keyDown" and event.key == "Left" then
+    state.at = at > 1 and utf8.offset(typed, -1, at) or 1
+  elseif event.type == "keyDown" and event.key == "Right" then
+    state.at = at <= #typed and utf8.offset(typed, 2, at) or at
+  elseif event.type == "keyDown" and event.key == "Home" then
+    state.at = 1
+  elseif event.type == "keyDown" and event.key == "End" then
+    state.at = #typed + 1
   elseif event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") then
     -- onSubmit gives false to keep typing, such as for a text it cannot read
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
@@ -908,6 +973,127 @@ local function typing(panel, state, event)
   elseif event.type == "keyDown" and event.key == "Escape" then
     blur(panel, state)
   elseif event.type ~= "keyUp" and event.type ~= "keyDown" then
+    return false
+  end
+
+  panel:redraw()
+  return true
+end
+
+-- the interactive elements in the order of the tree, which Tab goes through
+local function order(node, list)
+  if interactive(node) then
+    list[#list + 1] = node
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    order(child, list)
+  end
+
+  return list
+end
+
+-- the innermost scroll element that holds an element, or nil
+local function scrollOf(node, id, found)
+  if node.id == id then
+    return found
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    local inner = scrollOf(child, id, node.kind == "scroll" and node or found)
+
+    if inner ~= nil then
+      return inner
+    end
+  end
+end
+
+-- gives the keys to the next interactive element, or to the one before; a field or key element takes typing then
+local function step(panel, state, back)
+  local list = order(state.root, {})
+
+  if #list == 0 then
+    return false
+  end
+
+  local index = 0
+
+  for i, node in ipairs(list) do
+    index = node.id == state.target and i or index
+  end
+
+  if back then
+    index = index <= 1 and #list or index - 1
+  else
+    index = index % #list + 1
+  end
+
+  local node = list[index]
+  blur(panel, state)
+  state.target, state.ring = node.id, true
+
+  if node.kind == "field" or node.kind == "key" then
+    activate(panel, state, node, node.x)
+  end
+
+  local scroll = scrollOf(state.root, node.id, nil)
+
+  if scroll and scroll.id ~= node.id then
+    local top = node.y - scroll.y + scroll.offset
+    local offset = state.scroll[scroll.id] or 0
+    state.scroll[scroll.id] = math.min(math.max(offset, top + node.h - scroll.h), top)
+  end
+
+  panel:redraw()
+  return true
+end
+
+-- the next choice of a selector, or the next value of a slider, one way along it
+local function nudge(node, forward)
+  if node.kind == "selector" then
+    local index = 0
+
+    for i, choice in ipairs(node.choices) do
+      index = choice == node.value and i or index
+    end
+
+    local choice = node.choices[math.min(math.max(index + (forward and 1 or -1), 1), #node.choices)]
+
+    if choice ~= nil and choice ~= node.value then
+      call(node.onChange, choice)
+    end
+  else
+    local amount = (node.step and node.step > 0) and node.step or (node.max - node.min) / 20
+    local value = math.min(math.max(node.value + (forward and amount or -amount), node.min), node.max)
+
+    if value ~= node.value then
+      call(node.onChange, value)
+    end
+  end
+end
+
+-- handles a key press for the element that has the keys, when no field types: Tab moves them, Return or Space activates the element,
+-- Left and Right change a selector or a slider, and Escape takes the keys away
+local function press(panel, state, event)
+  if event.key == "Tab" then
+    return step(panel, state, event.shift)
+  end
+
+  local node = state.target and byId(state.root, state.target)
+
+  if not node then
+    return false
+  end
+
+  local enter = event.key == "Return" or event.key == "Keypad Enter" or event.key == "Space"
+
+  if event.key == "Escape" then
+    state.target, state.ring = nil, false
+  elseif (node.kind == "selector" or node.kind == "slider") and (event.key == "Left" or event.key == "Right") then
+    nudge(node, event.key == "Right")
+  elseif enter and node.kind ~= "selector" and node.kind ~= "slider" then
+    activate(panel, state, node, node.x)
+  else
     return false
   end
 
@@ -933,8 +1119,13 @@ local function handle(panel, event)
     return false
   end
 
-  if state.focus and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") then
+  -- Tab leaves a field too
+  if state.focus and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") and not (event.type == "keyDown" and event.key == "Tab") then
     return typing(panel, state, event)
+  end
+
+  if event.type == "keyDown" then
+    return press(panel, state, event)
   end
 
   -- pointer positions come in surface pixels, and the layout is in layout units
@@ -1006,7 +1197,9 @@ local function handle(panel, event)
       blur(panel, state)
     end
 
+    -- the pressed element gets the keys, without a ring, so Tab goes on from it
     state.pressed = node
+    state.target, state.ring = node and node.id, false
 
     if node and (node.kind == "field" or node.kind == "key") then
       activate(panel, state, node, x)
@@ -1071,7 +1264,7 @@ function services.show(panel, surface, root)
   end
 
   name(root, "root")
-  measure(root, state)
+  measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
 
   -- the element under the pointer and the pressed element are found again in the new layout
