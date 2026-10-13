@@ -1,4 +1,4 @@
--- The panel list: every panel type of the tool, by the plugin that registered it, and opens the one the user chooses (DESIGN 13).
+-- The panel list: every panel type of the tool, by the plugin that registered it, and opens the one the user chooses (DESIGN 14).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")

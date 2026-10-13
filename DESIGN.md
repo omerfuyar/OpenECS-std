@@ -14,9 +14,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 8. gltf
 9. net
 10. fs
-11. The settings window
-12. The launcher
-13. The panel list
+11. web
+12. The settings window
+13. The launcher
+14. The panel list
 
 ## 1. Rules
 
@@ -24,7 +25,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf and SDL_net. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, SDL_net, libcurl and mbedTLS. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too.
+- `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
+- A submodule follows its development branch (OpenECS DESIGN 17.4), except mbedTLS, which follows the release tags of its long-term branch, 3.6: its branch lacks the C files that its release makes with Python scripts.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
 ### 1.1 Building
@@ -34,6 +38,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Its build files are kept in `.shu/` here, and copies keep their files' times, so a second build compiles only the plugins whose files changed.
 - A plugin's C files compile into its native library with OpenECS's flags: its warnings, and in Debug its static analyzer and sanitizers. The plugin sees OpenECS's plugin interface and SDL from the build's `include/` folder.
 - `shuild.c` names, for each plugin that compiles a library in, the folders of `dependencies/` that its C files include. They are system include folders, so the library's warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries in them; the warnings and sanitizers stay.
+- `shuild.c` also names the libraries that a plugin takes as archives. Like OpenECS's dependencies, they are compiled without the warnings, the analyzer and the sanitizers (OpenECS DESIGN 17.3), into `.shu/`. The plugin's own files keep all three. libcurl is compiled as one file that includes all of its C files, as its own unity builds are, because shuild finds the headers a file includes without the build's definitions, and libcurl's headers need them.
 
 ### 1.2 Tests
 
@@ -130,7 +135,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `ui.move(panel, list, step)` chooses the item of a list a number of items from the chosen one, gives it to `onSelect`, and scrolls it into view; `ui.activate(panel, list)` gives the chosen item to `onActivate`. A plugin binds its keys to its own functions, which call these.
 - `ui.rect(panel, id)` gives an element's rectangle in the last layout, and `ui.reveal(panel, scroll, child)` scrolls a scroll element so a child shows.
 - Positions are in layout units, and colours are the theme's unless an element names others. ui fills the surface with the theme's background first.
-- Its sizes are its settings, in layout units, so the user can change them: `ui.paddingX`, `ui.paddingY`, `ui.checkSize`, `ui.fieldWidth`, `ui.scrollbarWidth`, `ui.thumbMin` and `ui.wheelStep`. `ui.margin`, `ui.rowPadding`, `ui.titleSize` and `ui.noteSize` are the sizes that the first-party views share (11, 12, 13), so they look alike.
+- Its sizes are its settings, in layout units, so the user can change them: `ui.paddingX`, `ui.paddingY`, `ui.checkSize`, `ui.fieldWidth`, `ui.scrollbarWidth`, `ui.thumbMin` and `ui.wheelStep`. `ui.margin`, `ui.rowPadding`, `ui.titleSize` and `ui.noteSize` are the sizes that the first-party views share (12, 13, 14), so they look alike.
 
 ## 6. image
 
@@ -182,7 +187,19 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `fs.folder(name)` gives a folder of the computer, ending with `/`: `executable`, the executable's folder, or one of the user's folders, `home`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `screenshots` or `templates`. A folder the system does not have gives nil.
 - Reading and writing what files hold is Lua's `io` in Lua, and SDL's `SDL_LoadFile` and `SDL_SaveFile` in C.
 
-## 11. The settings window
+## 11. web
+
+- The `web` plugin makes HTTP and HTTPS requests. It is a native plugin: libcurl makes the requests, with TLS from mbedTLS, and both are compiled into it (1). libcurl is built for HTTP and HTTPS only, with HTTP/1.1, and resolves names on a thread of its own.
+- Nothing it does blocks the program: one thread of the plugin runs every request, many at once, and a plugin asks for a request's state and takes its answer when it wants, such as from a timer, as with net (9).
+- `web.get(url)` starts a GET request and gives a handle of type `web.request`. `web.request(method, url, headers, body)` starts a request with any method, such as `"POST"`; the headers are a list of texts, such as `{ "Content-Type: application/json" }`, and a body that is not empty is sent. A request that cannot be made gives nil; one to a URL that is not HTTP or HTTPS fails, as one to a host that cannot be reached does.
+- `web.status(request)` gives 0 while the request runs, the answer's HTTP status once it is done, such as 200 or 404, and -1 if it failed, such as when the host cannot be reached or its certificate is not trusted. `web.error(request)` gives why it failed.
+- Once it is done, `web.body(request)` gives the answer's body as a buffer, a string in Lua, and `web.header(request, name)` one of its headers, or nothing. A request follows up to 10 redirects, and these are the last answer's.
+- `web.free(request)` frees a request now, and stops one that runs. Lua's garbage collector, or the plugin that made it, frees it otherwise.
+- The setting `web.timeout` is the number of seconds a request may take before it fails; 0 means no limit.
+- HTTPS checks a server's certificate against the system's trusted certificates: the file that `SSL_CERT_FILE` names, or the one where Debian, Ubuntu, Arch, Fedora, openSUSE or Alpine keep it. The proxies that `http_proxy`, `https_proxy` and `no_proxy` name are used.
+- The plugin gives libcurl and mbedTLS SDL's allocator.
+
+## 12. The settings window
 
 - The first-party Lua plugin `settings` is built with ui (5). The core's settings file loads it in every tool (OpenECS DESIGN 12.3), and binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), which opens the window as a panel of type `settings.window`, or shows the one that is open.
 - The window lists every declared setting under a title for its owner: the core's first, then each plugin's, each by name. A row shows the setting's name and description on its left, and a control with its value in effect on its right. The two sides share the row's width, so the controls line up and grow with the window.
@@ -193,7 +210,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The settings are a ui list (5), with each owner's title as a heading, under the window's title. Choosing a setting with the keys scrolls it into view, and a press chooses the setting under it, while its control gets the press too.
 - The panel's saved state is the chosen setting.
 
-## 12. The launcher
+## 13. The launcher
 
 - When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
@@ -204,7 +221,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - It is built with ui (5): the entries are a list, whose `onActivate` opens the entry.
 - A preset opens with `ecs.session.openPreset`, a session with `ecs.session.open` (OpenECS DESIGN 13.5).
 
-## 13. The panel list
+## 14. The panel list
 
 - It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
 - The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then N (OpenECS DESIGN 12.3).
@@ -218,10 +235,22 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## Glossary
 
+**Archive (static).** A file that holds compiled code, which a library or a program takes in when it is linked.
+
+**Certificate.** A file with which a server proves who it is to HTTPS. It is trusted when an authority that the system trusts signed it.
+
 **Datagram.** A message sent by UDP on its own, without a connection.
 
 **Ellipsis.** The three dots, …, that end a text that is cut.
 
+**Proxy.** A server that makes requests for other programs.
+
 **Rasterizer.** Code that turns a shape into the pixels it covers.
 
+**Redirect.** An answer that tells the client to ask another URL instead.
+
 **Thumb (scrollbar).** The part of a scrollbar that shows which part of the content is in view, and that the user drags to scroll.
+
+**TLS (Transport Layer Security).** The protocol that encrypts HTTPS and other connections, and checks the server's certificate.
+
+**Unity build.** Compiling a library as one C file that includes all of its C files.
