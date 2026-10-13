@@ -1,4 +1,4 @@
--- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 12).
+-- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 13).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")

@@ -13,3 +13,9 @@
 [submodule "dependencies/SDL_net"]
 	path = dependencies/SDL_net
 	url = https://github.com/libsdl-org/SDL_net.git
+[submodule "dependencies/curl"]
+	path = dependencies/curl
+	url = https://github.com/curl/curl.git
+[submodule "dependencies/mbedtls"]
+	path = dependencies/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
