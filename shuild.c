@@ -1,6 +1,6 @@
 // The build of OpenECS's standard plugins. It runs inside a checkout of OpenECS, in its std/ folder: OpenECS's shuild.c compiles this file with shu and shuild
 // from OpenECS's dependencies/ into shuild.ignore here, and runs it with the build type and OpenECS's build folder (DESIGN 1).
-// It builds each plugin into bin/plugins/, copies the presets into bin/presets/, and, with --tests, the tests into std/tests/ beside bin/.
+// It builds each plugin into bin/plugins/, and copies the presets into bin/presets/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
 #define SHUC_NO_RUN_LOG
@@ -45,25 +45,51 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
 
 #pragma endregion Setup
 
-#define RunCheck(cmd, ...) SHU_Assert(!SHU_UtilRun(cmd, ##__VA_ARGS__), "Runing " SHUM_COLOR_RED("'%s'") "failed", cmd)
+#pragma region Declarations
 
-static void PrintUsageAndExit(void)
+/// @brief Runs a shell command, and stops the build if it fails.
+#define RunCheck(cmd, ...) SHU_Assert(!SHU_UtilRun(cmd, ##__VA_ARGS__), "Running " SHUM_COLOR_RED("'%s'") " failed", cmd)
+
+static void SetupConfiguration(int argc, char **argv);
+static void SetBuildFlags(void);
+static void ForEachFolder(const char *path, void (*function)(const char *path, const char *name));
+static void BuildPlugin(const char *path, const char *name);
+
+#pragma endregion Declarations
+
+int main(int argc, char **argv)
+{
+    SHU_CompilerTryConfigure("gcc");
+    SetupConfiguration(argc, argv);
+
+    // each folder of plugins/ is a standard plugin
+    ForEachFolder("plugins/", BuildPlugin);
+
+    // the presets go to bin/presets/, beside OpenECS's own
+    SHUI_String folder;
+    SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
+    SHU_UtilCreateDirectory(folder.data);
+    RunCheck("cp -rp presets/. %s", folder.data);
+
+    return 0;
+}
+
+static void PrintUsageAndExit(int status)
 {
     printf("Usage: ./shuild.ignore -o FOLDER [FLAG...]\n\n"
            "OpenECS's shuild.c runs this build; see OpenECS's README.md.\n\n"
            "Flags:\n"
            "  -o, --output FOLDER  OpenECS's build folder, named from this folder, such as ../build/Debug/\n"
            "  -b, --build TYPE     Build type: debug (the default), release, relwithdebinfo or minsizerel\n"
-           "  -t, --tests          Also build the tests, into std/tests/ beside bin/\n"
            "  -h, --help           Show this help\n");
+    exit(status);
 }
 
 /// @brief Stops the build with what is wrong, the argument, and the usage.
 static void Refuse(const char *what, const char *argument)
 {
     SHU_LogError(0, "%s: " SHUM_COLOR_RED("'%s'"), what, argument);
-    PrintUsageAndExit();
-    exit(1);
+    PrintUsageAndExit(1);
 }
 
 static void SetupConfiguration(int argc, char **argv)
@@ -95,8 +121,7 @@ static void SetupConfiguration(int argc, char **argv)
         }
         else if (!strcmp(flag, "-h") || !strcmp(flag, "--help"))
         {
-            PrintUsageAndExit();
-            exit(0);
+            PrintUsageAndExit(0);
         }
         else
         {
@@ -215,6 +240,15 @@ static void BuildNative(const char *name, const char *root, const char *output)
         }
     }
 
+    // shuild compiles only the files that changed, so a library that is missing is built from all of them
+    SHUI_String library;
+    SHUI_SFormat(&library, "%slib%s.so", output, name);
+
+    if (SHU_UtilFileExists(library.data) != SHUFileType_Regular)
+    {
+        SHU_CacheClearModule(name);
+    }
+
     SHU_ModuleBegin(name, root);
     SetBuildFlags();
 
@@ -251,35 +285,6 @@ static void BuildPlugin(const char *path, const char *name)
     SHUI_SFormat(&root, "%s%s/", path, name);
     SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilCreateDirectory(output.data);
-    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -r {} %s \\;", root.data, output.data);
+    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -rp {} %s \\;", root.data, output.data);
     BuildNative(name, root.data, output.data);
-}
-
-/// @brief Builds a test plugin in its copy beside bin/.
-static void BuildTestPlugin(const char *path, const char *name)
-{
-    SHUI_String root;
-    SHUI_String output;
-    SHUI_SFormat(&root, "%s%s/", path, name);
-    SHUI_SFormat(&output, "%sstd/%s", CONFIG.output, root.data);
-    BuildNative(name, root.data, output.data);
-}
-
-// todo split definitions and declarations, move definitions under main
-
-int main(int argc, char **argv)
-{
-    SHU_CompilerTryConfigure("gcc");
-    SetupConfiguration(argc, argv);
-
-    // each folder of plugins/ is a standard plugin
-    ForEachFolder("plugins/", BuildPlugin);
-
-    // the presets go to bin/presets/, beside OpenECS's own
-    SHUI_String folder;
-    SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
-    SHU_UtilCreateDirectory(folder.data);
-    RunCheck("cp -r presets/. %s", folder.data);
-
-    return 0;
 }
