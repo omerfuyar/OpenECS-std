@@ -12,6 +12,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **fs:** lists, makes, copies, moves and removes files and folders, which Lua's `io` cannot.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
+- **panels:** the panel list: every panel type of the tool, by plugin, to open one.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 
@@ -23,10 +24,10 @@ Build and test inside a checkout of OpenECS, as OpenECS's README.md says:
 git clone --recursive https://github.com/omerfuyar/OpenECS.git
 cd OpenECS
 .github/scripts/build.sh D
-.github/scripts/test.sh build/Debug/bin/OpenECS std
+.github/scripts/test.sh build/Debug/bin/OpenECS
 ```
 
-OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. `test.sh` with `std` runs this repository's tests, apart from OpenECS's own.
+OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `test.sh` runs each example's test, and each plugin has an example.
 
 Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it.
 

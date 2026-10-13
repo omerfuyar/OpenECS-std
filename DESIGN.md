@@ -15,11 +15,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 9. fs
 10. The settings window
 11. The launcher
+12. The panel list
 
 ## 1. Rules
 
 - The plugins follow the rules of standard plugins (OpenECS DESIGN 20).
-- Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets, and `tests/` the tests of these plugins, with their own presets and test plugins.
+- Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
 - The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf and SDL_net. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
@@ -28,14 +29,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ### 1.1 Building
 
 - `shuild.c` is the build of this repository. It runs inside a checkout of OpenECS, in its `std/` folder. OpenECS's build compiles it with shu and shuild from OpenECS's `dependencies/` into `shuild.ignore` in this folder, and runs it with the build type and OpenECS's build folder (OpenECS DESIGN 17.7).
-- It builds each plugin into `bin/plugins/` and copies the presets into `bin/presets/`. With `--tests`, it copies `tests/` into `std/tests/` beside `bin/`, apart from OpenECS's own tests, and builds the test plugins there.
+- It builds each plugin into `bin/plugins/` and copies the presets into `bin/presets/`.
+- Its build files are kept in `.shu/` here, so a second build compiles only the plugins whose files changed.
 - A plugin's C files compile into its native library with OpenECS's flags: its warnings, and in Debug its static analyzer and sanitizers. The plugin sees OpenECS's plugin interface and SDL from the build's `include/` folder.
 - `shuild.c` names, for each plugin that compiles a library in, the folders of `dependencies/` that its C files include. They are system include folders, so the library's warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries in them; the warnings and sanitizers stay.
 
 ### 1.2 Tests
 
-- This repository's tests run on their own: OpenECS's `.github/scripts/test.sh` with `std` runs every test in `std/tests/`. Its checks build OpenECS's `dev` with this repository in `std/`, and run these tests only.
-- A test loads only the plugins its preset names (OpenECS DESIGN 17.5), so a test's preset names every plugin the test uses, such as `settings` for the settings window.
+- The examples of OpenECS-examples are the tests of these plugins (OpenECS DESIGN 17.5): each plugin has an example that shows it, and that example's test checks it.
+- This repository's checks build OpenECS's `dev` with this repository in `std/` and the examples, and run the examples' tests.
+- A test loads only the plugins its preset names (OpenECS DESIGN 17.5), so an example's preset names every plugin it uses, such as `settings` for the settings window.
 
 ### 1.3 Plugins
 
@@ -167,6 +170,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel's saved state is the chosen setting.
 
 ## 11. The launcher
+12. The panel list
 
 - When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
@@ -176,6 +180,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel's saved state is the chosen entry, so the launcher chooses it again at the next start.
 - It is built with ui (3).
 - A preset opens with `ecs.session.openPreset`, a session with `ecs.session.open` (OpenECS DESIGN 13.5).
+
+## 12. The panel list
+
+- It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
+- The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then N (OpenECS DESIGN 12.3).
+- It reads the list with `ecs.panel.types()` (OpenECS DESIGN 4.1), each time it is opened or shown, and leaves out its own type. The types are grouped by plugin, under the plugin's name and description; each row shows the type's title and name.
+- `panels.open` opens the list, or focuses it if it is open. The panel that had the focus is where a chosen type opens: in its group, or where the core puts new panels if it has closed.
+- A click on a row, or `panels.choose`, opens a panel of the type. `panels.up` and `panels.down` choose a row; the plugin binds them for its panel type to Up, Down and Return.
+- The panel's saved state is the chosen type.
+- It is built with ui (3).
 
 ---
 

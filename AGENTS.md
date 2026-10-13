@@ -18,7 +18,6 @@ OpenECS's OVERVIEW.md holds the product decisions for these plugins too. Read it
 | ------------ | ---------------------------------------------------------------------- |
 | `plugins/`   | The plugins, one folder each (DESIGN.md, section 1).                   |
 | `presets/`   | First-party presets.                                                   |
-| `tests/`     | Tests of the plugins, with their presets and test plugins.             |
 | `shuild.c`   | The build of this repository, which OpenECS's build compiles and runs. |
 | `.github/`   | Checks and rulesets.                                                   |
 | `LICENSE.md` | The license, zlib.                                                     |
