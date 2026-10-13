@@ -1,0 +1,15 @@
+[submodule "dependencies/stb"]
+	path = dependencies/stb
+	url = https://github.com/nothings/stb.git
+[submodule "dependencies/nanosvg"]
+	path = dependencies/nanosvg
+	url = https://github.com/memononen/nanosvg.git
+[submodule "dependencies/dr_libs"]
+	path = dependencies/dr_libs
+	url = https://github.com/mackron/dr_libs.git
+[submodule "dependencies/cgltf"]
+	path = dependencies/cgltf
+	url = https://github.com/jkuhlmann/cgltf.git
+[submodule "dependencies/SDL_net"]
+	path = dependencies/SDL_net
+	url = https://github.com/libsdl-org/SDL_net.git
