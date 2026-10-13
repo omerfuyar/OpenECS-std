@@ -1,4 +1,5 @@
 // The gltf standard plugin: reads glTF 2.0 models, .gltf with their files or .glb, and gives their parts and their vertex data (DESIGN 8).
+// It is a loader: draw's triangles and lines draw the vertex data, once a plugin has placed it on the screen.
 // cgltf reads the files; a model's handle owns everything read, and frees it when the handle is gone.
 
 #include "OpenECS.h"
@@ -9,9 +10,6 @@
 #include "cgltf.h"
 
 #pragma region Source Only
-
-/// @brief A name of the plugin: "gltf." and a local name.
-#define GLTF_NAME(localName) "gltf." localName
 
 /// @brief A model that a file was read into.
 typedef struct GltfModel
@@ -61,16 +59,16 @@ static const char *GltfResultText(cgltf_result result)
 
 static GltfModel *GltfLoad(const char *path)
 {
-    char *full = NULL;
+    char *full = nullptr;
 
     // a relative path starts at the executable's folder
     if (SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
     {
-        return NULL;
+        return nullptr;
     }
 
     cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfRelease}};
-    cgltf_data *data = NULL;
+    cgltf_data *data = nullptr;
     cgltf_result result = cgltf_parse_file(&options, full, &data);
 
     if (result == cgltf_result_success)
@@ -83,14 +81,14 @@ static GltfModel *GltfLoad(const char *path)
         result = cgltf_validate(data);
     }
 
-    GltfModel *model = result == cgltf_result_success ? SDL_calloc(1, sizeof(GltfModel)) : NULL;
+    GltfModel *model = result == cgltf_result_success ? SDL_calloc(1, sizeof(GltfModel)) : nullptr;
 
-    if (model == NULL)
+    if (model == nullptr)
     {
         ECS_Log(GLTF.plugin, ECSLogLevel_Error, "Cannot read the model '%s': %s", full, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
         cgltf_free(data);
         SDL_free(full);
-        return NULL;
+        return nullptr;
     }
 
     SDL_free(full);
@@ -98,12 +96,12 @@ static GltfModel *GltfLoad(const char *path)
     return model;
 }
 
-/// @brief Sets a field of a table to a string; NULL leaves it nil.
+/// @brief Sets a field of a table to a string; nullptr leaves it nil.
 static SHUResult GltfSetString(ECSValue *table, const char *name, const char *string)
 {
-    ECSValue *field = NULL;
+    ECSValue *field = nullptr;
 
-    if (string == NULL)
+    if (string == nullptr)
     {
         return SHUResult_Ok;
     }
@@ -112,19 +110,19 @@ static SHUResult GltfSetString(ECSValue *table, const char *name, const char *st
     return ECSValue_SetString(field, string);
 }
 
-/// @brief Sets a field of a table, or an item added to a list when the name is NULL, to a whole number.
+/// @brief Sets a field of a table, or an item added to a list when the name is nullptr, to a whole number.
 static SHUResult GltfSetInteger(ECSValue *table, const char *name, i64 integer)
 {
-    ECSValue *field = NULL;
-    SHU_ReturnResult(name == NULL ? ECSValue_ListAddItem(table, &field) : ECSValue_TableSetField(table, name, &field));
+    ECSValue *field = nullptr;
+    SHU_ReturnResult(name == nullptr ? ECSValue_ListAddItem(table, &field) : ECSValue_TableSetField(table, name, &field));
     ECSValue_SetInteger(field, integer);
     return SHUResult_Ok;
 }
 
-/// @brief Sets a field of a table, or an item added to a list when the name is NULL, to an empty table.
+/// @brief Sets a field of a table, or an item added to a list when the name is nullptr, to an empty table.
 static SHUResult GltfSetTable(ECSValue *table, const char *name, ECSValue **retTable)
 {
-    SHU_ReturnResult(name == NULL ? ECSValue_ListAddItem(table, retTable) : ECSValue_TableSetField(table, name, retTable));
+    SHU_ReturnResult(name == nullptr ? ECSValue_ListAddItem(table, retTable) : ECSValue_TableSetField(table, name, retTable));
     ECSValue_SetTable(*retTable);
     return SHUResult_Ok;
 }
@@ -132,12 +130,12 @@ static SHUResult GltfSetTable(ECSValue *table, const char *name, ECSValue **retT
 /// @brief Sets a field of a table to a list of numbers.
 static SHUResult GltfSetNumbers(ECSValue *table, const char *name, const cgltf_float *numbers, usz count)
 {
-    ECSValue *list = NULL;
+    ECSValue *list = nullptr;
     SHU_ReturnResult(GltfSetTable(table, name, &list));
 
     for (usz i = 0; i < count; i++)
     {
-        ECSValue *item = NULL;
+        ECSValue *item = nullptr;
         SHU_ReturnResult(ECSValue_ListAddItem(list, &item));
         ECSValue_SetNumber(item, (f64)numbers[i]);
     }
@@ -151,18 +149,18 @@ static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primi
     static const char *const modes[] = {"triangles", "points", "lines", "lineLoop", "lineStrip", "triangles", "triangleStrip", "triangleFan"};
     SHU_ReturnResult(GltfSetString(part, "mode", (usz)primitive->type < SDL_arraysize(modes) ? modes[primitive->type] : "triangles"));
 
-    if (primitive->material != NULL)
+    if (primitive->material != nullptr)
     {
         SHU_ReturnResult(GltfSetInteger(part, "material", (i64)cgltf_material_index(data, primitive->material) + 1));
     }
 
-    const cgltf_accessor *position = NULL;
-    ECSValue *attributes = NULL;
+    const cgltf_accessor *position = nullptr;
+    ECSValue *attributes = nullptr;
     SHU_ReturnResult(GltfSetTable(part, "attributes", &attributes));
 
     for (usz i = 0; i < primitive->attributes_count; i++)
     {
-        ECSValue *name = NULL;
+        ECSValue *name = nullptr;
         SHU_ReturnResult(ECSValue_ListAddItem(attributes, &name));
         SHU_ReturnResult(ECSValue_SetString(name, primitive->attributes[i].name));
 
@@ -173,21 +171,21 @@ static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primi
     }
 
     // a primitive without indices draws its vertices in order
-    i64 vertices = position == NULL ? 0 : (i64)position->count;
+    i64 vertices = position == nullptr ? 0 : (i64)position->count;
     SHU_ReturnResult(GltfSetInteger(part, "vertices", vertices));
-    return GltfSetInteger(part, "indices", primitive->indices != NULL ? (i64)primitive->indices->count : vertices);
+    return GltfSetInteger(part, "indices", primitive->indices != nullptr ? (i64)primitive->indices->count : vertices);
 }
 
 static SHUResult GltfDescribeMesh(const cgltf_data *data, const cgltf_mesh *mesh, ECSValue *item)
 {
-    ECSValue *primitives = NULL;
+    ECSValue *primitives = nullptr;
     SHU_ReturnResult(GltfSetString(item, "name", mesh->name));
     SHU_ReturnResult(GltfSetTable(item, "primitives", &primitives));
 
     for (usz i = 0; i < mesh->primitives_count; i++)
     {
-        ECSValue *part = NULL;
-        SHU_ReturnResult(GltfSetTable(primitives, NULL, &part));
+        ECSValue *part = nullptr;
+        SHU_ReturnResult(GltfSetTable(primitives, nullptr, &part));
         SHU_ReturnResult(GltfDescribePrimitive(data, &mesh->primitives[i], part));
     }
 
@@ -202,7 +200,7 @@ static SHUResult GltfDescribeMaterial(const cgltf_material *material, ECSValue *
     SHU_ReturnResult(GltfSetNumbers(item, "color", pbr->base_color_factor, 4));
 
     // a texture inside a .glb has no file of its own, so only a texture in a file is named
-    return GltfSetString(item, "texture", texture != NULL && texture->image != NULL ? texture->image->uri : NULL);
+    return GltfSetString(item, "texture", texture != nullptr && texture->image != nullptr ? texture->image->uri : nullptr);
 }
 
 static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node, ECSValue *item)
@@ -212,17 +210,17 @@ static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node
     SHU_ReturnResult(GltfSetString(item, "name", node->name));
     SHU_ReturnResult(GltfSetNumbers(item, "matrix", matrix, 16));
 
-    if (node->mesh != NULL)
+    if (node->mesh != nullptr)
     {
         SHU_ReturnResult(GltfSetInteger(item, "mesh", (i64)cgltf_mesh_index(data, node->mesh) + 1));
     }
 
-    ECSValue *children = NULL;
+    ECSValue *children = nullptr;
     SHU_ReturnResult(GltfSetTable(item, "children", &children));
 
     for (usz i = 0; i < node->children_count; i++)
     {
-        SHU_ReturnResult(GltfSetInteger(children, NULL, (i64)cgltf_node_index(data, node->children[i]) + 1));
+        SHU_ReturnResult(GltfSetInteger(children, nullptr, (i64)cgltf_node_index(data, node->children[i]) + 1));
     }
 
     return SHUResult_Ok;
@@ -230,11 +228,11 @@ static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node
 
 static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
 {
-    ECSValue *meshes = NULL;
-    ECSValue *materials = NULL;
-    ECSValue *nodes = NULL;
-    ECSValue *roots = NULL;
-    ECSValue *item = NULL;
+    ECSValue *meshes = nullptr;
+    ECSValue *materials = nullptr;
+    ECSValue *nodes = nullptr;
+    ECSValue *roots = nullptr;
+    ECSValue *item = nullptr;
     ECSValue_SetTable(info);
     SHU_ReturnResult(GltfSetTable(info, "meshes", &meshes));
     SHU_ReturnResult(GltfSetTable(info, "materials", &materials));
@@ -243,29 +241,29 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
 
     for (usz i = 0; i < data->meshes_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(meshes, NULL, &item));
+        SHU_ReturnResult(GltfSetTable(meshes, nullptr, &item));
         SHU_ReturnResult(GltfDescribeMesh(data, &data->meshes[i], item));
     }
 
     for (usz i = 0; i < data->materials_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(materials, NULL, &item));
+        SHU_ReturnResult(GltfSetTable(materials, nullptr, &item));
         SHU_ReturnResult(GltfDescribeMaterial(&data->materials[i], item));
     }
 
     for (usz i = 0; i < data->nodes_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(nodes, NULL, &item));
+        SHU_ReturnResult(GltfSetTable(nodes, nullptr, &item));
         SHU_ReturnResult(GltfDescribeNode(data, &data->nodes[i], item));
     }
 
     // the nodes the scene starts from: the file's scene, or its first one
-    const cgltf_scene *scene = data->scene != NULL ? data->scene : data->scenes_count > 0 ? &data->scenes[0]
-                                                                                          : NULL;
+    const cgltf_scene *scene = data->scene != nullptr ? data->scene : data->scenes_count > 0 ? &data->scenes[0]
+                                                                                          : nullptr;
 
-    for (usz i = 0; scene != NULL && i < scene->nodes_count; i++)
+    for (usz i = 0; scene != nullptr && i < scene->nodes_count; i++)
     {
-        SHU_ReturnResult(GltfSetInteger(roots, NULL, (i64)cgltf_node_index(data, scene->nodes[i]) + 1));
+        SHU_ReturnResult(GltfSetInteger(roots, nullptr, (i64)cgltf_node_index(data, scene->nodes[i]) + 1));
     }
 
     return SHUResult_Ok;
@@ -286,7 +284,7 @@ static const cgltf_primitive *GltfFindPrimitive(const GltfModel *model, i32 mesh
 {
     if (mesh < 1 || (usz)mesh > model->data->meshes_count || primitive < 1 || (usz)primitive > model->data->meshes[mesh - 1].primitives_count)
     {
-        return NULL;
+        return nullptr;
     }
 
     return &model->data->meshes[mesh - 1].primitives[primitive - 1];
@@ -297,15 +295,15 @@ static SHUSlice GltfGive(GltfModel *model, void *data, usz size)
 {
     SDL_free(model->given);
     model->given = data;
-    return (SHUSlice){.data = data, .size = data == NULL ? 0 : size};
+    return (SHUSlice){.data = data, .size = data == nullptr ? 0 : size};
 }
 
 static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const char *name)
 {
     const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
-    const cgltf_accessor *accessor = NULL;
+    const cgltf_accessor *accessor = nullptr;
 
-    for (usz i = 0; part != NULL && i < part->attributes_count; i++)
+    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
     {
         if (SDL_strcmp(part->attributes[i].name, name) == 0)
         {
@@ -314,13 +312,13 @@ static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const c
     }
 
     // sparse and normalized data are unpacked to plain floats
-    usz count = accessor == NULL ? 0 : accessor->count * cgltf_num_components(accessor->type);
-    f32 *floats = count == 0 ? NULL : SDL_malloc(count * sizeof(f32));
+    usz count = accessor == nullptr ? 0 : accessor->count * cgltf_num_components(accessor->type);
+    f32 *floats = count == 0 ? nullptr : SDL_malloc(count * sizeof(f32));
 
-    if (floats != NULL && cgltf_accessor_unpack_floats(accessor, floats, count) != count)
+    if (floats != nullptr && cgltf_accessor_unpack_floats(accessor, floats, count) != count)
     {
         SDL_free(floats);
-        floats = NULL;
+        floats = nullptr;
     }
 
     return GltfGive(model, floats, count * sizeof(f32));
@@ -329,9 +327,9 @@ static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const c
 static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
 {
     const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
-    const cgltf_accessor *position = NULL;
+    const cgltf_accessor *position = nullptr;
 
-    for (usz i = 0; part != NULL && i < part->attributes_count; i++)
+    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
     {
         if (part->attributes[i].type == cgltf_attribute_type_position)
         {
@@ -340,14 +338,14 @@ static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
     }
 
     // a primitive without indices draws its vertices in order
-    usz count = part == NULL ? 0 : part->indices != NULL ? part->indices->count
-                               : position != NULL        ? position->count
+    usz count = part == nullptr ? 0 : part->indices != nullptr ? part->indices->count
+                               : position != nullptr        ? position->count
                                                          : 0;
-    u32 *indices = count == 0 ? NULL : SDL_malloc(count * sizeof(u32));
+    u32 *indices = count == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
 
-    for (usz i = 0; indices != NULL && i < count; i++)
+    for (usz i = 0; indices != nullptr && i < count; i++)
     {
-        indices[i] = (u32)(part->indices != NULL ? cgltf_accessor_read_index(part->indices, i) : i);
+        indices[i] = (u32)(part->indices != nullptr ? cgltf_accessor_read_index(part->indices, i) : i);
     }
 
     return GltfGive(model, indices, count * sizeof(u32));
@@ -361,12 +359,19 @@ static void GltfDestroy(void *object)
     SDL_free(model);
 }
 
+/// @brief Frees a model now, instead of when no one uses its handle.
+static void GltfFree(void *object)
+{
+    ECSHandle_Forget(object);
+    GltfDestroy(object);
+}
+
 #pragma endregion Source Only
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     GLTF.plugin = plugin;
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, GLTF_NAME("model"), GltfDestroy));
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "model", GltfDestroy));
 
     const struct
     {
@@ -375,11 +380,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        // !!! where is free ???
-        {GLTF_NAME("load"), (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
-        {GLTF_NAME("describe"), (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
-        {GLTF_NAME("attribute"), (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute or indices call on the model"},
-        {GLTF_NAME("indices"), (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute or indices call on the model"},
+        {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
+        {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
+        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute or indices call on the model"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute or indices call on the model"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
@@ -388,10 +393,4 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     }
 
     return SHUResult_Ok;
-}
-
-void ECSPlugin_Shutdown(ECSPlugin plugin)
-{
-    (void)plugin;
-    SDL_zero(GLTF);
 }

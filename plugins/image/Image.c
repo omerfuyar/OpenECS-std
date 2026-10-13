@@ -1,5 +1,5 @@
-// The image standard plugin: reads image files and draws them into the pixels surface of another plugin's panel (DESIGN 5).
-// stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files, and nanosvg reads SVG files, which are drawn sharp at any size.
+// The image standard plugin: reads image files into images of the draw plugin, which draws them (DESIGN 6).
+// stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files, and nanosvg reads SVG files, which are drawn sharp at the scale they are read at.
 
 #include "OpenECS.h"
 
@@ -18,29 +18,17 @@
 
 #pragma region Source Only
 
-/// @brief A name of the plugin: "image." and a local name.
-#define IMAGE_NAME(localName) "image." localName
-
 /// @brief The resolution SVG files are read at: their units become pixels at 96 per inch.
 #define IMAGE_SVG_DPI 96.0f
 
-/// @brief An image file, read once.
-typedef struct ImagePicture
-{
-    char *path;
-    i32 width; // in pixels; an SVG file's own size
-    i32 height;
-    SDL_Surface *surface; // ARGB; for an SVG file, its last drawing, at the size it was last drawn
-    NSVGimage *svg;       // NULL for other files
-} ImagePicture;
+/// @brief draw.newImage, which makes an image of the draw plugin from pixels.
+typedef void *(*ImageNewFunction)(i32 width, i32 height, SHUSlice pixels);
 
 static struct
 {
     ECSPlugin plugin;
-    // ??? why not use a data structure from stb or just a linked list ???
-    ImagePicture **pictures; // every file read so far, kept until the plugin shuts down
-    usz pictureCount;
     NSVGrasterizer *rasterizer;
+    ImageNewFunction NewImage;
 } IMAGE = {0};
 
 static bool ImageEndsWith(const char *text, const char *suffix)
@@ -50,174 +38,92 @@ static bool ImageEndsWith(const char *text, const char *suffix)
     return length >= suffixLength && SDL_strcasecmp(text + length - suffixLength, suffix) == 0;
 }
 
-/// @brief Draws an SVG picture at a size in pixels, if its last drawing has another size.
-static bool ImageRasterize(ImagePicture *picture, i32 width, i32 height)
+/// @brief Reads an SVG file and draws it at a scale of its own size.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
+static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
 {
-    if (picture->surface != NULL && picture->surface->w == width && picture->surface->h == height)
+    NSVGimage *svg = nsvgParseFromFile(path, "px", IMAGE_SVG_DPI);
+    i32 width = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->width * scale);
+    i32 height = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->height * scale);
+    SDL_Surface *rgba = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ABGR8888) : nullptr;
+
+    if (rgba != nullptr)
     {
-        return true;
+        SDL_memset(rgba->pixels, 0, (usz)rgba->pitch * (usz)height);
+        nsvgRasterize(IMAGE.rasterizer, svg, 0.0f, 0.0f, scale, rgba->pixels, width, height, rgba->pitch);
     }
 
-    SDL_Surface *surface = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ABGR8888) : NULL;
-
-    if (surface == NULL)
-    {
-        return false;
-    }
-
-    // nanosvg draws at one scale for both axes, so the picture is drawn at the scale that fits, and stretched when it is drawn
-    f32 scale = SDL_min((f32)width / (f32)picture->width, (f32)height / (f32)picture->height);
-    SDL_memset(surface->pixels, 0, (usz)surface->pitch * (usz)height);
-    nsvgRasterize(IMAGE.rasterizer, picture->svg, 0.0f, 0.0f, scale, surface->pixels, width, height, surface->pitch);
-
-    SDL_Surface *argb = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ARGB8888);
-    SDL_DestroySurface(surface);
-
-    if (argb == NULL)
-    {
-        return false;
-    }
-
-    SDL_DestroySurface(picture->surface);
-    picture->surface = argb;
-    return true;
+    SDL_Surface *argb = rgba == nullptr ? nullptr : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
+    SDL_DestroySurface(rgba);
+    nsvgDelete(svg);
+    return argb;
 }
 
-/// @brief Reads an image file.
-/// @return The picture, or NULL if the file cannot be read; the reason is logged.
-static ImagePicture *ImageRead(const char *path)
+/// @brief Reads a raster image file, stretched by a scale.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
+static SDL_Surface *ImageReadRaster(const char *path, f32 scale)
 {
-    char *full = NULL;
-    ImagePicture *picture = SDL_calloc(1, sizeof(ImagePicture));
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, 4);
+    SDL_Surface *rgba = pixels == nullptr ? nullptr : SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ABGR8888, pixels, width * 4);
+    SDL_Surface *argb = rgba == nullptr ? nullptr : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
+    SDL_DestroySurface(rgba);
+    stbi_image_free(pixels);
 
-    // a relative path starts at the executable's folder
-    if (picture == NULL || SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    if (argb == nullptr || scale == 1.0f)
     {
-        SDL_free(picture);
-        return NULL;
+        return argb;
     }
 
-    if (ImageEndsWith(full, ".svg"))
-    {
-        picture->svg = nsvgParseFromFile(full, "px", IMAGE_SVG_DPI);
+    SDL_Surface *scaled = SDL_ScaleSurface(argb, SDL_max(1, (int)SDL_roundf((f32)width * scale)), SDL_max(1, (int)SDL_roundf((f32)height * scale)), SDL_SCALEMODE_LINEAR);
+    SDL_DestroySurface(argb);
+    return scaled;
+}
 
-        if (picture->svg != NULL && picture->svg->width > 0.0f && picture->svg->height > 0.0f)
-        {
-            picture->width = (i32)SDL_ceilf(picture->svg->width);
-            picture->height = (i32)SDL_ceilf(picture->svg->height);
-        }
+/// @brief Reads an image file into a new image of the draw plugin.
+/// @return The image, or nullptr if the file cannot be read; the reason is logged.
+static void *ImageLoad(const char *path, f32 scale)
+{
+    char *full = nullptr;
+
+    // a relative path starts at the executable's folder
+    if (scale <= 0.0f || SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    {
+        ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
+        return nullptr;
+    }
+
+    SDL_Surface *surface = ImageEndsWith(full, ".svg") ? ImageReadSvg(full, scale) : ImageReadRaster(full, scale);
+    void *image = nullptr;
+
+    if (surface == nullptr)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
     }
     else
     {
-        int width = 0;
-        int height = 0;
-        int channels = 0;
-        stbi_uc *pixels = stbi_load(full, &width, &height, &channels, 4);
-        SDL_Surface *rgba = pixels == NULL ? NULL : SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ABGR8888, pixels, width * 4);
-        picture->surface = rgba == NULL ? NULL : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
-        picture->width = width;
-        picture->height = height;
-        SDL_DestroySurface(rgba);
-        stbi_image_free(pixels);
+        // draw takes the pixels row after row, without the surface's padding
+        SDL_Surface *packed = surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
+        image = packed == nullptr ? nullptr : IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4));
+
+        if (packed != surface)
+        {
+            SDL_DestroySurface(packed);
+        }
     }
 
-    if (picture->surface == NULL && picture->svg == NULL)
-    {
-        ECS_Log(IMAGE.plugin, ECSLogLevel_Error, "Cannot read the image '%s': %s", full, stbi_failure_reason() != NULL ? stbi_failure_reason() : "not an image");
-        SDL_free(full);
-        SDL_free(picture);
-        return NULL;
-    }
-
+    SDL_DestroySurface(surface);
     SDL_free(full);
-    picture->path = SDL_strdup(path);
-    return picture;
+    return image;
 }
 
-/// @brief Gets an image file, reading it the first time; a file that cannot be read is tried again next time.
-static ImagePicture *ImageLoad(const char *path)
+/// @brief Frees what the plugin holds; the Destroy function of the plugin.
+static void ImageFree(void *data)
 {
-    for (usz i = 0; i < IMAGE.pictureCount; i++)
-    {
-        if (SDL_strcmp(IMAGE.pictures[i]->path, path) == 0)
-        {
-            return IMAGE.pictures[i];
-        }
-    }
-
-    ImagePicture *picture = ImageRead(path);
-    ImagePicture **pictures = picture == NULL || picture->path == NULL ? NULL : SDL_realloc(IMAGE.pictures, (IMAGE.pictureCount + 1) * sizeof(ImagePicture *));
-
-    if (pictures == NULL)
-    {
-        if (picture != NULL)
-        {
-            nsvgDelete(picture->svg);
-            SDL_DestroySurface(picture->surface);
-            SDL_free(picture->path);
-            SDL_free(picture);
-        }
-
-        return NULL;
-    }
-
-    IMAGE.pictures = pictures;
-    IMAGE.pictures[IMAGE.pictureCount++] = picture;
-    return picture;
-}
-
-static void ImageSize(ImagePicture *picture, i32 *retWidth, i32 *retHeight)
-{
-    *retWidth = picture->width;
-    *retHeight = picture->height;
-}
-
-static void ImageDraw(ECSSurface *surface, ImagePicture *picture, f32 x, f32 y, f32 width, f32 height)
-{
-    SDL_Rect rect = {(int)SDL_roundf(x * surface->scale), (int)SDL_roundf(y * surface->scale), (int)SDL_roundf(width * surface->scale), (int)SDL_roundf(height * surface->scale)};
-
-    if (surface->type != ECSSurfaceType_Pixels || (picture->svg != NULL && !ImageRasterize(picture, rect.w, rect.h)))
-    {
-        return;
-    }
-
-    SDL_Surface *target = SDL_CreateSurfaceFrom(surface->width, surface->height, SDL_PIXELFORMAT_ARGB8888, surface->pixels.data, surface->pitch);
-
-    if (target != NULL)
-    {
-        SDL_BlitSurfaceScaled(picture->surface, NULL, target, &rect, SDL_SCALEMODE_LINEAR);
-        SDL_DestroySurface(target);
-    }
-}
-
-static i64 ImagePixel(ImagePicture *picture, i32 x, i32 y)
-{
-    if (picture->surface == NULL || x < 0 || y < 0 || x >= picture->surface->w || y >= picture->surface->h)
-    {
-        return 0;
-    }
-
-    return *(u32 *)((u8 *)picture->surface->pixels + (usz)y * (usz)picture->surface->pitch + (usz)x * 4);
-}
-
-/// @brief A picture's handle stays valid until the plugin shuts down, which frees the pictures; the handle has nothing to free.
-static void ImageForget(void *object)
-{
-    (void)object;
-}
-
-static void ImageFree(void)
-{
-    for (usz i = 0; i < IMAGE.pictureCount; i++)
-    {
-        nsvgDelete(IMAGE.pictures[i]->svg);
-        SDL_DestroySurface(IMAGE.pictures[i]->surface);
-        SDL_free(IMAGE.pictures[i]->path);
-        SDL_free(IMAGE.pictures[i]);
-    }
-
+    (void)data;
     nsvgDeleteRasterizer(IMAGE.rasterizer);
-    SDL_free(IMAGE.pictures);
     SDL_zero(IMAGE);
 }
 
@@ -226,41 +132,18 @@ static void ImageFree(void)
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     IMAGE.plugin = plugin;
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels)"));
     IMAGE.rasterizer = nsvgCreateRasterizer();
 
-    if (IMAGE.rasterizer == NULL)
+    if (IMAGE.rasterizer == nullptr)
     {
         return SHUResult_ErrAllocation;
     }
 
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, IMAGE_NAME("picture"), ImageForget), ImageFree(););
+    // a plugin whose Init fails is not destroyed, so it cleans up here
+    const ECSPluginDesc desc = {.Destroy = ImageFree};
+    SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), ImageFree(nullptr););
 
-    const struct
-    {
-        const char *name;
-        ECSFunction function;
-        const char *signature;
-        const char *description;
-    } functions[] = {
-        // !!! where is free, forget ???
-        // todo add image freeing
-        {IMAGE_NAME("load"), (ECSFunction)ImageLoad, "handle<image.picture>(string path)", "Read an image file, once; nothing if it cannot be read"},
-        {IMAGE_NAME("size"), (ECSFunction)ImageSize, "void(handle<image.picture> picture, out int width, out int height)", "Give a picture's size in pixels"},
-        {IMAGE_NAME("draw"), (ECSFunction)ImageDraw, "void(handle<ecs.surface> surface, handle<image.picture> picture, float x, float y, float width, float height)", "Draw a picture stretched to a rectangle"},
-        {IMAGE_NAME("pixel"), (ECSFunction)ImagePixel, "int64(handle<image.picture> picture, int x, int y)", "Give a pixel's colour as ARGB"},
-    };
-
-    // a plugin whose Init fails gets no Shutdown, so it cleans up here
-    for (usz i = 0; i < SDL_arraysize(functions); i++)
-    {
-        SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), ImageFree(););
-    }
-
-    return SHUResult_Ok;
-}
-
-void ECSPlugin_Shutdown(ECSPlugin plugin)
-{
-    (void)plugin;
-    ImageFree();
+    return ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
+                                       "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read");
 }
