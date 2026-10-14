@@ -101,6 +101,81 @@ static void DrawBlend(u32 *pixel, ECSColor color)
     *pixel = blended;
 }
 
+/// @brief Blends a colour over a pixel inside the bounds, with its alpha multiplied by how much of the pixel a shape covers, from 0 to 1.
+static void DrawCover(const ECSSurface *surface, SDL_Rect bounds, i32 column, i32 row, ECSColor color, f32 coverage)
+{
+    if (coverage <= 0.0f || column < bounds.x || column >= bounds.x + bounds.w || row < bounds.y || row >= bounds.y + bounds.h)
+    {
+        return;
+    }
+
+    u32 alpha = (u32)SDL_roundf((f32)(color >> 24) * SDL_min(coverage, 1.0f));
+    u32 *pixel = (u32 *)((u8 *)surface->pixels.data + (usz)row * (usz)surface->pitch) + column;
+    DrawBlend(pixel, (color & 0x00FFFFFF) | (alpha << 24));
+}
+
+/// @brief A distance from the edge of a shape to a pixel's centre, in pixels, negative inside; it gives the shape's coverage of the pixel.
+typedef f32 (*DrawDistanceFunction)(const void *shape, f32 x, f32 y);
+
+/// @brief Draws a shape with smooth edges: each pixel of a rectangle that holds it gets the part of it the shape covers, from its distance to the edge.
+static void DrawSmooth(const ECSSurface *surface, SDL_Rect bounds, SDL_Rect area, DrawDistanceFunction Distance, const void *shape, ECSColor color)
+{
+    i32 left = SDL_max(area.x, bounds.x);
+    i32 right = SDL_min(area.x + area.w, bounds.x + bounds.w);
+    i32 top = SDL_max(area.y, bounds.y);
+    i32 bottom = SDL_min(area.y + area.h, bounds.y + bounds.h);
+
+    for (i32 row = top; row < bottom; row++)
+    {
+        for (i32 column = left; column < right; column++)
+        {
+            DrawCover(surface, bounds, column, row, color, 0.5f - Distance(shape, (f32)column + 0.5f, (f32)row + 0.5f));
+        }
+    }
+}
+
+/// @brief A rectangle with rounded corners, or a ring of one, in pixels.
+typedef struct DrawRounded
+{
+    f32 cx, cy;         // the centre
+    f32 halfW, halfH;   // half the size
+    f32 radius;         // of the corners
+    f32 thickness;      // of a ring, or 0 for the whole shape
+} DrawRounded;
+
+static f32 DrawRoundedDistance(const void *shape, f32 x, f32 y)
+{
+    const DrawRounded *r = shape;
+    f32 qx = SDL_fabsf(x - r->cx) - (r->halfW - r->radius);
+    f32 qy = SDL_fabsf(y - r->cy) - (r->halfH - r->radius);
+    f32 outside = SDL_sqrtf(SDL_max(qx, 0.0f) * SDL_max(qx, 0.0f) + SDL_max(qy, 0.0f) * SDL_max(qy, 0.0f));
+    f32 distance = outside + SDL_min(SDL_max(qx, qy), 0.0f) - r->radius;
+
+    // a ring is the band from the edge inwards by its thickness
+    return r->thickness > 0.0f ? SDL_fabsf(distance + r->thickness / 2.0f) - r->thickness / 2.0f : distance;
+}
+
+/// @brief A line of a thickness between two points, with flat ends, in pixels.
+typedef struct DrawStroke
+{
+    DrawPoint a;
+    DrawPoint b;
+    f32 half; // half the thickness
+} DrawStroke;
+
+static f32 DrawStrokeDistance(const void *shape, f32 x, f32 y)
+{
+    const DrawStroke *s = shape;
+    f32 dx = s->b.x - s->a.x;
+    f32 dy = s->b.y - s->a.y;
+    f32 length = SDL_sqrtf(dx * dx + dy * dy);
+    f32 along = ((x - s->a.x) * dx + (y - s->a.y) * dy) / length;
+    f32 across = SDL_fabsf((x - s->a.x) * dy - (y - s->a.y) * dx) / length;
+
+    // the distance to the band across the line, and to the band along it, whichever is farther
+    return SDL_max(across - s->half, SDL_fabsf(along - length / 2.0f) - length / 2.0f);
+}
+
 /// @brief Blends a colour over a row of pixels, from one column up to another, without it, inside the bounds.
 static void DrawSpan(const ECSSurface *surface, SDL_Rect bounds, i32 row, i32 from, i32 to, ECSColor color)
 {
@@ -165,25 +240,36 @@ static void DrawTriangle(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a
     }
 }
 
-/// @brief Draws a line in pixels as a quad of its thickness.
+/// @brief Draws a line in pixels, with smooth edges.
 static void DrawSegment(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a, DrawPoint b, f32 thickness, ECSColor color)
 {
-    f32 dx = b.x - a.x;
-    f32 dy = b.y - a.y;
-    f32 length = SDL_sqrtf(dx * dx + dy * dy);
-
-    if (length <= 0.0f)
+    if (a.x == b.x && a.y == b.y)
     {
         return;
     }
 
     // the line is at least a pixel thick, so a thin line never disappears
-    f32 half = SDL_max(thickness, 1.0f) / 2.0f;
-    f32 nx = -dy / length * half;
-    f32 ny = dx / length * half;
-    DrawPoint corners[4] = {{a.x + nx, a.y + ny}, {b.x + nx, b.y + ny}, {b.x - nx, b.y - ny}, {a.x - nx, a.y - ny}};
-    DrawTriangle(surface, bounds, corners[0], corners[1], corners[2], color);
-    DrawTriangle(surface, bounds, corners[0], corners[2], corners[3], color);
+    DrawStroke stroke = {a, b, SDL_max(thickness, 1.0f) / 2.0f};
+    f32 reach = stroke.half + 1.0f;
+    SDL_Rect area = {(i32)SDL_floorf(SDL_min(a.x, b.x) - reach), (i32)SDL_floorf(SDL_min(a.y, b.y) - reach), 0, 0};
+    area.w = (i32)SDL_ceilf(SDL_max(a.x, b.x) + reach) - area.x;
+    area.h = (i32)SDL_ceilf(SDL_max(a.y, b.y) + reach) - area.y;
+    DrawSmooth(surface, bounds, area, DrawStrokeDistance, &stroke, color);
+}
+
+/// @brief Draws a rectangle with rounded corners in pixels, or a ring of one, with smooth edges.
+static void DrawRoundedPixels(const ECSSurface *surface, SDL_Rect bounds, f32 x, f32 y, f32 width, f32 height, f32 radius, f32 thickness, ECSColor color)
+{
+    if (width <= 0.0f || height <= 0.0f)
+    {
+        return;
+    }
+
+    DrawRounded shape = {x + width / 2.0f, y + height / 2.0f, width / 2.0f, height / 2.0f, SDL_clamp(radius, 0.0f, SDL_min(width, height) / 2.0f), thickness};
+    SDL_Rect area = {(i32)SDL_floorf(x) - 1, (i32)SDL_floorf(y) - 1, 0, 0};
+    area.w = (i32)SDL_ceilf(x + width) + 1 - area.x;
+    area.h = (i32)SDL_ceilf(y + height) + 1 - area.y;
+    DrawSmooth(surface, bounds, area, DrawRoundedDistance, &shape, color);
 }
 
 /// @brief Turns a rectangle in layout units into pixels.
@@ -243,42 +329,32 @@ static void DrawLine(ECSSurface *surface, f32 x1, f32 y1, f32 x2, f32 y2, f32 th
     }
 }
 
+// a circle is a square whose corners are rounded by half its size
 static void DrawCircle(ECSSurface *surface, f32 x, f32 y, f32 radius, f32 thickness, ECSColor color)
 {
-    if (!DrawCanDraw(surface))
+    if (DrawCanDraw(surface))
     {
-        return;
+        f32 scale = surface->scale;
+        f32 r = radius * scale;
+        DrawRoundedPixels(surface, DrawBounds(surface), x * scale - r, y * scale - r, 2.0f * r, 2.0f * r, r, SDL_max(thickness, 0.0f) * scale, color);
     }
+}
 
-    SDL_Rect bounds = DrawBounds(surface);
-    f32 cx = x * surface->scale;
-    f32 cy = y * surface->scale;
-    f32 outer = radius * surface->scale;
-
-    // a thickness of 0 fills the circle; a ring leaves the inside of its inner edge
-    f32 inner = thickness <= 0.0f ? -1.0f : SDL_max(0.0f, outer - thickness * surface->scale);
-
-    for (i32 row = (i32)SDL_floorf(cy - outer); row <= (i32)SDL_ceilf(cy + outer); row++)
+static void DrawRoundedFill(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 radius, ECSColor color)
+{
+    if (DrawCanDraw(surface))
     {
-        f32 dy = (f32)row + 0.5f - cy;
+        f32 scale = surface->scale;
+        DrawRoundedPixels(surface, DrawBounds(surface), x * scale, y * scale, width * scale, height * scale, radius * scale, 0.0f, color);
+    }
+}
 
-        if (SDL_fabsf(dy) > outer)
-        {
-            continue;
-        }
-
-        f32 half = SDL_sqrtf(outer * outer - dy * dy);
-        f32 hole = SDL_fabsf(dy) < inner ? SDL_sqrtf(inner * inner - dy * dy) : -1.0f;
-
-        if (hole < 0.0f)
-        {
-            DrawSpan(surface, bounds, row, (i32)SDL_ceilf(cx - half - 0.5f), (i32)SDL_ceilf(cx + half - 0.5f), color);
-        }
-        else
-        {
-            DrawSpan(surface, bounds, row, (i32)SDL_ceilf(cx - half - 0.5f), (i32)SDL_ceilf(cx - hole - 0.5f), color);
-            DrawSpan(surface, bounds, row, (i32)SDL_ceilf(cx + hole - 0.5f), (i32)SDL_ceilf(cx + half - 0.5f), color);
-        }
+static void DrawRoundedOutline(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 radius, f32 thickness, ECSColor color)
+{
+    if (DrawCanDraw(surface))
+    {
+        f32 scale = surface->scale;
+        DrawRoundedPixels(surface, DrawBounds(surface), x * scale, y * scale, width * scale, height * scale, radius * scale, SDL_max(thickness * scale, 1.0f), color);
     }
 }
 
@@ -679,6 +755,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"outline", (ECSFunction)DrawOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, color color)", "Draw the edge of a rectangle"},
         {"line", (ECSFunction)DrawLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
         {"circle", (ECSFunction)DrawCircle, "void(handle<ecs.surface> surface, float x, float y, float radius, float thickness, color color)", "Draw a circle: a ring of a thickness, or filled with a thickness of 0"},
+        {"rounded", (ECSFunction)DrawRoundedFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, color color)", "Fill a rectangle with corners rounded by a radius"},
+        {"roundedOutline", (ECSFunction)DrawRoundedOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, float thickness, color color)", "Draw the edge of a rectangle with corners rounded by a radius"},
         {"triangles", (ECSFunction)DrawTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
         {"lines", (ECSFunction)DrawLines, "void(handle<ecs.surface> surface, buffer points, buffer indices, float thickness, color color)", "Draw lines: points are x and y floats, and indices name two points for each line, or are empty for one line through the points"},
         {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels)", "Make an image from pixels, ARGB in native byte order, row after row; empty pixels make it transparent"},
