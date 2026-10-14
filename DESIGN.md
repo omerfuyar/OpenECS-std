@@ -90,9 +90,11 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The `mixer` plugin is the executor of sound: it plays sounds on the computer's default output, many at once. It is a native plugin, built on SDL's audio streams.
 - `mixer.newSound(channels, rate, samples)` makes a sound of type `mixer.sound` from 32-bit float samples, frame after frame. Loaders, such as audio (7), make sounds this way.
 - `mixer.play(sound, volume, loop)` plays a sound and gives a voice: a number above 0 that stands for this playing of it. A volume of 1 is the sound's own. A sound can play in many voices at once. It gives 0 when there is no output to play on.
+- `mixer.newStream(channels, rate)` makes a stream: a sound whose samples a plugin gives while it plays, such as a synthesizer's. `mixer.queue(stream, samples)` adds samples to its end, `mixer.queued(stream)` gives the seconds that wait to play, and `mixer.finish(stream)` tells that no more come, so its voice ends once it has played them. A voice that runs out of samples before then waits, silent, for more. A stream plays in one voice at a time, and does not loop.
+- `mixer.pan(voice, pan)` moves a voice from left, -1, to right, 1: the far channel's gain falls toward 0, and at 0, the middle, both keep their whole gain. A mono sound plays in both channels, so it can be panned too.
 - `mixer.stop(voice)`, `mixer.stopAll()`, `mixer.playing(voice)` and `mixer.volume(voice, volume)` act on voices, and `mixer.length(sound)` gives a sound's length in seconds. A voice that has ended is forgotten; its number is not given again.
 - `mixer.freeSound(sound)` frees a sound now; the voices that play it finish first, because each keeps the sound.
-- The output opens the first time a sound plays. Each voice is an SDL audio stream bound to it, which SDL converts to the output's format and mixes with the others; a voice gives its stream samples as the stream asks for them.
+- The output opens the first time a sound plays. Each voice is an SDL audio stream bound to it, which SDL converts to the output's format and mixes with the others; a voice gives its stream samples as the stream asks for them, and flushes the stream once it has given them all. A stream's samples wait in an SDL audio stream of their own, which the main thread fills and the voice empties.
 - Tests and definitions run with SDL's dummy audio driver (OpenECS DESIGN 17.5), so they make no sound.
 
 ## 4. textgrid
