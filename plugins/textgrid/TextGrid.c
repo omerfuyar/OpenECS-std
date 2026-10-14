@@ -1,5 +1,6 @@
 // The textgrid standard plugin: grids of characters in colours, which it draws into the pixels surface of another plugin's panel at any size (DESIGN 4).
 // Terminals, consoles, logs and text editors build on it. It draws through the draw plugin, with draw's monospace font, so one plugin draws all text.
+// Cells can be bold and underlined, and a wide character, such as a Chinese one, takes two cells.
 
 #include "OpenECS.h"
 
@@ -14,12 +15,17 @@
 #define TEXTGRID_FALLBACK_FOREGROUND 0xFFDCDEE2
 #define TEXTGRID_FALLBACK_BACKGROUND 0xFF18191C
 
-/// @brief One cell of a grid: a character and its colours.
+/// @brief The styles of a cell, as flags.
+#define TEXTGRID_BOLD 1
+#define TEXTGRID_UNDERLINE 2
+
+/// @brief One cell of a grid: a character, its colours and its style.
 typedef struct TextGridCell
 {
-    u32 character; // a Unicode code point; a space for an empty cell
+    u32 character; // a Unicode code point; a space for an empty cell, and 0 for the right half of a wide character
     ECSColor foreground;
     ECSColor background;
+    u8 style; // TEXTGRID_BOLD and TEXTGRID_UNDERLINE
 } TextGridCell;
 
 /// @brief A grid of characters, with the cursor where print writes and the colours it writes in.
@@ -32,6 +38,7 @@ typedef struct TextGridGrid
     i32 cursorRow;
     ECSColor foreground;
     ECSColor background;
+    u8 style;
 } TextGridGrid;
 
 /// @brief The functions of draw that textgrid draws with.
@@ -54,12 +61,85 @@ static TextGridCell *TextGridCellAt(TextGridGrid *grid, i32 column, i32 row)
     return &grid->cells[(usz)row * (usz)grid->columns + (usz)column];
 }
 
+/// @brief Adds a character to a text in UTF-8.
+static void TextGridAppend(char *text, usz *length, u32 character)
+{
+    char *end = SDL_UCS4ToUTF8(character, text + *length);
+    *length = (usz)(end - text);
+    text[*length] = '\0';
+}
+
+/// @brief An empty cell: a space in the grid's colours, without a style.
+static TextGridCell TextGridBlank(const TextGridGrid *grid)
+{
+    return (TextGridCell){.character = ' ', .foreground = grid->foreground, .background = grid->background};
+}
+
 /// @brief Empties a row with the grid's colours.
 static void TextGridClearRow(TextGridGrid *grid, i32 row)
 {
     for (i32 column = 0; column < grid->columns; column++)
     {
-        *TextGridCellAt(grid, column, row) = (TextGridCell){.character = ' ', .foreground = grid->foreground, .background = grid->background};
+        *TextGridCellAt(grid, column, row) = TextGridBlank(grid);
+    }
+}
+
+/// @brief How many cells a character takes: 2 for the wide and full-width characters of East Asian scripts and for most emoji, and 1 for the others.
+static i32 TextGridWidth(u32 character)
+{
+    // the ranges of wide characters, from Unicode's East Asian Width property, in order
+    static const u32 wide[][2] = {
+        {0x1100, 0x115F},   {0x231A, 0x231B},   {0x2329, 0x232A},   {0x23E9, 0x23EC},   {0x23F0, 0x23F0},   {0x23F3, 0x23F3},   {0x25FD, 0x25FE},
+        {0x2614, 0x2615},   {0x2648, 0x2653},   {0x267F, 0x267F},   {0x2693, 0x2693},   {0x26A1, 0x26A1},   {0x26AA, 0x26AB},   {0x26BD, 0x26BE},
+        {0x26C4, 0x26C5},   {0x26CE, 0x26CE},   {0x26D4, 0x26D4},   {0x26EA, 0x26EA},   {0x26F2, 0x26F3},   {0x26F5, 0x26F5},   {0x26FA, 0x26FA},
+        {0x26FD, 0x26FD},   {0x2705, 0x2705},   {0x270A, 0x270B},   {0x2728, 0x2728},   {0x274C, 0x274C},   {0x274E, 0x274E},   {0x2753, 0x2755},
+        {0x2757, 0x2757},   {0x2795, 0x2797},   {0x27B0, 0x27B0},   {0x27BF, 0x27BF},   {0x2B1B, 0x2B1C},   {0x2B50, 0x2B50},   {0x2B55, 0x2B55},
+        {0x2E80, 0x303E},   {0x3041, 0x33FF},   {0x3400, 0x4DBF},   {0x4E00, 0x9FFF},   {0xA000, 0xA4CF},   {0xA960, 0xA97F},   {0xAC00, 0xD7A3},
+        {0xF900, 0xFAFF},   {0xFE10, 0xFE19},   {0xFE30, 0xFE6F},   {0xFF00, 0xFF60},   {0xFFE0, 0xFFE6},   {0x16FE0, 0x16FE4}, {0x17000, 0x18CFF},
+        {0x1B000, 0x1B2FF}, {0x1F004, 0x1F004}, {0x1F0CF, 0x1F0CF}, {0x1F18E, 0x1F18E}, {0x1F191, 0x1F19A}, {0x1F200, 0x1F251}, {0x1F300, 0x1F64F},
+        {0x1F680, 0x1F6FF}, {0x1F7E0, 0x1F7EB}, {0x1F90C, 0x1F9FF}, {0x1FA70, 0x1FAFF}, {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD},
+    };
+
+    for (usz i = 0; i < (usz)SDL_arraysize(wide) && character >= wide[i][0]; i++)
+    {
+        if (character <= wide[i][1])
+        {
+            return 2;
+        }
+    }
+
+    return 1;
+}
+
+/// @brief Whether a cell holds the left half of a wide character, whose right half is the next cell.
+static bool TextGridIsWide(TextGridGrid *grid, i32 column, i32 row)
+{
+    return column + 1 < grid->columns && TextGridCellAt(grid, column, row)->character != 0 && TextGridCellAt(grid, column + 1, row)->character == 0;
+}
+
+/// @brief Writes a character in the grid's colours and style into a cell, and into the next one too for a wide character, which must fit.
+/// A wide character that the writing cuts in half loses its other half, which becomes a space.
+static void TextGridSet(TextGridGrid *grid, i32 column, i32 row, u32 character, i32 width)
+{
+    i32 last = column + width - 1;
+
+    if (column > 0 && TextGridCellAt(grid, column, row)->character == 0)
+    {
+        TextGridCellAt(grid, column - 1, row)->character = ' ';
+    }
+
+    if (TextGridIsWide(grid, last, row))
+    {
+        TextGridCellAt(grid, last + 1, row)->character = ' ';
+    }
+
+    TextGridCell cell = {.character = character, .foreground = grid->foreground, .background = grid->background, .style = grid->style};
+    *TextGridCellAt(grid, column, row) = cell;
+
+    if (width == 2)
+    {
+        cell.character = 0;
+        *TextGridCellAt(grid, column + 1, row) = cell;
     }
 }
 
@@ -96,7 +176,7 @@ static bool TextGridResizeCells(TextGridGrid *grid, i32 columns, i32 rows)
         for (i32 column = 0; column < columns; column++)
         {
             bool kept = grid->cells != nullptr && row < grid->rows && column < grid->columns;
-            cells[(usz)row * (usz)columns + (usz)column] = kept ? *TextGridCellAt(grid, column, row) : (TextGridCell){.character = ' ', .foreground = grid->foreground, .background = grid->background};
+            cells[(usz)row * (usz)columns + (usz)column] = kept ? *TextGridCellAt(grid, column, row) : TextGridBlank(grid);
         }
     }
 
@@ -164,6 +244,63 @@ static void TextGridColors(TextGridGrid *grid, ECSColor foreground, ECSColor bac
     grid->background = background;
 }
 
+static void TextGridStyle(TextGridGrid *grid, const char *style)
+{
+    u8 flags = 0;
+
+    // the style is words with spaces between them
+    for (const char *word = style; *word != '\0';)
+    {
+        usz length = 0;
+
+        while (word[length] != '\0' && word[length] != ' ')
+        {
+            length++;
+        }
+
+        if (length == 4 && SDL_strncmp(word, "bold", 4) == 0)
+        {
+            flags |= TEXTGRID_BOLD;
+        }
+        else if (length == 9 && SDL_strncmp(word, "underline", 9) == 0)
+        {
+            flags |= TEXTGRID_UNDERLINE;
+        }
+        else if (length > 0)
+        {
+            ECS_LogWarn(TEXTGRID.plugin, "A grid's style is made of the words bold and underline, not '%.*s'.", (int)length, word);
+        }
+
+        word += length + (word[length] == ' ' ? 1 : 0);
+    }
+
+    grid->style = flags;
+}
+
+static const char *TextGridGet(TextGridGrid *grid, i32 column, i32 row, const char **retStyle)
+{
+    // the texts stay until the next call, and Lua copies them
+    static char character[5];
+    static const char *const styles[] = {"", "bold", "underline", "bold underline"};
+    character[0] = '\0';
+    *retStyle = "";
+
+    if (row >= 0 && row < grid->rows && column >= 0 && column < grid->columns)
+    {
+        const TextGridCell *cell = TextGridCellAt(grid, column, row);
+        usz length = 0;
+
+        if (cell->character != 0)
+        {
+            TextGridAppend(character, &length, cell->character);
+        }
+
+        *retStyle = styles[cell->style & (TEXTGRID_BOLD | TEXTGRID_UNDERLINE)];
+    }
+
+    return character;
+}
+
 static void TextGridSetCursor(TextGridGrid *grid, i32 column, i32 row)
 {
     grid->cursorColumn = SDL_clamp(column, 0, grid->columns - 1);
@@ -180,12 +317,17 @@ static void TextGridPut(TextGridGrid *grid, i32 column, i32 row, const char *tex
 {
     usz length = SDL_strlen(text);
 
-    for (u32 character = SDL_StepUTF8(&text, &length); character != 0; character = SDL_StepUTF8(&text, &length), column++)
+    // a wide character that does not fit at the edge is left out
+    for (u32 character = SDL_StepUTF8(&text, &length); character != 0; character = SDL_StepUTF8(&text, &length))
     {
-        if (row >= 0 && row < grid->rows && column >= 0 && column < grid->columns)
+        i32 width = TextGridWidth(character);
+
+        if (row >= 0 && row < grid->rows && column >= 0 && column + width <= grid->columns)
         {
-            *TextGridCellAt(grid, column, row) = (TextGridCell){.character = character, .foreground = grid->foreground, .background = grid->background};
+            TextGridSet(grid, column, row, character, width);
         }
+
+        column += width;
     }
 }
 
@@ -201,8 +343,10 @@ static void TextGridPrint(TextGridGrid *grid, const char *text)
             continue;
         }
 
-        // a line ends at a new line, or when the row is full
-        if (character == '\n' || grid->cursorColumn >= grid->columns)
+        // a line ends at a new line, or when the character does not fit in the rest of the row
+        i32 width = character == '\t' ? 1 : TextGridWidth(character);
+
+        if (character == '\n' || grid->cursorColumn + width > grid->columns)
         {
             grid->cursorColumn = 0;
             grid->cursorRow++;
@@ -225,8 +369,13 @@ static void TextGridPrint(TextGridGrid *grid, const char *text)
             continue;
         }
 
-        *TextGridCellAt(grid, grid->cursorColumn, grid->cursorRow) = (TextGridCell){.character = character, .foreground = grid->foreground, .background = grid->background};
-        grid->cursorColumn++;
+        // a wide character is left out of a grid of one column
+        if (grid->cursorColumn + width <= grid->columns)
+        {
+            TextGridSet(grid, grid->cursorColumn, grid->cursorRow, character, width);
+        }
+
+        grid->cursorColumn += width;
     }
 }
 
@@ -245,14 +394,6 @@ static void TextGridFit(f32 width, f32 height, f32 size, i32 *retColumns, i32 *r
     *retRows = cellHeight <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(height / cellHeight));
 }
 
-/// @brief Adds a character to a text in UTF-8.
-static void TextGridAppend(char *text, usz *length, u32 character)
-{
-    char *end = SDL_UCS4ToUTF8(character, text + *length);
-    *length = (usz)(end - text);
-    text[*length] = '\0';
-}
-
 static void TextGridDraw(ECSSurface *surface, TextGridGrid *grid, f32 x, f32 y, f32 size, bool cursor)
 {
     // a cell is measured at the size the surface draws at, so the characters of a run stay on their cells
@@ -263,8 +404,9 @@ static void TextGridDraw(ECSSurface *surface, TextGridGrid *grid, f32 x, f32 y, 
     cellWidth /= scale;
     cellHeight /= scale;
 
-    // a run of a row's cells in one colour is drawn at once: its backgrounds in one fill, and its characters in one text
+    // a run of a row's cells in one colour and style is drawn at once: its backgrounds in one fill, and its characters in one text
     char *text = SDL_malloc((usz)grid->columns * 4 + 1);
+    f32 underline = SDL_max(1.0f / scale, cellHeight / 16.0f);
 
     for (i32 row = 0; text != nullptr && row < grid->rows; row++)
     {
@@ -277,15 +419,43 @@ static void TextGridDraw(ECSSurface *surface, TextGridGrid *grid, f32 x, f32 y, 
             usz length = 0;
             text[0] = '\0';
 
-            while (end < grid->columns && TextGridCellAt(grid, end, row)->background == first->background && TextGridCellAt(grid, end, row)->foreground == first->foreground)
+            // a wide character is drawn alone over its two cells, so the font's width for it does not move the characters after it
+            if (TextGridIsWide(grid, start, row))
             {
-                TextGridAppend(text, &length, TextGridCellAt(grid, end, row)->character);
+                TextGridAppend(text, &length, first->character);
+                end = start + 2;
+            }
+
+            while (end < grid->columns && !TextGridIsWide(grid, start, row))
+            {
+                const TextGridCell *cell = TextGridCellAt(grid, end, row);
+
+                if (end > start && (TextGridIsWide(grid, end, row) || cell->background != first->background || cell->foreground != first->foreground || cell->style != first->style))
+                {
+                    break;
+                }
+
+                // the right half of a wide character whose left half is gone is a space
+                TextGridAppend(text, &length, cell->character == 0 ? ' ' : cell->character);
                 end++;
             }
 
             f32 left = x + (f32)start * cellWidth;
-            TEXTGRID.Fill(surface, left, top, (f32)(end - start) * cellWidth, cellHeight, first->background);
+            f32 width = (f32)(end - start) * cellWidth;
+            TEXTGRID.Fill(surface, left, top, width, cellHeight, first->background);
             TEXTGRID.Text(surface, TEXTGRID.font, text, left, top, size, first->foreground);
+
+            // the monospace font has no bold face, so bold text is drawn again a pixel to the right
+            if (first->style & TEXTGRID_BOLD)
+            {
+                TEXTGRID.Text(surface, TEXTGRID.font, text, left + 1.0f / scale, top, size, first->foreground);
+            }
+
+            if (first->style & TEXTGRID_UNDERLINE)
+            {
+                TEXTGRID.Fill(surface, left, top + cellHeight - 2.0f * underline, width, underline, first->foreground);
+            }
+
             start = end;
         }
     }
@@ -340,6 +510,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)", "Change a grid's size, keeping the cells that fit"},
         {"size", (ECSFunction)TextGridSize, "void(handle<textgrid.grid> grid, out int columns, out int rows)", "Give a grid's size"},
         {"clear", (ECSFunction)TextGridClear, "void(handle<textgrid.grid> grid)", "Empty every cell, and move the cursor to the top left"},
+        {"style", (ECSFunction)TextGridStyle, "void(handle<textgrid.grid> grid, string style)", "Set the style that later writing uses: the words bold and underline, or an empty text for none"},
+        {"get", (ECSFunction)TextGridGet, "string(handle<textgrid.grid> grid, int column, int row, out string style)", "Give the character and the style of a cell; the right half of a wide character, and a cell outside the grid, give an empty text"},
         {"colors", (ECSFunction)TextGridColors, "void(handle<textgrid.grid> grid, color foreground, color background)", "Set the colours that later writing uses"},
         {"put", (ECSFunction)TextGridPut, "void(handle<textgrid.grid> grid, int column, int row, string text)", "Write text from a cell to the right, cut at the grid's edge"},
         {"print", (ECSFunction)TextGridPrint, "void(handle<textgrid.grid> grid, string text)", "Write text at the cursor, as a terminal does"},
