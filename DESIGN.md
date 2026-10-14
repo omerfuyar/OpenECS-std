@@ -188,10 +188,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 10. fs
 
-- The `fs` plugin does with files and folders what Lua's `io` and `os` cannot: it lists folders, tells what a path is, makes folders and copies files. It is a native plugin, built on SDL's filesystem functions, so it needs no library. Moving and removing are `os.rename` and `os.remove`.
+- The `fs` plugin does with files and folders what Lua's `io` and `os` cannot: it lists folders, tells what a path is, makes folders, copies files and watches folders. It is a native plugin, built on SDL's filesystem functions and the system's own watching, so it needs no library. Moving and removing are `os.rename` and `os.remove`.
 - `fs.info(path)` gives a table of what a path is: its `type`, `"file"`, `"folder"` or `"other"`, its `size` in bytes, and `modified`, when it last changed, in seconds since 1970. A path that does not exist gives nil.
 - `fs.list(folder, pattern)` gives the entries of a folder whose names match a pattern, sorted by name: each a table of its `name` and the fields of `fs.info`. In a pattern, `*` stands for any characters but `/`, and `?` for one; an empty pattern matches every name. The entries of the folder's folders are not listed. A folder that cannot be read gives nil.
 - `fs.makeFolder(path)` makes a folder, and the folders above it that are missing. `fs.copy(from, to)` copies a file, replacing what is at the new path. Each gives false when it fails.
+- `fs.watch(folder, changed)` watches a folder and gives a handle of type `fs.watch`. When an entry of the folder is added, removed or changed, `changed` gets the folder, ending with `/`, the entry's name, and `"added"`, `"removed"` or `"changed"`. A rename is the old name removed and the new one added. The entries of the folder's folders are not watched. Changes are read ten times a second, so one write may come as several changes. `fs.unwatch(watch)` stops a watch now; a watch also stops when no one uses its handle. A folder that cannot be watched gives nil.
+- Watching uses the system's own way, as SDL has none: inotify on Linux. On other systems `fs.watch` gives nil and logs a warning.
 - `fs.folder(name)` gives a folder of the computer, ending with `/`: `executable`, the executable's folder, or one of the user's folders, `home`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `screenshots` or `templates`. A folder the system does not have gives nil.
 - Reading and writing what files hold is Lua's `io` in Lua, and SDL's `SDL_LoadFile` and `SDL_SaveFile` in C.
 
