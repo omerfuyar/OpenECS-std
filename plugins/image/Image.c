@@ -1,5 +1,6 @@
-// The image standard plugin: reads image files into images of the draw plugin, which draws them (DESIGN 6).
+// The image standard plugin: reads image files into images of the draw plugin, which draws them, and writes those images to files (DESIGN 6).
 // stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files, and nanosvg reads SVG files, which are drawn sharp at the scale they are read at.
+// stb_image_write writes PNG, JPG, BMP and TGA files.
 
 #include "OpenECS.h"
 
@@ -11,6 +12,12 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STBIW_MALLOC SDL_malloc
+#define STBIW_REALLOC SDL_realloc
+#define STBIW_FREE SDL_free
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 #define NANOSVG_IMPLEMENTATION
 #include "nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
@@ -21,14 +28,25 @@
 /// @brief The resolution SVG files are read at: their units become pixels at 96 per inch.
 #define IMAGE_SVG_DPI 96.0f
 
+/// @brief The quality of the JPG files written, from 1 to 100.
+#define IMAGE_JPG_QUALITY 90
+
 /// @brief draw.newImage, which makes an image of the draw plugin from pixels.
 typedef void *(*ImageNewFunction)(i32 width, i32 height, SHUSlice pixels);
+
+/// @brief draw.imageSize, which gives an image's size in pixels.
+typedef void (*ImageSizeFunction)(void *image, i32 *retWidth, i32 *retHeight);
+
+/// @brief draw.imagePixels, which gives an image's pixels, ARGB in native byte order, row after row.
+typedef SHUSlice (*ImagePixelsFunction)(void *image);
 
 static struct
 {
     ECSPlugin plugin;
     NSVGrasterizer *rasterizer;
     ImageNewFunction NewImage;
+    ImageSizeFunction ImageSize;
+    ImagePixelsFunction ImagePixels;
 } IMAGE = {0};
 
 static bool ImageEndsWith(const char *text, const char *suffix)
@@ -119,6 +137,56 @@ static void *ImageLoad(const char *path, f32 scale)
     return image;
 }
 
+/// @brief Writes an image of draw to a file, in the format its extension names: .png, .jpg or .jpeg, .bmp or .tga.
+/// @return Whether the file was written; the reason it was not is logged.
+static bool ImageSave(void *image, const char *path)
+{
+    const struct
+    {
+        const char *extension;
+        u8 format;
+    } formats[] = {{".png", 0}, {".jpg", 1}, {".jpeg", 1}, {".bmp", 2}, {".tga", 3}};
+    i32 format = -1;
+
+    for (usz i = 0; i < (usz)SDL_arraysize(formats); i++)
+    {
+        format = format < 0 && ImageEndsWith(path, formats[i].extension) ? formats[i].format : format;
+    }
+
+    if (format < 0)
+    {
+        ECS_LogWarn(IMAGE.plugin, "An image is written to a .png, .jpg, .jpeg, .bmp or .tga file, not '%s'.", path);
+        return false;
+    }
+
+    char *full = nullptr;
+    i32 width = 0;
+    i32 height = 0;
+    IMAGE.ImageSize(image, &width, &height);
+    SHUSlice argb = IMAGE.ImagePixels(image);
+    // stb_image_write takes the bytes red, green, blue and alpha, in that order
+    u8 *rgba = SDL_malloc(argb.size);
+    bool written = false;
+
+    if (rgba != nullptr && SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
+        SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) >= 0)
+    {
+        written = format == 0 ? stbi_write_png(full, width, height, 4, rgba, width * 4) != 0
+                  : format == 1 ? stbi_write_jpg(full, width, height, 4, rgba, IMAGE_JPG_QUALITY) != 0
+                  : format == 2 ? stbi_write_bmp(full, width, height, 4, rgba) != 0
+                                : stbi_write_tga(full, width, height, 4, rgba) != 0;
+    }
+
+    if (!written)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", full != nullptr ? full : path);
+    }
+
+    SDL_free(full);
+    SDL_free(rgba);
+    return written;
+}
+
 /// @brief Frees what the plugin holds; the Destroy function of the plugin.
 static void ImageFree(void *data)
 {
@@ -133,6 +201,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     IMAGE.plugin = plugin;
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImageSize, "draw.imageSize", "void(handle<draw.image> image, out int width, out int height)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImagePixels, "draw.imagePixels", "buffer(handle<draw.image> image)"));
     IMAGE.rasterizer = nsvgCreateRasterizer();
 
     if (IMAGE.rasterizer == nullptr)
@@ -144,6 +214,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = ImageFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), ImageFree(nullptr););
 
-    return ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
-                                       "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read");
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
+                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read"));
+
+    return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path)",
+                                       "Write an image of draw to a file, in the format its extension names: .png, .jpg, .jpeg, .bmp or .tga");
 }
