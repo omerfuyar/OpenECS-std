@@ -64,13 +64,15 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The `draw` plugin is the executor of 2D drawing: it draws shapes, images and text into the pixels surface of another plugin's panel. A panel's `Draw` passes its surface handle (OpenECS DESIGN 10.6) to draw's functions.
 - Positions and sizes are in layout units; draw multiplies them by the surface's scale. Colours have the type `color` (OpenECS DESIGN 10.2), and draw blends them by their alpha.
-- It is a native plugin. It fills, outlines and draws lines and triangles with its own small rasterizer, which fills each pixel whose centre is inside the shape, and calls SDL3 and SDL3_ttf for images and text (OpenECS DESIGN 17.2): it wraps the surface's pixels in an SDL surface, and draws text with one SDL3_ttf surface text engine, which keeps the glyphs it has drawn.
+- It is a native plugin. It draws shapes with its own small rasterizer, and calls SDL3 and SDL3_ttf for images and text (OpenECS DESIGN 17.2): it wraps the surface's pixels in an SDL surface, and draws text with one SDL3_ttf surface text engine, which keeps the glyphs it has drawn.
+- Lines, circles and rounded rectangles have smooth edges: each pixel at an edge gets the part of the pixel the shape covers, from its distance to the edge. Rectangles keep sharp edges on whole pixels, and triangles fill each pixel whose centre is inside them, so the triangles of a mesh meet without seams.
 - A surface can have a clip rectangle: drawing into the surface stays inside it until `unclip`. A plugin that clips unclips before its `Draw` returns.
 - Its functions:
 
   | Function                                   | Does                                                                                                                                       |
   | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
   | `fill`, `outline`                          | Fill a rectangle, or draw its edge in a thickness.                                                                                         |
+| `rounded`, `roundedOutline`                | Fill a rectangle whose corners are rounded by a radius, or draw its edge in a thickness.                                                   |
   | `line`, `circle`                           | Draw a line in a thickness, and a circle: a ring of a thickness, or filled with a thickness of 0.                                          |
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
   | `newImage`, `imageSize`, `imagePixel`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size and a pixel, and free it.                                       |
