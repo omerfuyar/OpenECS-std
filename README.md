@@ -2,7 +2,7 @@
 
 The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its first-party plugins and presets:
 
-- **draw:** draws shapes, lines, triangles, images and text into other plugins' panels.
+- **draw:** draws shapes, lines, triangles, images, turned or tinted, and text into other plugins' panels.
 - **mixer:** plays sounds, many at once.
 - **textgrid:** grids of characters for terminals, consoles, logs and editors, drawn with draw at any size.
 - **ui:** user-interface elements with layout, such as buttons, toggles, sliders, selectors, dropdowns and lists, which call back on clicks and edits.

@@ -77,6 +77,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
   | `newImage`, `imageSize`, `imagePixel`, `imagePixels`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size, a pixel or all its pixels, and free it.          |
   | `image`                                    | Draw an image stretched to a rectangle.                                                                                                    |
+  | `imageTransformed`                         | Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour: white leaves it as it is, and a lower alpha fades it. Its edges are smooth. |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
   | `clip`, `unclip`                           | Limit later drawing into the surface to a rectangle, or let it reach the whole surface again.                                              |

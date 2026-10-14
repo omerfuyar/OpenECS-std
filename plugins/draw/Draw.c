@@ -424,6 +424,104 @@ static void DrawLines(ECSSurface *surface, SHUSlice points, SHUSlice indices, f3
 
 #pragma region Images
 
+/// @brief The colour of an image between its pixels, from the four nearest, each counted by its alpha so that transparent pixels do not darken the edges.
+/// @param u, v A point in the image's pixels, whose centres are at whole numbers; outside the image, the nearest edge pixel counts.
+static ECSColor DrawSample(const SDL_Surface *image, f32 u, f32 v)
+{
+    i32 left = (i32)SDL_floorf(u);
+    i32 top = (i32)SDL_floorf(v);
+    f32 across = u - (f32)left;
+    f32 down = v - (f32)top;
+    f32 sums[4] = {0}; // blue, green and red, each multiplied by alpha, then alpha
+
+    for (i32 corner = 0; corner < 4; corner++)
+    {
+        i32 column = SDL_clamp(left + (corner & 1), 0, image->w - 1);
+        i32 row = SDL_clamp(top + (corner >> 1), 0, image->h - 1);
+        f32 weight = ((corner & 1) ? across : 1.0f - across) * ((corner >> 1) ? down : 1.0f - down);
+        u32 pixel = ((const u32 *)((const u8 *)image->pixels + (usz)row * (usz)image->pitch))[column];
+        f32 alpha = (f32)(pixel >> 24) * weight;
+
+        for (u32 channel = 0; channel < 3; channel++)
+        {
+            sums[channel] += (f32)((pixel >> (channel * 8)) & 0xFF) * alpha;
+        }
+
+        sums[3] += alpha;
+    }
+
+    ECSColor color = (u32)SDL_roundf(sums[3]) << 24;
+
+    for (u32 channel = 0; sums[3] > 0.0f && channel < 3; channel++)
+    {
+        color |= (u32)SDL_roundf(sums[channel] / sums[3]) << (channel * 8);
+    }
+
+    return color;
+}
+
+/// @brief Multiplies each channel of a colour by the same channel of another.
+static ECSColor DrawMultiply(ECSColor color, ECSColor by)
+{
+    ECSColor product = 0;
+
+    for (u32 shift = 0; shift < 32; shift += 8)
+    {
+        product |= (((color >> shift) & 0xFF) * ((by >> shift) & 0xFF) / 255) << shift;
+    }
+
+    return product;
+}
+
+static void DrawImageTransformed(ECSSurface *surface, DrawImage *image, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
+{
+    if (!DrawCanDraw(surface) || width <= 0.0f || height <= 0.0f)
+    {
+        return;
+    }
+
+    // the rectangle in pixels, turned around its centre; a positive angle turns it clockwise on the screen
+    f32 scale = surface->scale;
+    f32 w = width * scale;
+    f32 h = height * scale;
+    f32 centreX = (x + width / 2.0f) * scale;
+    f32 centreY = (y + height / 2.0f) * scale;
+    f32 cosine = SDL_cosf(angle * SDL_PI_F / 180.0f);
+    f32 sine = SDL_sinf(angle * SDL_PI_F / 180.0f);
+    f32 reachX = (SDL_fabsf(w * cosine) + SDL_fabsf(h * sine)) / 2.0f;
+    f32 reachY = (SDL_fabsf(w * sine) + SDL_fabsf(h * cosine)) / 2.0f;
+    SDL_Rect area = {(i32)SDL_floorf(centreX - reachX), (i32)SDL_floorf(centreY - reachY), 0, 0};
+    area.w = (i32)SDL_ceilf(centreX + reachX) - area.x;
+    area.h = (i32)SDL_ceilf(centreY + reachY) - area.y;
+    SDL_Rect bounds = DrawBounds(surface);
+
+    if (!SDL_GetRectIntersection(&area, &bounds, &area))
+    {
+        return;
+    }
+
+    for (i32 row = area.y; row < area.y + area.h; row++)
+    {
+        for (i32 column = area.x; column < area.x + area.w; column++)
+        {
+            // the pixel's centre, turned back into the rectangle, from its top left
+            f32 dx = (f32)column + 0.5f - centreX;
+            f32 dy = (f32)row + 0.5f - centreY;
+            f32 inX = dx * cosine + dy * sine + w / 2.0f;
+            f32 inY = -dx * sine + dy * cosine + h / 2.0f;
+
+            // a pixel at the rectangle's edge is covered in part, so the edges are smooth
+            f32 coverage = SDL_min(SDL_min(inX, w - inX), SDL_min(inY, h - inY)) + 0.5f;
+
+            if (coverage > 0.0f)
+            {
+                ECSColor sample = DrawSample(image->surface, inX / w * (f32)image->surface->w - 0.5f, inY / h * (f32)image->surface->h - 0.5f);
+                DrawCover(surface, bounds, column, row, DrawMultiply(sample, color), coverage);
+            }
+        }
+    }
+}
+
 /// @brief Frees an image; the Destroy function of the handle type draw.image.
 static void DrawImageDestroy(void *object)
 {
@@ -772,6 +870,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"imagePixels", (ECSFunction)DrawImagePixels, "buffer(handle<draw.image> image)", "Give an image's pixels, ARGB in native byte order, row after row; they stay the image's, so C reads them only while the image lives"},
         {"freeImage", (ECSFunction)DrawFreeImage, "void(handle<draw.image> image)", "Free an image now, instead of when no one uses its handle"},
         {"image", (ECSFunction)DrawDrawImage, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)", "Draw an image stretched to a rectangle"},
+        {"imageTransformed", (ECSFunction)DrawImageTransformed, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height, float angle, color color)", "Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
         {"font", (ECSFunction)DrawGetFontByName, "handle<draw.font>(string name)", "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file"},
         {"text", (ECSFunction)DrawText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text with its line's top left at a position, and give its width"},
         {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)", "Give the width and the line height of a text"},
