@@ -21,7 +21,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 1. Rules
 
-- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and each is a generic building block.
+- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and those objects back into files, and each is a generic building block.
 - Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
@@ -75,7 +75,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 | `rounded`, `roundedOutline`                | Fill a rectangle whose corners are rounded by a radius, or draw its edge in a thickness.                                                   |
   | `line`, `circle`                           | Draw a line in a thickness, and a circle: a ring of a thickness, or filled with a thickness of 0.                                          |
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
-  | `newImage`, `imageSize`, `imagePixel`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size and a pixel, and free it.                                       |
+  | `newImage`, `imageSize`, `imagePixel`, `imagePixels`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size, a pixel or all its pixels, and free it.          |
   | `image`                                    | Draw an image stretched to a rectangle.                                                                                                    |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
@@ -144,10 +144,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 6. image
 
-- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them. It is a native plugin.
+- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them, and writes those images to files. It is a native plugin.
 - stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. A GIF gives its first frame.
 - `image.load(path, scale)` reads a file into a new image of type `draw.image`, at a scale of its own size: a raster file is stretched, and an SVG file, whose size is its own at 96 dots per inch, is drawn at that scale, so it stays sharp. A file that cannot be read is reported and gives nil.
 - Each call reads the file again; a plugin that draws an image many times keeps it.
+- `image.save(image, path)` writes an image of draw to a file, in the format its extension names: `.png`, `.jpg` or `.jpeg`, `.bmp` or `.tga`. stb_image_write writes them; a JPG file is written at a quality of 90 in 100. A relative path starts at the executable's folder. It gives false when the file cannot be written, and the reason is logged.
+- `draw.imagePixels(image)` gives the pixels that `image.save` writes. In C they stay the image's, so a plugin reads them only while the image lives.
 
 ## 7. audio
 

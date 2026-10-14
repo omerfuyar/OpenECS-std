@@ -475,6 +475,13 @@ static ECSColor DrawImagePixel(DrawImage *image, i32 x, i32 y)
     return ((const u32 *)((const u8 *)image->surface->pixels + (usz)y * (usz)image->surface->pitch))[x];
 }
 
+static SHUSlice DrawImagePixels(DrawImage *image)
+{
+    // a surface of four bytes a pixel has no padding after its rows, so its pixels are row after row
+    SDL_assert(image->surface->pitch == image->surface->w * (i32)sizeof(u32));
+    return cs(image->surface->pixels, (usz)image->surface->pitch * (usz)image->surface->h);
+}
+
 static void DrawFreeImage(DrawImage *image)
 {
     ECSHandle_Forget(image);
@@ -762,6 +769,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels)", "Make an image from pixels, ARGB in native byte order, row after row; empty pixels make it transparent"},
         {"imageSize", (ECSFunction)DrawImageSize, "void(handle<draw.image> image, out int width, out int height)", "Give an image's size in pixels"},
         {"imagePixel", (ECSFunction)DrawImagePixel, "color(handle<draw.image> image, int x, int y)", "Give the colour of a pixel of an image"},
+        {"imagePixels", (ECSFunction)DrawImagePixels, "buffer(handle<draw.image> image)", "Give an image's pixels, ARGB in native byte order, row after row; they stay the image's, so C reads them only while the image lives"},
         {"freeImage", (ECSFunction)DrawFreeImage, "void(handle<draw.image> image)", "Free an image now, instead of when no one uses its handle"},
         {"image", (ECSFunction)DrawDrawImage, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)", "Draw an image stretched to a rectangle"},
         {"font", (ECSFunction)DrawGetFontByName, "handle<draw.font>(string name)", "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file"},
