@@ -272,6 +272,14 @@ function elements.selector(value, choices, props)
   return node
 end
 
+-- tabs: a selector whose choices are headers of their natural widths from the left, with a line under the chosen one;
+-- the panel shows below them what the chosen tab holds
+function elements.tabs(value, choices, props)
+  local node = elements.selector(value, choices, props)
+  node.look = "tabs"
+  return node
+end
+
 -- one of a list of choices, which a click opens in a popup
 function elements.dropdown(value, choices, props)
   local node = element("dropdown", props)
@@ -616,7 +624,7 @@ local function segmentRects(node)
   local rects, x = {}, node.x
 
   for i, width in ipairs(widths) do
-    local shared = total > 0 and width * node.w / total or 0
+    local shared = node.look == "tabs" and width or total > 0 and width * node.w / total or 0
     rects[i] = { x = x, w = shared }
     x = x + shared
   end
@@ -686,6 +694,25 @@ local function paint(node, surface, state, clip)
     local room = node.w - 3 * size.paddingX - line / 2
     draw.text(surface, font, fit(font, tostring(node.value or ""), textSize, room), node.x + size.paddingX, textY, textSize, node.color or "text")
     arrow(surface, node.x + node.w - size.paddingX - line / 4, node.y + node.h / 2, line / 4, "textDim")
+  elseif node.kind == "selector" and node.look == "tabs" then
+    -- a line under the whole row, and a thicker one in the accent colour under the chosen tab
+    draw.fill(surface, node.x, node.y + node.h - 1, node.w, 1, "tabShown")
+
+    for i, rect in ipairs(segmentRects(node)) do
+      local choice = node.choices[i]
+      local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.w
+
+      if over and choice ~= node.value then
+        draw.fill(surface, rect.x, node.y, rect.w, node.h - 1, "tab")
+      end
+
+      if choice == node.value then
+        draw.fill(surface, rect.x, node.y + node.h - 3, rect.w, 3, "accent")
+      end
+
+      local shown = fit(font, tostring(choice), textSize, rect.w - 2 * size.paddingX)
+      draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
+    end
   elseif node.kind == "selector" then
     for i, rect in ipairs(segmentRects(node)) do
       local choice = node.choices[i]
@@ -1529,6 +1556,7 @@ assert(ecs.service.register({
   toggle = { sig = "value(bool on, value props)", doc = "On or off: a check box, or a switch with look = \"switch\"; onChange gets the new state", fn = elements.toggle },
   slider = { sig = "value(double value, value props)", doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it", fn = elements.slider },
   selector = { sig = "value(string value, value choices, value props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
+  tabs = { sig = "value(string value, value choices, value props)", doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one", fn = elements.tabs },
   dropdown = { sig = "value(string value, value choices, value props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
   field = { sig = "value(string text, value props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
   number = { sig = "value(double value, value props)", doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange", fn = elements.number },
