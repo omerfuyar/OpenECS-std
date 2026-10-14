@@ -146,9 +146,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 6. image
 
 - The `image` plugin is a loader: it reads image files into images of draw (2), which draws them, and writes those images to files. It is a native plugin.
-- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. A GIF gives its first frame.
+- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. `image.load` gives a GIF's first frame.
 - `image.load(path, scale)` reads a file into a new image of type `draw.image`, at a scale of its own size: a raster file is stretched, and an SVG file, whose size is its own at 96 dots per inch, is drawn at that scale, so it stays sharp. A file that cannot be read is reported and gives nil.
 - Each call reads the file again; a plugin that draws an image many times keeps it.
+- `image.loadFrames(path, scale)` reads the frames of an animated GIF file, each into a new image, at a scale as `load` does. It gives a list of frames, each a table of its `image` and the `seconds` it shows for. Another image file gives one frame of 0 seconds. A plugin shows the frames one after another with a timer; image only reads them.
 - `image.save(image, path)` writes an image of draw to a file, in the format its extension names: `.png`, `.jpg` or `.jpeg`, `.bmp` or `.tga`. stb_image_write writes them; a JPG file is written at a quality of 90 in 100. A relative path starts at the executable's folder. It gives false when the file cannot be written, and the reason is logged.
 - `draw.imagePixels(image)` gives the pixels that `image.save` writes. In C they stay the image's, so a plugin reads them only while the image lives.
 
