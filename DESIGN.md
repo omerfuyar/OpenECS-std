@@ -21,7 +21,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 1. Rules
 
-- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and each is a generic building block.
+- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and those objects back into files, and each is a generic building block.
 - Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
@@ -75,8 +75,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 | `rounded`, `roundedOutline`                | Fill a rectangle whose corners are rounded by a radius, or draw its edge in a thickness.                                                   |
   | `line`, `circle`                           | Draw a line in a thickness, and a circle: a ring of a thickness, or filled with a thickness of 0.                                          |
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
-  | `newImage`, `imageSize`, `imagePixel`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size and a pixel, and free it.                                       |
+  | `newImage`, `imageSize`, `imagePixel`, `imagePixels`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size, a pixel or all its pixels, and free it.          |
   | `image`                                    | Draw an image stretched to a rectangle.                                                                                                    |
+  | `imageTransformed`                         | Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour: white leaves it as it is, and a lower alpha fades it. Its edges are smooth. |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
   | `clip`, `unclip`                           | Limit later drawing into the surface to a rectangle, or let it reach the whole surface again.                                              |
@@ -94,6 +95,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `mixer.pan(voice, pan)` moves a voice from left, -1, to right, 1: the far channel's gain falls toward 0, and at 0, the middle, both keep their whole gain. A mono sound plays in both channels, so it can be panned too.
 - `mixer.stop(voice)`, `mixer.stopAll()`, `mixer.playing(voice)` and `mixer.volume(voice, volume)` act on voices, and `mixer.length(sound)` gives a sound's length in seconds. A voice that has ended is forgotten; its number is not given again.
 - `mixer.freeSound(sound)` frees a sound now; the voices that play it finish first, because each keeps the sound.
+- `mixer.keepSound(sound)` keeps a sound alive, even when no one uses its handle, until `mixer.releaseSound(sound)`. A plugin that uses a sound after giving its handle away keeps it, as audio keeps the streams it feeds (OpenECS DESIGN 10.6).
 - The output opens the first time a sound plays. Each voice is an SDL audio stream bound to it, which SDL converts to the output's format and mixes with the others; a voice gives its stream samples as the stream asks for them, and flushes the stream once it has given them all. A stream's samples wait in an SDL audio stream of their own, which the main thread fills and the voice empties.
 - Tests and definitions run with SDL's dummy audio driver (OpenECS DESIGN 17.5), so they make no sound.
 
@@ -101,10 +103,11 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The `textgrid` plugin keeps grids of characters and draws them, with draw (2), into the pixels surface of another plugin's panel, at any font size. Terminals, consoles, logs and text editors build on it: they all place text on a grid.
 - It is a native plugin. A grid is a handle of type `textgrid.grid`: `textgrid.new(columns, rows)` makes one, and `textgrid.free(grid)` or Lua's garbage collector frees it.
-- A cell holds one character, a Unicode code point, and its foreground and background colours. A grid starts with every cell empty: a space in the theme's text colour on its background.
-- `textgrid.put(grid, column, row, text)` writes text from a cell to the right, and cuts it at the grid's edge. `textgrid.print(grid, text)` writes at the cursor, as a terminal does: a new line moves the cursor to the start of the next row, a full row goes on in the next one, a tab moves to the next column that is a multiple of 8, and writing past the last row moves every row up by one.
-- `textgrid.colors(grid, foreground, background)` sets the colours that later writing uses. `textgrid.clear(grid)` empties every cell and moves the cursor to the top left. `textgrid.setCursor` and `textgrid.cursor` move the cursor and give where it is. `textgrid.resize` changes a grid's size and keeps the cells that still fit, at the same places, and `textgrid.size` gives it.
-- `textgrid.draw(surface, grid, x, y, size, cursor)` draws a grid with its top left at `x, y`, in layout units, in draw's `"mono"` font at a size; with `cursor`, a line under the cursor's cell shows it. Cells of the same colours in a row are drawn as one text. `textgrid.cell(size)` gives the size of a cell, and `textgrid.fit(width, height, size)` how many columns and rows fit a rectangle, so a panel can make its grid as large as itself.
+- A cell holds one character, a Unicode code point, its foreground and background colours, and its style. A grid starts with every cell empty: a space in the theme's text colour on its background, without a style.
+- A wide character, of an East Asian script or most emoji, takes two cells, as in terminals; the right cell holds nothing. Writing over half of one empties its other half. A table of Unicode's wide ranges tells which characters are wide. Draw's default monospace font has no East Asian characters, so they show only in a font that has them, set with `draw.monoFont`.
+- `textgrid.put(grid, column, row, text)` writes text from a cell to the right, and cuts it at the grid's edge. `textgrid.print(grid, text)` writes at the cursor, as a terminal does: a new line moves the cursor to the start of the next row, a full row goes on in the next one, a tab moves to the next column that is a multiple of 8, and writing past the last row moves every row up by one. A wide character that does not fit in the rest of a row goes to the next; `put` leaves it out.
+- `textgrid.colors(grid, foreground, background)` sets the colours that later writing uses, and `textgrid.style(grid, style)` the style: the words `bold` and `underline`, or an empty text for none. The monospace font has no bold face, so bold text is drawn twice, a pixel apart. `textgrid.get(grid, column, row)` gives a cell's character and style. `textgrid.clear(grid)` empties every cell and moves the cursor to the top left. `textgrid.setCursor` and `textgrid.cursor` move the cursor and give where it is. `textgrid.resize` changes a grid's size and keeps the cells that still fit, at the same places, and `textgrid.size` gives it.
+- `textgrid.draw(surface, grid, x, y, size, cursor)` draws a grid with its top left at `x, y`, in layout units, in draw's `"mono"` font at a size; with `cursor`, a line under the cursor's cell shows it. Cells of the same colours and style in a row are drawn as one text, and a wide character alone, over its two cells. `textgrid.cell(size)` gives the size of a cell, and `textgrid.fit(width, height, size)` how many columns and rows fit a rectangle, so a panel can make its grid as large as itself.
 
 ## 5. ui
 
@@ -127,11 +130,13 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `selector(value, choices, props)`     | One of a few texts, side by side. `onChange(value)` gets the clicked one.                                                                                                                                                    |
   | `dropdown(value, choices, props)`     | One of a list of texts, which a click opens in a popup (OpenECS DESIGN 4.6); Up, Down and Return choose there too. `onChange(value)` gets the chosen one.                                                                     |
   | `field(text, props)`                  | A line of text that the user types. It needs an `id`. `onChange(text)` gets each edit, and `onSubmit(text)` the text when Return is pressed; `onSubmit` gives false to keep typing. `valid = false` marks the text as wrong. |
+  | `number(value, props)`                | A field for a number, kept from `min` to `max` if they are given and rounded to `step` if it is given. It needs an `id`. Return gives the typed number to `onChange(value)`; a text that is not a number is marked and keeps the field typing. Up and Down change the number by `step`, or by 1, and give it at once. |
   | `key(combination, props)`             | A key combination. It needs an `id`. A click, then a key press, changes it: `onChange(combination)`.                                                                                                                         |
   | `image(path, props)`                  | An image file, at its size, read with image (6) at the surface's scale and drawn with draw.                                                                                                                                  |
   | `space(props)`                        | Empty room, which grows.                                                                                                                                                                                                     |
 
-- Properties of every element: `id`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours), `color`, `size` and `font` (for text: a font name of draw). A column or a row with `onClick` is clicked like a button.
+- Properties of every element: `id`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours), `color`, `size` and `font` (for text: a font name of draw), and `tooltip`, a text. A column or a row with `onClick` is clicked like a button.
+- A tooltip shows below the pointer when the pointer rests on its element for half a second, wrapped to a width. It goes when the pointer leaves the element, at a press or a key, and after five seconds, since a panel hears nothing when the pointer leaves it. It is drawn inside the panel. `ui.tip(panel)` gives the id of the element whose tooltip shows.
 - An element without an `id` gets one from its place in the tree, so it keeps its state from one draw to the next as long as the tree keeps its shape.
 - Layout: each element gets the size it needs; then the room left along a container is shared by the children that grow, by their shares. Containers, separators, a list's items, and fields, key elements, sliders, selectors and dropdowns in a column, stretch across their parent; other elements keep their size, aligned by the parent's `align`.
 - A click is a press and a release of the left button on the same element. The element under the pointer shows it. The wheel scrolls the scroll element under the pointer, and the scrollbar's thumb can be dragged; a press beside the thumb moves it there.
@@ -144,16 +149,20 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 6. image
 
-- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them. It is a native plugin.
-- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. A GIF gives its first frame.
+- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them, and writes those images to files. It is a native plugin.
+- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. `image.load` gives a GIF's first frame.
 - `image.load(path, scale)` reads a file into a new image of type `draw.image`, at a scale of its own size: a raster file is stretched, and an SVG file, whose size is its own at 96 dots per inch, is drawn at that scale, so it stays sharp. A file that cannot be read is reported and gives nil.
 - Each call reads the file again; a plugin that draws an image many times keeps it.
+- `image.loadFrames(path, scale)` reads the frames of an animated GIF file, each into a new image, at a scale as `load` does. It gives a list of frames, each a table of its `image` and the `seconds` it shows for. Another image file gives one frame of 0 seconds. A plugin shows the frames one after another with a timer; image only reads them.
+- `image.save(image, path)` writes an image of draw to a file, in the format its extension names: `.png`, `.jpg` or `.jpeg`, `.bmp` or `.tga`. stb_image_write writes them; a JPG file is written at a quality of 90 in 100. A relative path starts at the executable's folder. It gives false when the file cannot be written, and the reason is logged.
+- `draw.imagePixels(image)` gives the pixels that `image.save` writes. In C they stay the image's, so a plugin reads them only while the image lives.
 
 ## 7. audio
 
 - The `audio` plugin is a loader: it reads sound files into sounds of mixer (3), which plays them. It is a native plugin.
-- dr_wav, dr_mp3 and dr_flac from dr_libs read WAV, MP3 and FLAC files, and stb_vorbis reads Ogg Vorbis files. A file is read whole into 32-bit float samples.
+- dr_wav, dr_mp3 and dr_flac from dr_libs read WAV, MP3 and FLAC files, and stb_vorbis reads Ogg Vorbis files. A file is read whole into 32-bit float samples, or a piece at a time.
 - `audio.load(path)` reads a file into a new sound of type `mixer.sound`. A file that cannot be read is reported and gives nil. Each call reads the file again.
+- `audio.stream(path)` opens a long file, such as music, and gives a stream of mixer (3) that it feeds while it plays: a timer keeps half a second of the file waiting in the stream, read a quarter of a second at a time. At the file's end, audio finishes the stream, so its voice ends once it has played. audio keeps the stream until then, so a stream plays to its end even when no one uses its handle. A stream that never plays keeps its file open until audio quits.
 
 ## 8. gltf
 

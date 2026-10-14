@@ -38,6 +38,10 @@ readSizes()
 -- the colour of a field whose text is not valid
 local INVALID = "#E0505A"
 
+-- how long, in seconds, the pointer rests on an element before its tooltip shows, and how long the tooltip stays;
+-- a panel hears nothing when the pointer leaves it, so a tooltip goes by itself too
+local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
+
 -- the elements that take the pointer
 local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true }
 
@@ -279,6 +283,53 @@ function elements.field(text, props)
   local node = element("field", props)
   node.text = tostring(text or "")
   assert(node.id, "a field needs an id, which keeps what is typed")
+  return node
+end
+
+-- a number that the user types, kept from min to max if they are given and rounded to step if it is given;
+-- Return gives the typed number to onChange, and Up and Down change it by step, or by 1
+function elements.number(value, props)
+  local node = elements.field("", props)
+  local onChange = node.onChange or function(_) end
+  node.value = tonumber(value) or 0
+  node.onChange, node.onSubmit = nil, nil
+
+  -- a number from min to max, rounded to step from min, or from 0
+  local function settle(number)
+    if node.step and node.step > 0 then
+      local from = node.min or 0
+      number = from + math.floor((number - from) / node.step + 0.5) * node.step
+    end
+
+    return math.min(math.max(number, node.min or -math.huge), node.max or math.huge)
+  end
+
+  local function show(number)
+    return math.type(number) == "integer" and tostring(number) or ("%g"):format(number)
+  end
+
+  node.value = settle(node.value)
+  node.text = show(node.value)
+
+  -- a text that is not a number keeps the field typing
+  node.onSubmit = function(text)
+    local number = tonumber(text)
+
+    if number == nil then
+      return false
+    end
+
+    onChange(settle(number))
+  end
+
+  -- Up and Down change the typed number, or the value if what is typed is not a number, and give the new one at once
+  node.change = function(state, up)
+    local number = settle((tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
+    state.typed = show(number)
+    state.at = #state.typed + 1
+    onChange(number)
+  end
+
   return node
 end
 
@@ -702,7 +753,9 @@ local function paint(node, surface, state, clip)
     end
 
     restoreClip(surface, clip)
-    draw.outline(surface, node.x, node.y, node.w, node.h, 1, node.valid == false and INVALID or focused and "accent" or "tabShown")
+    -- a number element marks a typed text that is not a number
+    local valid = node.valid ~= false and not (focused and node.change and tonumber(state.typed) == nil)
+    draw.outline(surface, node.x, node.y, node.w, node.h, 1, not valid and INVALID or focused and "accent" or "tabShown")
   elseif node.kind == "image" then
     if node.picture then
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
@@ -972,6 +1025,8 @@ local function typing(panel, state, event)
     end
   elseif event.type == "keyDown" and event.key == "Escape" then
     blur(panel, state)
+  elseif event.type == "keyDown" and node.change and (event.key == "Up" or event.key == "Down") then
+    node.change(state, event.key == "Up")
   elseif event.type ~= "keyUp" and event.type ~= "keyDown" then
     return false
   end
@@ -1111,12 +1166,92 @@ local function slide(node, x)
   end
 end
 
+-- hides a tooltip, shown or waiting
+local function hideTip(panel, state)
+  if state.tipTimer then
+    state.tipTimer:stop()
+  end
+
+  if state.tipShown then
+    panel:redraw()
+  end
+
+  state.tip, state.tipTimer, state.tipShown = nil, nil, false
+end
+
+-- starts waiting to show the tooltip of the element under the pointer, unless it is the one already shown or waiting
+local function followTip(panel, state, x, y)
+  local node = find(state.root, x, y, function(candidate)
+    return candidate.tooltip ~= nil
+  end)
+
+  if node and node.id == state.tip then
+    return
+  end
+
+  hideTip(panel, state)
+
+  if node then
+    state.tip = node.id
+    state.tipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
+      state.tipShown = true
+      panel:redraw()
+
+      state.tipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
+        state.tipTimer = nil
+        hideTip(panel, state)
+      end)
+    end)
+  end
+end
+
+-- draws the shown tooltip below and right of the pointer, inside the surface
+local function paintTip(surface, state, width, height)
+  local node = state.tipShown and byId(state.root, state.tip)
+
+  if not node then
+    return
+  end
+
+  local font, textSize = draw.font("ui"), size.noteSize
+  local line = lineHeight(font, textSize)
+  local lines = wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX))
+  local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
+
+  for _, text in ipairs(lines) do
+    boxWidth = math.max(boxWidth, measureText(font, text, textSize))
+  end
+
+  boxWidth = boxWidth + 2 * size.paddingX
+  local x = math.max(0, math.min((state.pointerX or 0) + 12, width - boxWidth))
+  local y = (state.pointerY or 0) + 18
+
+  -- a tooltip that does not fit below the pointer goes above it
+  if y + boxHeight > height then
+    y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
+  end
+
+  draw.fill(surface, x, y, boxWidth, boxHeight, "tabRow")
+  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "tabShown")
+
+  for i, text in ipairs(lines) do
+    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")
+  end
+end
+
 local function handle(panel, event)
   local state = panelState(panel)
   local root = state.root
 
   if not root then
     return false
+  end
+
+  -- a tooltip goes when anything but a move happens, and follows the pointer onto other elements
+  if event.type == "pointerMove" then
+    followTip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
+  else
+    hideTip(panel, state)
   end
 
   -- Tab leaves a field too
@@ -1276,6 +1411,7 @@ function services.show(panel, surface, root)
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state, nil)
   draw.unclip(surface)
+  paintTip(surface, state, width, height)
 
   if state.focus and state.cursor then
     local scale = surface.scale
@@ -1290,6 +1426,11 @@ end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
+  -- a closing panel is not drawn again, so its tooltip's timer only stops
+  if panels[panel] and panels[panel].tipTimer then
+    panels[panel].tipTimer:stop()
+  end
+
   panels[panel] = nil
 end
 
@@ -1308,6 +1449,12 @@ end
 -- the id of the field or key element that has the focus, or nil
 function services.focus(panel)
   return panelState(panel).focus
+end
+
+-- the id of the element whose tooltip shows, or nil
+function services.tip(panel)
+  local state = panelState(panel)
+  return state.tipShown and state.tip or nil
 end
 
 -- gives a field or key element the focus, as a click on it does
@@ -1366,6 +1513,7 @@ assert(ecs.service.register({
   forget = { sig = "void(handle<ecs.panel> panel)", doc = "Forget a panel's state", fn = services.forget },
   rect = { sig = "bool(handle<ecs.panel> panel, string id, out float x, out float y, out float width, out float height)", doc = "Give an element's rectangle in the last layout", fn = services.rect },
   focus = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the focused field", fn = services.focus },
+  tip = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the element whose tooltip shows", fn = services.tip },
   edit = { sig = "void(handle<ecs.panel> panel, string id)", doc = "Give a field the focus", fn = services.edit },
   reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
   move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },
@@ -1383,6 +1531,7 @@ assert(ecs.service.register({
   selector = { sig = "value(string value, value choices, value props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
   dropdown = { sig = "value(string value, value choices, value props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
   field = { sig = "value(string text, value props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
+  number = { sig = "value(double value, value props)", doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange", fn = elements.number },
   key = { sig = "value(string combination, value props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
   image = { sig = "value(string path, value props)", doc = "An image file", fn = elements.image },
   space = { sig = "value(value props)", doc = "Empty room, which grows by default", fn = elements.space },
