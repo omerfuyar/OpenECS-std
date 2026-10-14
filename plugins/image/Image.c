@@ -1,5 +1,6 @@
-// The image standard plugin: reads image files into images of the draw plugin, which draws them (DESIGN 6).
-// stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files, and nanosvg reads SVG files, which are drawn sharp at the scale they are read at.
+// The image standard plugin: reads image files into images of the draw plugin, which draws them, and writes those images to files (DESIGN 6).
+// stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files, and the frames of animated GIF files; nanosvg reads SVG files, which are drawn sharp at the scale they are read at.
+// stb_image_write writes PNG, JPG, BMP and TGA files.
 
 #include "OpenECS.h"
 
@@ -11,6 +12,12 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STBIW_MALLOC SDL_malloc
+#define STBIW_REALLOC SDL_realloc
+#define STBIW_FREE SDL_free
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 #define NANOSVG_IMPLEMENTATION
 #include "nanosvg.h"
 #define NANOSVGRAST_IMPLEMENTATION
@@ -21,14 +28,25 @@
 /// @brief The resolution SVG files are read at: their units become pixels at 96 per inch.
 #define IMAGE_SVG_DPI 96.0f
 
+/// @brief The quality of the JPG files written, from 1 to 100.
+#define IMAGE_JPG_QUALITY 90
+
 /// @brief draw.newImage, which makes an image of the draw plugin from pixels.
 typedef void *(*ImageNewFunction)(i32 width, i32 height, SHUSlice pixels);
+
+/// @brief draw.imageSize, which gives an image's size in pixels.
+typedef void (*ImageSizeFunction)(void *image, i32 *retWidth, i32 *retHeight);
+
+/// @brief draw.imagePixels, which gives an image's pixels, ARGB in native byte order, row after row.
+typedef SHUSlice (*ImagePixelsFunction)(void *image);
 
 static struct
 {
     ECSPlugin plugin;
     NSVGrasterizer *rasterizer;
     ImageNewFunction NewImage;
+    ImageSizeFunction ImageSize;
+    ImagePixelsFunction ImagePixels;
 } IMAGE = {0};
 
 static bool ImageEndsWith(const char *text, const char *suffix)
@@ -45,7 +63,7 @@ static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
     NSVGimage *svg = nsvgParseFromFile(path, "px", IMAGE_SVG_DPI);
     i32 width = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->width * scale);
     i32 height = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->height * scale);
-    SDL_Surface *rgba = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ABGR8888) : nullptr;
+    SDL_Surface *rgba = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32) : nullptr;
 
     if (rgba != nullptr)
     {
@@ -59,18 +77,13 @@ static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
     return argb;
 }
 
-/// @brief Reads a raster image file, stretched by a scale.
-/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
-static SDL_Surface *ImageReadRaster(const char *path, f32 scale)
+/// @brief Converts pixels of red, green, blue and alpha bytes, stretched by a scale.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if out of memory.
+static SDL_Surface *ImageFromBytes(void *pixels, i32 width, i32 height, f32 scale)
 {
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, 4);
-    SDL_Surface *rgba = pixels == nullptr ? nullptr : SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ABGR8888, pixels, width * 4);
+    SDL_Surface *rgba = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, pixels, width * 4);
     SDL_Surface *argb = rgba == nullptr ? nullptr : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
     SDL_DestroySurface(rgba);
-    stbi_image_free(pixels);
 
     if (argb == nullptr || scale == 1.0f)
     {
@@ -82,41 +95,191 @@ static SDL_Surface *ImageReadRaster(const char *path, f32 scale)
     return scaled;
 }
 
-/// @brief Reads an image file into a new image of the draw plugin.
-/// @return The image, or nullptr if the file cannot be read; the reason is logged.
-static void *ImageLoad(const char *path, f32 scale)
+/// @brief Reads a raster image file, stretched by a scale.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
+static SDL_Surface *ImageReadRaster(const char *path, f32 scale)
+{
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, 4);
+    SDL_Surface *argb = pixels == nullptr ? nullptr : ImageFromBytes(pixels, width, height, scale);
+    stbi_image_free(pixels);
+    return argb;
+}
+
+/// @brief Makes an image of draw from a surface's pixels, and destroys the surface.
+static void *ImageMake(SDL_Surface *surface)
+{
+    // draw takes the pixels row after row, without the surface's padding
+    SDL_Surface *packed = surface == nullptr || surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
+    void *image = packed == nullptr ? nullptr : IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4));
+
+    if (packed != surface)
+    {
+        SDL_DestroySurface(packed);
+    }
+
+    SDL_DestroySurface(surface);
+    return image;
+}
+
+/// @brief The full path of a file to read at a scale: a relative path starts at the executable's folder. Free it with SDL_free.
+/// @return The path, or nullptr for a scale that is not above 0; the reason is logged.
+static char *ImageFullPath(const char *path, f32 scale)
 {
     char *full = nullptr;
 
-    // a relative path starts at the executable's folder
     if (scale <= 0.0f || SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
     {
         ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
         return nullptr;
     }
 
-    SDL_Surface *surface = ImageEndsWith(full, ".svg") ? ImageReadSvg(full, scale) : ImageReadRaster(full, scale);
-    void *image = nullptr;
+    return full;
+}
 
-    if (surface == nullptr)
+/// @brief Reads an image file into a new image of the draw plugin.
+/// @return The image, or nullptr if the file cannot be read; the reason is logged.
+static void *ImageLoad(const char *path, f32 scale)
+{
+    char *full = ImageFullPath(path, scale);
+    SDL_Surface *surface = full == nullptr ? nullptr : ImageEndsWith(full, ".svg") ? ImageReadSvg(full, scale) : ImageReadRaster(full, scale);
+
+    if (full != nullptr && surface == nullptr)
     {
         ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
     }
-    else
-    {
-        // draw takes the pixels row after row, without the surface's padding
-        SDL_Surface *packed = surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
-        image = packed == nullptr ? nullptr : IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4));
 
-        if (packed != surface)
+    SDL_free(full);
+    return ImageMake(surface);
+}
+
+/// @brief Adds a frame to a list of frames: a table of its image and the seconds it shows for.
+static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
+{
+    ECSValue *frame = nullptr;
+    ECSValue *field = nullptr;
+    SHU_ReturnResult(ECSValue_ListAddItem(frames, &frame));
+    ECSValue_SetTable(frame);
+    SHU_ReturnResult(ECSValue_TableSetField(frame, "image", &field));
+    SHU_ReturnResult(ECSValue_SetHandle(field, "draw.image", image));
+    SHU_ReturnResult(ECSValue_TableSetField(frame, "seconds", &field));
+    ECSValue_SetNumber(field, seconds);
+    return SHUResult_Ok;
+}
+
+/// @brief Reads the frames of an animated GIF file into new images of draw, each with the seconds it shows for; any other image file gives one frame of 0 seconds.
+/// The frames are a list; a file that cannot be read gives nil, and the reason is logged.
+static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
+{
+    ECSValue_SetNil(retFrames);
+    char *full = ImageFullPath(path, scale);
+
+    if (full == nullptr)
+    {
+        return;
+    }
+
+    if (!ImageEndsWith(full, ".gif"))
+    {
+        SDL_free(full);
+        void *image = ImageLoad(path, scale);
+        ECSValue_SetTable(retFrames);
+
+        if (image == nullptr || ImageAddFrame(retFrames, image, 0.0) != SHUResult_Ok)
         {
-            SDL_DestroySurface(packed);
+            ECSValue_SetNil(retFrames);
+        }
+
+        return;
+    }
+
+    usz size = 0;
+    void *file = SDL_LoadFile(full, &size);
+    int *delays = nullptr;
+    int width = 0;
+    int height = 0;
+    int count = 0;
+    int channels = 0;
+    bool read = file != nullptr;
+    stbi_uc *pixels = read ? stbi_load_gif_from_memory(file, (int)size, &delays, &width, &height, &count, &channels, 4) : nullptr;
+    SDL_free(file);
+
+    if (pixels == nullptr)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, !read ? SDL_GetError() : stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
+        SDL_free(full);
+        return;
+    }
+
+    // the frames lie one after another, each with its delay in milliseconds
+    ECSValue_SetTable(retFrames);
+
+    for (int i = 0; i < count; i++)
+    {
+        void *image = ImageMake(ImageFromBytes(pixels + (usz)i * (usz)width * (usz)height * 4, width, height, scale));
+
+        if (image == nullptr || ImageAddFrame(retFrames, image, delays == nullptr ? 0.0 : (f64)delays[i] / 1000.0) != SHUResult_Ok)
+        {
+            ECS_LogError(IMAGE.plugin, "Cannot make frame %d of the image '%s': out of memory", i + 1, full);
+            break;
         }
     }
 
-    SDL_DestroySurface(surface);
+    stbi_image_free(delays);
+    stbi_image_free(pixels);
     SDL_free(full);
-    return image;
+}
+
+/// @brief Writes an image of draw to a file, in the format its extension names: .png, .jpg or .jpeg, .bmp or .tga.
+/// @return Whether the file was written; the reason it was not is logged.
+static bool ImageSave(void *image, const char *path)
+{
+    const struct
+    {
+        const char *extension;
+        u8 format;
+    } formats[] = {{".png", 0}, {".jpg", 1}, {".jpeg", 1}, {".bmp", 2}, {".tga", 3}};
+    i32 format = -1;
+
+    for (usz i = 0; i < (usz)SDL_arraysize(formats); i++)
+    {
+        format = format < 0 && ImageEndsWith(path, formats[i].extension) ? formats[i].format : format;
+    }
+
+    if (format < 0)
+    {
+        ECS_LogWarn(IMAGE.plugin, "An image is written to a .png, .jpg, .jpeg, .bmp or .tga file, not '%s'.", path);
+        return false;
+    }
+
+    char *full = nullptr;
+    i32 width = 0;
+    i32 height = 0;
+    IMAGE.ImageSize(image, &width, &height);
+    SHUSlice argb = IMAGE.ImagePixels(image);
+    // stb_image_write takes the bytes red, green, blue and alpha, in that order
+    u8 *rgba = SDL_malloc(argb.size);
+    bool written = false;
+
+    if (rgba != nullptr && SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
+        SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) >= 0)
+    {
+        written = format == 0 ? stbi_write_png(full, width, height, 4, rgba, width * 4) != 0
+                  : format == 1 ? stbi_write_jpg(full, width, height, 4, rgba, IMAGE_JPG_QUALITY) != 0
+                  : format == 2 ? stbi_write_bmp(full, width, height, 4, rgba) != 0
+                                : stbi_write_tga(full, width, height, 4, rgba) != 0;
+    }
+
+    if (!written)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", full != nullptr ? full : path);
+    }
+
+    SDL_free(full);
+    SDL_free(rgba);
+    return written;
 }
 
 /// @brief Frees what the plugin holds; the Destroy function of the plugin.
@@ -133,6 +296,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     IMAGE.plugin = plugin;
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImageSize, "draw.imageSize", "void(handle<draw.image> image, out int width, out int height)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImagePixels, "draw.imagePixels", "buffer(handle<draw.image> image)"));
     IMAGE.rasterizer = nsvgCreateRasterizer();
 
     if (IMAGE.rasterizer == nullptr)
@@ -144,6 +309,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = ImageFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), ImageFree(nullptr););
 
-    return ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
-                                       "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read");
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
+                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read"));
+
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value frames)",
+                                                 "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame"));
+
+    return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path)",
+                                       "Write an image of draw to a file, in the format its extension names: .png, .jpg, .jpeg, .bmp or .tga");
 }

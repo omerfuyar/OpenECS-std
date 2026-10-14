@@ -21,7 +21,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 1. Rules
 
-- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and each is a generic building block.
+- The plugins follow the rules of standard plugins (OpenECS DESIGN 20): each has one job, executors run things and loaders turn files into the executors' objects, and those objects back into files, and each is a generic building block.
 - Each plugin is a folder of `plugins/`, with its manifest. `presets/` holds first-party presets.
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
@@ -75,8 +75,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 | `rounded`, `roundedOutline`                | Fill a rectangle whose corners are rounded by a radius, or draw its edge in a thickness.                                                   |
   | `line`, `circle`                           | Draw a line in a thickness, and a circle: a ring of a thickness, or filled with a thickness of 0.                                          |
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
-  | `newImage`, `imageSize`, `imagePixel`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size and a pixel, and free it.                                       |
+  | `newImage`, `imageSize`, `imagePixel`, `imagePixels`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size, a pixel or all its pixels, and free it.          |
   | `image`                                    | Draw an image stretched to a rectangle.                                                                                                    |
+  | `imageTransformed`                         | Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour: white leaves it as it is, and a lower alpha fades it. Its edges are smooth. |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
   | `clip`, `unclip`                           | Limit later drawing into the surface to a rectangle, or let it reach the whole surface again.                                              |
@@ -94,6 +95,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `mixer.pan(voice, pan)` moves a voice from left, -1, to right, 1: the far channel's gain falls toward 0, and at 0, the middle, both keep their whole gain. A mono sound plays in both channels, so it can be panned too.
 - `mixer.stop(voice)`, `mixer.stopAll()`, `mixer.playing(voice)` and `mixer.volume(voice, volume)` act on voices, and `mixer.length(sound)` gives a sound's length in seconds. A voice that has ended is forgotten; its number is not given again.
 - `mixer.freeSound(sound)` frees a sound now; the voices that play it finish first, because each keeps the sound.
+- `mixer.keepSound(sound)` keeps a sound alive, even when no one uses its handle, until `mixer.releaseSound(sound)`. A plugin that uses a sound after giving its handle away keeps it, as audio keeps the streams it feeds (OpenECS DESIGN 10.6).
 - The output opens the first time a sound plays. Each voice is an SDL audio stream bound to it, which SDL converts to the output's format and mixes with the others; a voice gives its stream samples as the stream asks for them, and flushes the stream once it has given them all. A stream's samples wait in an SDL audio stream of their own, which the main thread fills and the voice empties.
 - Tests and definitions run with SDL's dummy audio driver (OpenECS DESIGN 17.5), so they make no sound.
 
@@ -145,16 +147,20 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 6. image
 
-- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them. It is a native plugin.
-- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. A GIF gives its first frame.
+- The `image` plugin is a loader: it reads image files into images of draw (2), which draws them, and writes those images to files. It is a native plugin.
+- stb_image reads PNG, JPG, GIF, BMP, TGA, PSD, HDR and PNM files; nanosvg reads SVG files. `image.load` gives a GIF's first frame.
 - `image.load(path, scale)` reads a file into a new image of type `draw.image`, at a scale of its own size: a raster file is stretched, and an SVG file, whose size is its own at 96 dots per inch, is drawn at that scale, so it stays sharp. A file that cannot be read is reported and gives nil.
 - Each call reads the file again; a plugin that draws an image many times keeps it.
+- `image.loadFrames(path, scale)` reads the frames of an animated GIF file, each into a new image, at a scale as `load` does. It gives a list of frames, each a table of its `image` and the `seconds` it shows for. Another image file gives one frame of 0 seconds. A plugin shows the frames one after another with a timer; image only reads them.
+- `image.save(image, path)` writes an image of draw to a file, in the format its extension names: `.png`, `.jpg` or `.jpeg`, `.bmp` or `.tga`. stb_image_write writes them; a JPG file is written at a quality of 90 in 100. A relative path starts at the executable's folder. It gives false when the file cannot be written, and the reason is logged.
+- `draw.imagePixels(image)` gives the pixels that `image.save` writes. In C they stay the image's, so a plugin reads them only while the image lives.
 
 ## 7. audio
 
 - The `audio` plugin is a loader: it reads sound files into sounds of mixer (3), which plays them. It is a native plugin.
-- dr_wav, dr_mp3 and dr_flac from dr_libs read WAV, MP3 and FLAC files, and stb_vorbis reads Ogg Vorbis files. A file is read whole into 32-bit float samples.
+- dr_wav, dr_mp3 and dr_flac from dr_libs read WAV, MP3 and FLAC files, and stb_vorbis reads Ogg Vorbis files. A file is read whole into 32-bit float samples, or a piece at a time.
 - `audio.load(path)` reads a file into a new sound of type `mixer.sound`. A file that cannot be read is reported and gives nil. Each call reads the file again.
+- `audio.stream(path)` opens a long file, such as music, and gives a stream of mixer (3) that it feeds while it plays: a timer keeps half a second of the file waiting in the stream, read a quarter of a second at a time. At the file's end, audio finishes the stream, so its voice ends once it has played. audio keeps the stream until then, so a stream plays to its end even when no one uses its handle. A stream that never plays keeps its file open until audio quits.
 
 ## 8. gltf
 
@@ -187,10 +193,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 10. fs
 
-- The `fs` plugin does with files and folders what Lua's `io` and `os` cannot: it lists folders, tells what a path is, makes folders and copies files. It is a native plugin, built on SDL's filesystem functions, so it needs no library. Moving and removing are `os.rename` and `os.remove`.
+- The `fs` plugin does with files and folders what Lua's `io` and `os` cannot: it lists folders, tells what a path is, makes folders, copies files and watches folders. It is a native plugin, built on SDL's filesystem functions and the system's own watching, so it needs no library. Moving and removing are `os.rename` and `os.remove`.
 - `fs.info(path)` gives a table of what a path is: its `type`, `"file"`, `"folder"` or `"other"`, its `size` in bytes, and `modified`, when it last changed, in seconds since 1970. A path that does not exist gives nil.
 - `fs.list(folder, pattern)` gives the entries of a folder whose names match a pattern, sorted by name: each a table of its `name` and the fields of `fs.info`. In a pattern, `*` stands for any characters but `/`, and `?` for one; an empty pattern matches every name. The entries of the folder's folders are not listed. A folder that cannot be read gives nil.
 - `fs.makeFolder(path)` makes a folder, and the folders above it that are missing. `fs.copy(from, to)` copies a file, replacing what is at the new path. Each gives false when it fails.
+- `fs.watch(folder, changed)` watches a folder and gives a handle of type `fs.watch`. When an entry of the folder is added, removed or changed, `changed` gets the folder, ending with `/`, the entry's name, and `"added"`, `"removed"` or `"changed"`. A rename is the old name removed and the new one added. The entries of the folder's folders are not watched. Changes are read ten times a second, so one write may come as several changes. `fs.unwatch(watch)` stops a watch now; a watch also stops when no one uses its handle. A folder that cannot be watched gives nil.
+- Watching uses the system's own way, as SDL has none: inotify on Linux. On other systems `fs.watch` gives nil and logs a warning.
 - `fs.folder(name)` gives a folder of the computer, ending with `/`: `executable`, the executable's folder, or one of the user's folders, `home`, `desktop`, `documents`, `downloads`, `music`, `pictures`, `videos`, `screenshots` or `templates`. A folder the system does not have gives nil.
 - Reading and writing what files hold is Lua's `io` in Lua, and SDL's `SDL_LoadFile` and `SDL_SaveFile` in C.
 
