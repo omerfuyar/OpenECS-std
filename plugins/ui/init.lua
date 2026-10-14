@@ -38,6 +38,10 @@ readSizes()
 -- the colour of a field whose text is not valid
 local INVALID = "#E0505A"
 
+-- how long, in seconds, the pointer rests on an element before its tooltip shows, and how long the tooltip stays;
+-- a panel hears nothing when the pointer leaves it, so a tooltip goes by itself too
+local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
+
 -- the elements that take the pointer
 local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true }
 
@@ -1162,12 +1166,92 @@ local function slide(node, x)
   end
 end
 
+-- hides a tooltip, shown or waiting
+local function hideTip(panel, state)
+  if state.tipTimer then
+    state.tipTimer:stop()
+  end
+
+  if state.tipShown then
+    panel:redraw()
+  end
+
+  state.tip, state.tipTimer, state.tipShown = nil, nil, false
+end
+
+-- starts waiting to show the tooltip of the element under the pointer, unless it is the one already shown or waiting
+local function followTip(panel, state, x, y)
+  local node = find(state.root, x, y, function(candidate)
+    return candidate.tooltip ~= nil
+  end)
+
+  if node and node.id == state.tip then
+    return
+  end
+
+  hideTip(panel, state)
+
+  if node then
+    state.tip = node.id
+    state.tipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
+      state.tipShown = true
+      panel:redraw()
+
+      state.tipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
+        state.tipTimer = nil
+        hideTip(panel, state)
+      end)
+    end)
+  end
+end
+
+-- draws the shown tooltip below and right of the pointer, inside the surface
+local function paintTip(surface, state, width, height)
+  local node = state.tipShown and byId(state.root, state.tip)
+
+  if not node then
+    return
+  end
+
+  local font, textSize = draw.font("ui"), size.noteSize
+  local line = lineHeight(font, textSize)
+  local lines = wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX))
+  local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
+
+  for _, text in ipairs(lines) do
+    boxWidth = math.max(boxWidth, measureText(font, text, textSize))
+  end
+
+  boxWidth = boxWidth + 2 * size.paddingX
+  local x = math.max(0, math.min((state.pointerX or 0) + 12, width - boxWidth))
+  local y = (state.pointerY or 0) + 18
+
+  -- a tooltip that does not fit below the pointer goes above it
+  if y + boxHeight > height then
+    y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
+  end
+
+  draw.fill(surface, x, y, boxWidth, boxHeight, "tabRow")
+  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "tabShown")
+
+  for i, text in ipairs(lines) do
+    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")
+  end
+end
+
 local function handle(panel, event)
   local state = panelState(panel)
   local root = state.root
 
   if not root then
     return false
+  end
+
+  -- a tooltip goes when anything but a move happens, and follows the pointer onto other elements
+  if event.type == "pointerMove" then
+    followTip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
+  else
+    hideTip(panel, state)
   end
 
   -- Tab leaves a field too
@@ -1327,6 +1411,7 @@ function services.show(panel, surface, root)
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state, nil)
   draw.unclip(surface)
+  paintTip(surface, state, width, height)
 
   if state.focus and state.cursor then
     local scale = surface.scale
@@ -1341,6 +1426,11 @@ end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
+  -- a closing panel is not drawn again, so its tooltip's timer only stops
+  if panels[panel] and panels[panel].tipTimer then
+    panels[panel].tipTimer:stop()
+  end
+
   panels[panel] = nil
 end
 
@@ -1359,6 +1449,12 @@ end
 -- the id of the field or key element that has the focus, or nil
 function services.focus(panel)
   return panelState(panel).focus
+end
+
+-- the id of the element whose tooltip shows, or nil
+function services.tip(panel)
+  local state = panelState(panel)
+  return state.tipShown and state.tip or nil
 end
 
 -- gives a field or key element the focus, as a click on it does
@@ -1417,6 +1513,7 @@ assert(ecs.service.register({
   forget = { sig = "void(handle<ecs.panel> panel)", doc = "Forget a panel's state", fn = services.forget },
   rect = { sig = "bool(handle<ecs.panel> panel, string id, out float x, out float y, out float width, out float height)", doc = "Give an element's rectangle in the last layout", fn = services.rect },
   focus = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the focused field", fn = services.focus },
+  tip = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the element whose tooltip shows", fn = services.tip },
   edit = { sig = "void(handle<ecs.panel> panel, string id)", doc = "Give a field the focus", fn = services.edit },
   reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
   move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },

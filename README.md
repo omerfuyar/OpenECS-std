@@ -5,7 +5,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **draw:** draws shapes, lines, triangles, images and text into other plugins' panels.
 - **mixer:** plays sounds, many at once.
 - **textgrid:** grids of characters for terminals, consoles, logs and editors, drawn with draw at any size.
-- **ui:** user-interface elements with layout, such as buttons, toggles, sliders, selectors, dropdowns and lists, which call back on clicks and edits.
+- **ui:** user-interface elements with layout, such as buttons, toggles, sliders, number fields, selectors, dropdowns and lists, with tooltips, which call back on clicks and edits.
 - **image:** reads PNG, JPG, GIF, SVG and other image files into images that draw draws.
 - **audio:** reads WAV, MP3, FLAC and Ogg Vorbis files into sounds that mixer plays.
 - **gltf:** reads glTF 2.0 models, and gives their parts and vertex data.
