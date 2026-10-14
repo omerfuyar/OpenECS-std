@@ -282,6 +282,53 @@ function elements.field(text, props)
   return node
 end
 
+-- a number that the user types, kept from min to max if they are given and rounded to step if it is given;
+-- Return gives the typed number to onChange, and Up and Down change it by step, or by 1
+function elements.number(value, props)
+  local node = elements.field("", props)
+  local onChange = node.onChange or function(_) end
+  node.value = tonumber(value) or 0
+  node.onChange, node.onSubmit = nil, nil
+
+  -- a number from min to max, rounded to step from min, or from 0
+  local function settle(number)
+    if node.step and node.step > 0 then
+      local from = node.min or 0
+      number = from + math.floor((number - from) / node.step + 0.5) * node.step
+    end
+
+    return math.min(math.max(number, node.min or -math.huge), node.max or math.huge)
+  end
+
+  local function show(number)
+    return math.type(number) == "integer" and tostring(number) or ("%g"):format(number)
+  end
+
+  node.value = settle(node.value)
+  node.text = show(node.value)
+
+  -- a text that is not a number keeps the field typing
+  node.onSubmit = function(text)
+    local number = tonumber(text)
+
+    if number == nil then
+      return false
+    end
+
+    onChange(settle(number))
+  end
+
+  -- Up and Down change the typed number, or the value if what is typed is not a number, and give the new one at once
+  node.change = function(state, up)
+    local number = settle((tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
+    state.typed = show(number)
+    state.at = #state.typed + 1
+    onChange(number)
+  end
+
+  return node
+end
+
 function elements.key(combination, props)
   local node = element("key", props)
   node.text = tostring(combination or "")
@@ -702,7 +749,9 @@ local function paint(node, surface, state, clip)
     end
 
     restoreClip(surface, clip)
-    draw.outline(surface, node.x, node.y, node.w, node.h, 1, node.valid == false and INVALID or focused and "accent" or "tabShown")
+    -- a number element marks a typed text that is not a number
+    local valid = node.valid ~= false and not (focused and node.change and tonumber(state.typed) == nil)
+    draw.outline(surface, node.x, node.y, node.w, node.h, 1, not valid and INVALID or focused and "accent" or "tabShown")
   elseif node.kind == "image" then
     if node.picture then
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
@@ -972,6 +1021,8 @@ local function typing(panel, state, event)
     end
   elseif event.type == "keyDown" and event.key == "Escape" then
     blur(panel, state)
+  elseif event.type == "keyDown" and node.change and (event.key == "Up" or event.key == "Down") then
+    node.change(state, event.key == "Up")
   elseif event.type ~= "keyUp" and event.type ~= "keyDown" then
     return false
   end
@@ -1383,6 +1434,7 @@ assert(ecs.service.register({
   selector = { sig = "value(string value, value choices, value props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
   dropdown = { sig = "value(string value, value choices, value props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
   field = { sig = "value(string text, value props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
+  number = { sig = "value(double value, value props)", doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange", fn = elements.number },
   key = { sig = "value(string combination, value props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
   image = { sig = "value(string path, value props)", doc = "An image file", fn = elements.image },
   space = { sig = "value(value props)", doc = "Empty room, which grows by default", fn = elements.space },
