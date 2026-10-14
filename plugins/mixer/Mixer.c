@@ -14,7 +14,7 @@ typedef struct MixerSound
     f32 *samples; // the frames one after another, each with a sample for every channel
     u64 frames;
     SDL_AudioSpec spec; // 32-bit float samples, the sound's channels and rate
-    u32 users;          // its handle, unless it was freed, and each voice that plays it
+    u32 users;          // its handle, unless it was freed, each voice that plays it, and each keepSound
 
     // a stream: the queue that the main thread fills and its voice empties, which SDL keeps thread-safe
     SDL_AudioStream *queue;
@@ -419,6 +419,18 @@ static void MixerPan(i32 id, f32 pan)
     }
 }
 
+/// @brief Keeps a sound alive for a plugin that uses it after giving its handle away, such as one that feeds a stream, until releaseSound.
+static void MixerKeepSound(MixerSound *sound)
+{
+    sound->users++;
+}
+
+/// @brief Lets go of a sound that keepSound kept.
+static void MixerReleaseSound(MixerSound *sound)
+{
+    MixerRelease(sound);
+}
+
 /// @brief Lets go of a sound now; it is freed once the voices that play it end.
 static void MixerFreeSound(MixerSound *sound)
 {
@@ -480,6 +492,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"playing", (ECSFunction)MixerPlaying, "bool(int voice)", "Tell whether a voice still plays"},
         {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)", "Change a voice's volume; 1 is the sound's own"},
         {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)", "Move a voice from left, -1, to right, 1; 0 is the middle"},
+        {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)", "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away"},
+        {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)", "Let go of a sound that keepSound kept"},
         {"freeSound", (ECSFunction)MixerFreeSound, "void(handle<mixer.sound> sound)", "Free a sound now, instead of when no one uses its handle; voices that play it finish first"},
     };
 
