@@ -43,9 +43,10 @@ typedef struct Library
 typedef struct PluginNeeds
 {
     const char *name;
-    const char *includes[4];     // ending with NULL
+    const char *includes[5];     // ending with NULL
     const char *flags;           // definitions for its C files, or NULL
     const Library *libraries[3]; // ending with NULL
+    bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
 } PluginNeeds;
 
 // mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
@@ -59,11 +60,11 @@ static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include
 
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
-    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}},
-    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}},
-    {"net", {"SDL_net", "SDL_net/include", NULL}, NULL, {NULL}},
-    {"gltf", {"cgltf", NULL}, NULL, {NULL}},
-    {"web", {"curl/include", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}},
+    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, false},
+    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, false},
+    {"net", {"SDL_net", "SDL_net/include", "mbedtls/include", "other/mbedtls"}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, false},
+    {"gltf", {"cgltf", NULL}, NULL, {NULL}, false},
+    {"web", {"curl/include", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}, true},
 };
 
 #pragma endregion Setup
@@ -359,8 +360,8 @@ static void BuildNative(const char *name, const char *root, const char *output)
     SetBuildFlags();
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
-    // A plugin that takes its libraries as archives keeps the analyzer, because its own files hold only their headers
-    if (needs != NULL && needs->libraries[0] == NULL)
+    // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
+    if (needs != NULL && !needs->analyze)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }

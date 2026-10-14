@@ -9,7 +9,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **image:** reads PNG, JPG, GIF, SVG and other image files into images that draw draws.
 - **audio:** reads WAV, MP3, FLAC and Ogg Vorbis files into sounds that mixer plays.
 - **gltf:** reads glTF 2.0 models, and gives their parts and vertex data.
-- **net:** TCP connections and servers, and UDP sockets, that never block the program.
+- **net:** TCP connections and servers, TLS connections, and UDP sockets, that never block the program.
 - **web:** HTTP and HTTPS requests that never block the program.
 - **fs:** lists and makes folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
 - **settings:** the settings window.
