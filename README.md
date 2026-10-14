@@ -11,7 +11,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **gltf:** reads glTF 2.0 models, and gives their parts and vertex data.
 - **net:** TCP connections and servers, TLS connections, and UDP sockets, that never block the program.
 - **web:** HTTP and HTTPS requests that never block the program.
-- **fs:** lists and makes folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
+- **fs:** lists, makes and watches folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
