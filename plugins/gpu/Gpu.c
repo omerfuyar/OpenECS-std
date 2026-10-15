@@ -178,6 +178,56 @@ static void GpuTriangles(GpuFrame *frame, SHUSlice points, SHUSlice indices, ECS
     SDL_free(index);
 }
 
+static void GpuMesh(GpuFrame *frame, SHUSlice points, SHUSlice colors, SHUSlice indices)
+{
+    usz count = points.size / (2 * sizeof(f32));
+    usz indexCount = indices.size / sizeof(u32);
+
+    if (count == 0 || colors.size / sizeof(u32) < count || count > (usz)SDL_MAX_SINT32 || indexCount > (usz)SDL_MAX_SINT32)
+    {
+        ECS_LogWarn(GPU.plugin, count == 0 ? "A mesh needs points." : "A mesh needs a colour for each of its points.");
+        return;
+    }
+
+    // the points are in layout units, and the renderer takes pixels; each colour is ARGB, not premultiplied, as a colour text is, and blends across its triangles
+    f32 *xy = SDL_malloc(count * 2 * sizeof(f32));
+    SDL_FColor *fcolors = SDL_malloc(count * sizeof(SDL_FColor));
+    int *index = indexCount > 0 ? SDL_malloc((indexCount - indexCount % 3) * sizeof(int)) : nullptr;
+    usz used = 0;
+
+    for (usz i = 0; xy != nullptr && fcolors != nullptr && i < count; i++)
+    {
+        u32 color = ((const u32 *)colors.data)[i];
+        xy[2 * i] = ((const f32 *)points.data)[2 * i] * frame->scale;
+        xy[2 * i + 1] = ((const f32 *)points.data)[2 * i + 1] * frame->scale;
+        fcolors[i] = (SDL_FColor){(f32)((color >> 16) & 0xFF) / 255.0f, (f32)((color >> 8) & 0xFF) / 255.0f, (f32)(color & 0xFF) / 255.0f, (f32)((color >> 24) & 0xFF) / 255.0f};
+    }
+
+    // indices that name no point leave their triangle out
+    for (usz i = 0; index != nullptr && i + 2 < indexCount; i += 3)
+    {
+        const u32 *triangle = (const u32 *)indices.data + i;
+
+        if (triangle[0] < count && triangle[1] < count && triangle[2] < count)
+        {
+            index[used++] = (int)triangle[0];
+            index[used++] = (int)triangle[1];
+            index[used++] = (int)triangle[2];
+        }
+    }
+
+    if (xy != nullptr && fcolors != nullptr && (indexCount == 0 || index != nullptr))
+    {
+        GpuTarget(frame, 0xFFFFFFFF);
+        int drawn = (int)(count - (indexCount == 0 ? count % 3 : 0));
+        SDL_RenderGeometryRaw(GPU.renderer, nullptr, xy, 2 * sizeof(f32), fcolors, sizeof(SDL_FColor), nullptr, 0, drawn, index, (int)used, sizeof(int));
+    }
+
+    SDL_free(xy);
+    SDL_free(fcolors);
+    SDL_free(index);
+}
+
 static SDL_Texture *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
 {
     if (GPU.renderer == nullptr || width < 1 || height < 1 || pixels.size != (usz)width * (usz)height * 4)
@@ -279,6 +329,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"fill", (ECSFunction)GpuFill, "void(handle<gpu.frame> frame, float x, float y, float width, float height, color color)", "Fill a rectangle"},
         {"line", (ECSFunction)GpuLine, "void(handle<gpu.frame> frame, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
         {"triangles", (ECSFunction)GpuTriangles, "void(handle<gpu.frame> frame, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
+        {"mesh", (ECSFunction)GpuMesh, "void(handle<gpu.frame> frame, buffer points, buffer colors, buffer indices)", "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones"},
         {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)", "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have"},
         {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)", "Replace a texture's pixels with as many new ones"},
         {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)", "Give a texture's size in pixels"},
@@ -304,6 +355,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"frame", "fill", "fill"},
         {"frame", "line", "line"},
         {"frame", "triangles", "triangles"},
+        {"frame", "mesh", "mesh"},
         {"frame", "image", "image"},
         {"frame", "imageTransformed", "imageTransformed"},
         {"texture", "update", "updateTexture"},

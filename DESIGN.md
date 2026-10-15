@@ -322,6 +322,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `clear`                                                  | Fill the whole surface with a colour, replacing what it holds.                                                                         |
   | `fill`, `line`                                           | Fill a rectangle, and draw a line in a thickness.                                                                                      |
   | `triangles`                                              | Fill triangles between points, a buffer of x and y floats, with indices, three 32-bit numbers each, or none for points in threes, as draw's do. |
+  | `mesh`                                                   | Fill triangles whose points each have a colour, an ARGB 32-bit number, which blends across each triangle. Later triangles cover earlier ones, so a 3D model draws its triangles from back to front. |
   | `texture`, `updateTexture`, `textureSize`, `freeTexture` | Make a texture of type `gpu.texture` on the GPU from ARGB pixels with premultiplied alpha, as draw's images have; replace its pixels, give its size, and free it. |
   | `image`, `imageTransformed`                              | Draw a texture stretched to a rectangle, or also turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour. |
 
