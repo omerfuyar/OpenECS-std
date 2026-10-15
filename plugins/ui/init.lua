@@ -358,6 +358,65 @@ function elements.tree(props, nodes)
   return node
 end
 
+-- a table: a header of its columns' titles over a list of its rows, whose cells line up below the titles;
+-- a column is { id, title, width }, and a row is a table of the cells' values by column id; a column is as wide as its widest cell unless it gives a width;
+-- selected is the chosen row's number, onSelect and onActivate get a row's number, and a click on a title gives the column's id to onSort;
+-- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
+function elements.table(props, columns, rows)
+  props = props or {}
+  assert(props.id, "a table needs an id, which keeps its offset")
+  columns, rows = columns or {}, rows or {}
+  local font, textSize = fontOf(props), props.size or fontSize()
+  local widths = {}
+
+  local function title(column)
+    return tostring(column.title or column.id)
+  end
+
+  for i, column in ipairs(columns) do
+    local widest = measureText(font, title(column), textSize) + (props.sort == column.id and size.checkSize or 0)
+
+    for _, values in ipairs(rows) do
+      widest = math.max(widest, measureText(font, tostring(values[column.id] or ""), textSize))
+    end
+
+    widths[i] = column.width or widest + 2 * size.paddingX
+  end
+
+  -- a cell is a row of a column's width, with room before its text; a title cell is clicked to sort
+  local function cells(values)
+    local list = {}
+
+    for i, column in ipairs(columns) do
+      local children = {
+        elements.space({ width = size.paddingX, grow = 0 }),
+        elements.text(values and tostring(values[column.id] or "") or title(column), { grow = 1, size = props.size, font = props.font, color = not values and "textDim" or nil }),
+      }
+
+      if not values and props.sort == column.id then
+        children[3] = element("disclosure", { open = not props.ascending, up = props.ascending == true })
+      end
+
+      list[i] = elements.row({ id = not values and props.id .. ":title:" .. tostring(column.id) or nil, width = widths[i], onClick = not values and props.onSort and function()
+        props.onSort(column.id)
+      end or nil }, children)
+    end
+
+    return list
+  end
+
+  local items = {}
+
+  for i, values in ipairs(rows) do
+    items[i] = elements.row({ id = props.id .. ":" .. i, padding = 2 }, cells(values))
+  end
+
+  -- the list scrolls its rows below the header, and takes the room the table has
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
+  return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
+end
+
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
@@ -952,10 +1011,12 @@ local function paint(node, surface, state, clip)
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
     end
   elseif node.kind == "disclosure" then
-    -- down when open, right when closed
+    -- down when open, right when closed, and up with up
     local half, x, y = size.checkSize / 4, node.x + node.w / 2, node.y + node.h / 2
 
-    if node.open then
+    if node.up then
+      draw.triangles(surface, string.pack("ffffff", x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
+    elseif node.open then
       arrow(surface, x, y, half, "textDim")
     else
       draw.triangles(surface, string.pack("ffffff", x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
@@ -1823,6 +1884,7 @@ assert(ecs.service.register({
   scroll = { sig = "value(value props, value children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
   list = { sig = "value(value props, value children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
   group = { sig = "value(value props, value children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
+  table = { sig = "value(value props, value columns, value rows)", doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort", fn = elements.table },
   tree = { sig = "value(value props, value nodes)", doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id", fn = elements.tree },
   separator = { sig = "value(value props)", doc = "A line across a column, or up a row", fn = elements.separator },
   text = { sig = "value(string text, value props)", doc = "A line of text", fn = elements.text },
