@@ -29,6 +29,18 @@ typedef struct MixerBiquad
     f32 x1, x2, y1, y2;
 } MixerBiquad;
 
+/// @brief An echo of a voice: what it played a delay ago comes back, softer each time. The audio thread uses it under the voice's stream's lock.
+typedef struct MixerEcho
+{
+    f32 *samples; // the last delay's frames, each with a sample for every channel
+    u64 length;   // the delay in frames
+    u64 at;       // the frame to read and write next
+    i32 channels;
+    f32 feedback; // how loud each echo is next to the one before
+    f32 mix;      // how loud the first echo is
+    u64 ring;     // how many frames the echo rings for after the sound ends, until it is about a thousandth as loud
+} MixerEcho;
+
 /// @brief A sound that plays: an audio stream bound to the output, which asks for more of the sound as it plays.
 typedef struct MixerVoice
 {
@@ -37,7 +49,10 @@ typedef struct MixerVoice
     SDL_AudioStream *stream;
     u64 position; // the next frame to give the stream; only the audio thread changes it while the voice plays
     bool loop;
-    SDL_AtomicInt finished; // the stream has been given the whole sound
+    SDL_AtomicInt finished; // the stream has been given the whole sound, and its echo has rung out
+    bool ended;             // the audio thread has taken the sound's last frame
+    u64 ringing;            // the audio thread: frames of echo still to give after the end, or SDL_MAX_UINT64 before the end
+    MixerEcho *echo;        // nullptr for none
     SDL_AtomicInt pan;      // from -1000, left, to 1000, right
     i32 channels;           // the channels the voice gives its stream: a mono sound plays in stereo, so it can be panned
     f32 *scratch;           // the audio thread's room for samples on their way
@@ -229,7 +244,7 @@ static const f32 *MixerTake(MixerVoice *voice, u64 wanted, u64 *retCount)
         // a stream ends once it is finished and its queue is empty; until then, a voice that runs out waits for more
         if (got <= 0 && SDL_GetAtomicInt(&sound->finished) && SDL_GetAudioStreamAvailable(sound->queue) == 0)
         {
-            SDL_SetAtomicInt(&voice->finished, 1);
+            voice->ended = true;
         }
 
         *retCount = got > 0 ? (u64)got / frameSize : 0;
@@ -240,7 +255,7 @@ static const f32 *MixerTake(MixerVoice *voice, u64 wanted, u64 *retCount)
     {
         if (!voice->loop || sound->frames == 0)
         {
-            SDL_SetAtomicInt(&voice->finished, 1);
+            voice->ended = true;
             return nullptr;
         }
 
@@ -331,6 +346,25 @@ static void MixerFilter(MixerVoice *voice, f32 *frames, u64 count)
     }
 }
 
+/// @brief Adds a voice's echo to its frames, in place.
+static void MixerEchoProcess(MixerEcho *echo, f32 *frames, u64 count)
+{
+    for (u64 i = 0; i < count; i++)
+    {
+        f32 *delayed = echo->samples + echo->at * (u64)echo->channels;
+
+        for (i32 channel = 0; channel < echo->channels; channel++)
+        {
+            f32 sample = frames[i * (u64)echo->channels + (u64)channel];
+            f32 back = delayed[channel];
+            frames[i * (u64)echo->channels + (u64)channel] = sample + echo->mix * back;
+            delayed[channel] = MixerFlush(sample + echo->feedback * back);
+        }
+
+        echo->at = echo->at + 1 == echo->length ? 0 : echo->at + 1;
+    }
+}
+
 /// @brief Gives a voice's stream more of its sound, panned; SDL calls it on its audio thread when the stream runs low.
 static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, int total)
 {
@@ -343,7 +377,28 @@ static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, i
     while (needed > 0 && !SDL_GetAtomicInt(&voice->finished))
     {
         u64 count = 0;
-        const f32 *frames = MixerTake(voice, (u64)needed / outFrameSize + 1, &count);
+        u64 wanted = (u64)needed / outFrameSize + 1;
+        const f32 *frames = voice->ended ? nullptr : MixerTake(voice, wanted, &count);
+
+        // once the sound has ended, its echo rings out over silence, and then the voice is done
+        if (frames == nullptr && voice->ended)
+        {
+            voice->ringing = voice->ringing != SDL_MAX_UINT64 ? voice->ringing : voice->echo != nullptr ? voice->echo->ring : 0;
+            count = SDL_min(wanted, voice->ringing);
+
+            if (count == 0 || voice->echo == nullptr || !MixerScratch(voice, (usz)count * (usz)out))
+            {
+                SDL_SetAtomicInt(&voice->finished, 1);
+                break;
+            }
+
+            SDL_memset(voice->scratch, 0, (usz)count * outFrameSize);
+            MixerEchoProcess(voice->echo, voice->scratch, count);
+            SDL_PutAudioStreamData(stream, voice->scratch, (int)(count * outFrameSize));
+            voice->ringing -= count;
+            needed -= (int)(count * outFrameSize);
+            continue;
+        }
 
         if (frames == nullptr)
         {
@@ -358,7 +413,7 @@ static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, i
         // a filtered voice changes its samples, so they go through its room for samples even when nothing else changes them
         bool filtered = voice->tunedLowpass != 0 || voice->tunedHighpass != 0 || SDL_GetAtomicInt(&voice->lowpass) != 0 || SDL_GetAtomicInt(&voice->highpass) != 0;
 
-        if (out == in && (out != 2 || pan == 0.0f) && !filtered)
+        if (out == in && (out != 2 || pan == 0.0f) && !filtered && voice->echo == nullptr)
         {
             SDL_PutAudioStreamData(stream, frames, (int)(count * outFrameSize));
         }
@@ -395,6 +450,11 @@ static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, i
                 MixerFilter(voice, panned, count);
             }
 
+            if (voice->echo != nullptr)
+            {
+                MixerEchoProcess(voice->echo, panned, count);
+            }
+
             SDL_PutAudioStreamData(stream, panned, (int)(count * outFrameSize));
         }
 
@@ -414,6 +474,12 @@ static void MixerFreeVoice(MixerVoice *voice)
     voice->sound->playing = false;
     SDL_free(voice->scratch);
     SDL_free(voice->filters);
+
+    if (voice->echo != nullptr)
+    {
+        SDL_free(voice->echo->samples);
+        SDL_free(voice->echo);
+    }
     MixerRelease(voice->sound);
     SDL_free(voice);
 }
@@ -657,7 +723,7 @@ static i32 MixerPlay(MixerSound *sound, f32 volume, bool loop)
     }
 
     // a mono sound plays in stereo, so it can be panned
-    *voice = (MixerVoice){.id = ++MIXER.nextId, .sound = sound, .loop = loop && sound->queue == nullptr, .channels = sound->spec.channels == 1 ? 2 : sound->spec.channels};
+    *voice = (MixerVoice){.id = ++MIXER.nextId, .ringing = SDL_MAX_UINT64, .sound = sound, .loop = loop && sound->queue == nullptr, .channels = sound->spec.channels == 1 ? 2 : sound->spec.channels};
     SDL_AudioSpec spec = {.format = SDL_AUDIO_F32, .channels = voice->channels, .freq = sound->spec.freq};
     voice->filters = SDL_calloc((usz)voice->channels * 2, sizeof(MixerBiquad));
     voice->stream = voice->filters == nullptr ? nullptr : SDL_CreateAudioStream(&spec, nullptr);
@@ -740,6 +806,52 @@ static void MixerSetFilter(i32 id, f32 lowpass, f32 highpass)
     }
 }
 
+/// @brief Gives a voice an echo: what it played a delay ago, in seconds up to 2, comes back at mix, and each echo comes back again at feedback times as loud, up to 0.95.
+/// A delay or a mix of 0 takes the echo away. A voice with an echo rings on after its sound ends, until the echo is about a thousandth as loud.
+static void MixerSetEcho(i32 id, f32 delay, f32 feedback, f32 mix)
+{
+    MixerVoice *voice = MixerFindVoice(id);
+
+    if (voice == nullptr)
+    {
+        return;
+    }
+
+    MixerEcho *echo = nullptr;
+    u64 length = delay > 0.0f && mix > 0.0f ? (u64)SDL_ceilf(SDL_min(delay, 2.0f) * (f32)voice->sound->spec.freq) : 0;
+
+    if (length > 0)
+    {
+        echo = SDL_calloc(1, sizeof(MixerEcho));
+        f32 *samples = echo == nullptr ? nullptr : SDL_calloc((usz)length * (usz)voice->channels, sizeof(f32));
+
+        if (samples == nullptr)
+        {
+            SDL_free(echo);
+            ECS_LogError(MIXER.plugin, "Cannot add an echo: out of memory");
+            return;
+        }
+
+        // the echoes fall by feedback each delay; they ring until they are about a thousandth as loud, or for one delay without feedback, and 30 seconds at most
+        f32 back = SDL_clamp(feedback, 0.0f, 0.95f);
+        f32 repeats = back > 0.0f ? SDL_ceilf(SDL_logf(0.001f) / SDL_logf(back)) : 0.0f;
+        f32 ring = SDL_min((repeats + 1.0f) * (f32)length, 30.0f * (f32)voice->sound->spec.freq);
+        *echo = (MixerEcho){.samples = samples, .length = length, .channels = voice->channels, .feedback = back, .mix = SDL_clamp(mix, 0.0f, 1.0f), .ring = (u64)ring};
+    }
+
+    // the audio thread feeds the voice under its stream's lock, so the echo changes while it does not
+    SDL_LockAudioStream(voice->stream);
+    MixerEcho *old = voice->echo;
+    voice->echo = echo;
+    SDL_UnlockAudioStream(voice->stream);
+
+    if (old != nullptr)
+    {
+        SDL_free(old->samples);
+        SDL_free(old);
+    }
+}
+
 /// @brief Keeps a sound alive for a plugin that uses it after giving its handle away, such as one that feeds a stream, until releaseSound.
 static void MixerKeepSound(MixerSound *sound)
 {
@@ -817,6 +929,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)", "Change a voice's volume; 1 is the sound's own"},
         {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)", "Move a voice from left, -1, to right, 1; 0 is the middle"},
         {"filter", (ECSFunction)MixerSetFilter, "void(int voice, float lowpass, float highpass)", "Filter a voice: lowpass cuts the sounds above a frequency in hertz, and highpass those below one; 0 turns a filter off"},
+        {"echo", (ECSFunction)MixerSetEcho, "void(int voice, float delay, float feedback, float mix)", "Give a voice an echo: what it played delay seconds ago, up to 2, comes back at mix, and again at feedback times as loud each time; a delay or mix of 0 takes it away"},
         {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)", "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output"},
         {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)", "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away"},
         {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)", "Let go of a sound that keepSound kept"},
