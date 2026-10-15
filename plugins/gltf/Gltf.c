@@ -15,7 +15,8 @@
 typedef struct GltfModel
 {
     cgltf_data *data;
-    void *given; // what attribute or indices gave last, kept until the next call
+    char *path;  // the full path of its file, which the files it names are relative to
+    void *given; // what attribute, indices or image gave last, kept until the next call
 } GltfModel;
 
 static struct
@@ -91,8 +92,8 @@ static GltfModel *GltfLoad(const char *path)
         return nullptr;
     }
 
-    SDL_free(full);
     model->data = data;
+    model->path = full;
     return model;
 }
 
@@ -192,15 +193,31 @@ static SHUResult GltfDescribeMesh(const cgltf_data *data, const cgltf_mesh *mesh
     return SHUResult_Ok;
 }
 
-static SHUResult GltfDescribeMaterial(const cgltf_material *material, ECSValue *item)
+static SHUResult GltfDescribeMaterial(const cgltf_data *data, const cgltf_material *material, ECSValue *item)
 {
     const cgltf_pbr_metallic_roughness *pbr = &material->pbr_metallic_roughness;
     const cgltf_texture *texture = pbr->base_color_texture.texture;
     SHU_ReturnResult(GltfSetString(item, "name", material->name));
     SHU_ReturnResult(GltfSetNumbers(item, "color", pbr->base_color_factor, 4));
 
-    // a texture inside a .glb has no file of its own, so only a texture in a file is named
-    return GltfSetString(item, "texture", texture != nullptr && texture->image != nullptr ? texture->image->uri : nullptr);
+    // a texture inside a .glb has no file of its own, so only a texture in a file is named; image names any by its number, which gltf.image reads
+    if (texture != nullptr && texture->image != nullptr)
+    {
+        SHU_ReturnResult(GltfSetInteger(item, "image", (i64)cgltf_image_index(data, texture->image) + 1));
+    }
+
+    const char *uri = texture != nullptr && texture->image != nullptr ? texture->image->uri : nullptr;
+    return GltfSetString(item, "texture", uri != nullptr && SDL_strncmp(uri, "data:", 5) != 0 ? uri : nullptr);
+}
+
+static SHUResult GltfDescribeImage(const cgltf_image *image, ECSValue *item)
+{
+    SHU_ReturnResult(GltfSetString(item, "name", image->name));
+    SHU_ReturnResult(GltfSetString(item, "mimeType", image->mime_type));
+
+    // an image is in a file, in the data of a URI, or in a buffer, as in a .glb
+    const char *uri = image->uri;
+    return GltfSetString(item, "file", uri != nullptr && SDL_strncmp(uri, "data:", 5) != 0 ? uri : nullptr);
 }
 
 static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node, ECSValue *item)
@@ -232,12 +249,14 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     ECSValue *materials = nullptr;
     ECSValue *nodes = nullptr;
     ECSValue *roots = nullptr;
+    ECSValue *images = nullptr;
     ECSValue *item = nullptr;
     ECSValue_SetTable(info);
     SHU_ReturnResult(GltfSetTable(info, "meshes", &meshes));
     SHU_ReturnResult(GltfSetTable(info, "materials", &materials));
     SHU_ReturnResult(GltfSetTable(info, "nodes", &nodes));
     SHU_ReturnResult(GltfSetTable(info, "roots", &roots));
+    SHU_ReturnResult(GltfSetTable(info, "images", &images));
 
     for (usz i = 0; i < data->meshes_count; i++)
     {
@@ -248,7 +267,13 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     for (usz i = 0; i < data->materials_count; i++)
     {
         SHU_ReturnResult(GltfSetTable(materials, nullptr, &item));
-        SHU_ReturnResult(GltfDescribeMaterial(&data->materials[i], item));
+        SHU_ReturnResult(GltfDescribeMaterial(data, &data->materials[i], item));
+    }
+
+    for (usz i = 0; i < data->images_count; i++)
+    {
+        SHU_ReturnResult(GltfSetTable(images, nullptr, &item));
+        SHU_ReturnResult(GltfDescribeImage(&data->images[i], item));
     }
 
     for (usz i = 0; i < data->nodes_count; i++)
@@ -351,10 +376,92 @@ static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
     return GltfGive(model, indices, count * sizeof(u32));
 }
 
+/// @brief Reads the bytes of an image: from its buffer, as in a .glb, from the data of its URI, or from its file, next to the model's.
+/// @return The bytes, to free with SDL_free, or nullptr; size is set.
+static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz *retSize)
+{
+    *retSize = 0;
+
+    if (image->buffer_view != nullptr)
+    {
+        const u8 *bytes = cgltf_buffer_view_data(image->buffer_view);
+        void *copy = bytes == nullptr ? nullptr : SDL_malloc(SDL_max(image->buffer_view->size, 1));
+
+        if (copy != nullptr)
+        {
+            SDL_memcpy(copy, bytes, image->buffer_view->size);
+            *retSize = image->buffer_view->size;
+        }
+
+        return copy;
+    }
+
+    const char *uri = image->uri;
+
+    if (uri == nullptr)
+    {
+        return nullptr;
+    }
+
+    // a data URI holds the bytes in base64 after its comma: four letters for three bytes, less the padding
+    if (SDL_strncmp(uri, "data:", 5) == 0)
+    {
+        const char *comma = SDL_strchr(uri, ',');
+        const char *base64 = comma == nullptr ? nullptr : SDL_strstr(uri, ";base64,") == comma - 7 ? comma + 1 : nullptr;
+        usz length = base64 == nullptr ? 0 : SDL_strlen(base64);
+        usz size = length / 4 * 3 - (length >= 1 && base64[length - 1] == '=' ? 1 : 0) - (length >= 2 && base64[length - 2] == '=' ? 1 : 0);
+        void *bytes = nullptr;
+        cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfRelease}};
+
+        if (length < 4 || length % 4 != 0 || cgltf_load_buffer_base64(&options, size, base64, &bytes) != cgltf_result_success)
+        {
+            return nullptr;
+        }
+
+        *retSize = size;
+        return bytes;
+    }
+
+    // a file's URI is relative to the model's folder, and may escape characters, such as %20 for a space
+    const char *slash = SDL_strrchr(model->path, '/');
+    char *path = nullptr;
+
+    if (SDL_asprintf(&path, "%.*s%s", slash == nullptr ? 0 : (int)(slash - model->path + 1), model->path, uri) < 0)
+    {
+        return nullptr;
+    }
+
+    cgltf_decode_uri(path + (slash == nullptr ? 0 : slash - model->path + 1));
+    usz size = 0;
+    void *bytes = SDL_LoadFile(path, &size);
+    SDL_free(path);
+    *retSize = bytes == nullptr ? 0 : size;
+    return bytes;
+}
+
+static SHUSlice GltfImage(GltfModel *model, i32 image)
+{
+    if (image < 1 || (usz)image > model->data->images_count)
+    {
+        return GltfGive(model, nullptr, 0);
+    }
+
+    usz size = 0;
+    void *bytes = GltfReadImage(model, &model->data->images[image - 1], &size);
+
+    if (bytes == nullptr)
+    {
+        ECS_LogWarn(GLTF.plugin, "Cannot read image %d of the model '%s'", (int)image, model->path);
+    }
+
+    return GltfGive(model, bytes, size);
+}
+
 static void GltfDestroy(void *object)
 {
     GltfModel *model = object;
     cgltf_free(model->data);
+    SDL_free(model->path);
     SDL_free(model->given);
     SDL_free(model);
 }
@@ -383,8 +490,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
         {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
         {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
-        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute or indices call on the model"},
-        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute or indices call on the model"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices or image call on the model"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices or image call on the model"},
+        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices or image call on the model"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

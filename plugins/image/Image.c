@@ -56,11 +56,10 @@ static bool ImageEndsWith(const char *text, const char *suffix)
     return length >= suffixLength && SDL_strcasecmp(text + length - suffixLength, suffix) == 0;
 }
 
-/// @brief Reads an SVG file and draws it at a scale of its own size.
-/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
-static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
+/// @brief Draws a parsed SVG image at a scale of its own size, and frees it.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if there is no image.
+static SDL_Surface *ImageDrawSvg(NSVGimage *svg, f32 scale)
 {
-    NSVGimage *svg = nsvgParseFromFile(path, "px", IMAGE_SVG_DPI);
     i32 width = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->width * scale);
     i32 height = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->height * scale);
     SDL_Surface *rgba = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32) : nullptr;
@@ -75,6 +74,13 @@ static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
     SDL_DestroySurface(rgba);
     nsvgDelete(svg);
     return argb;
+}
+
+/// @brief Reads an SVG file and draws it at a scale of its own size.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
+static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
+{
+    return ImageDrawSvg(nsvgParseFromFile(path, "px", IMAGE_SVG_DPI), scale);
 }
 
 /// @brief Converts pixels of red, green, blue and alpha bytes, stretched by a scale.
@@ -152,6 +158,59 @@ static void *ImageLoad(const char *path, f32 scale)
     }
 
     SDL_free(full);
+    return ImageMake(surface);
+}
+
+/// @brief Reads an image from bytes in memory, such as a PNG file's, into a new image of the draw plugin; bytes that start with < are read as SVG.
+/// @return The image, or nullptr if the bytes are not an image; the reason is logged.
+static void *ImageDecode(SHUSlice bytes, f32 scale)
+{
+    if (scale <= 0.0f || bytes.size == 0 || bytes.size > (usz)SDL_MAX_SINT32)
+    {
+        ECS_LogWarn(IMAGE.plugin, "An image is read from bytes that are there, at a scale above 0.");
+        return nullptr;
+    }
+
+    // an SVG file is text, which starts with < after any spaces; nanosvg changes the text it parses, so it gets a copy that ends with a zero
+    usz first = 0;
+
+    while (first < bytes.size && SDL_isspace(((const u8 *)bytes.data)[first]))
+    {
+        first++;
+    }
+
+    SDL_Surface *surface = nullptr;
+
+    if (first < bytes.size && ((const u8 *)bytes.data)[first] == '<')
+    {
+        char *text = SDL_malloc(bytes.size + 1);
+        NSVGimage *svg = nullptr;
+
+        if (text != nullptr)
+        {
+            SDL_memcpy(text, bytes.data, bytes.size);
+            text[bytes.size] = '\0';
+            svg = nsvgParse(text, "px", IMAGE_SVG_DPI);
+        }
+
+        surface = ImageDrawSvg(svg, scale);
+        SDL_free(text);
+    }
+    else
+    {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        stbi_uc *pixels = stbi_load_from_memory(bytes.data, (int)bytes.size, &width, &height, &channels, 4);
+        surface = pixels == nullptr ? nullptr : ImageFromBytes(pixels, width, height, scale);
+        stbi_image_free(pixels);
+    }
+
+    if (surface == nullptr)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot read an image from bytes: %s", stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
+    }
+
     return ImageMake(surface);
 }
 
@@ -369,6 +428,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
                                                  "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read"));
+
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "decode", (ECSFunction)ImageDecode, "handle<draw.image>(buffer bytes, float scale)",
+                                                 "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does. Nothing if they are not an image"));
 
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value frames)",
                                                  "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame"));
