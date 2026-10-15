@@ -34,6 +34,7 @@ typedef struct TextGridGrid
     i32 columns;
     i32 rows;
     TextGridCell *cells; // rows one after another
+    bool *wrapped;       // one for each row: its line goes on in the next row, because print reached the edge; a resize joins them again
     i32 cursorColumn;
     i32 cursorRow;
     ECSColor foreground;
@@ -75,13 +76,15 @@ static TextGridCell TextGridBlank(const TextGridGrid *grid)
     return (TextGridCell){.character = ' ', .foreground = grid->foreground, .background = grid->background};
 }
 
-/// @brief Empties a row with the grid's colours.
+/// @brief Empties a row with the grid's colours; it starts a line of its own.
 static void TextGridClearRow(TextGridGrid *grid, i32 row)
 {
     for (i32 column = 0; column < grid->columns; column++)
     {
         *TextGridCellAt(grid, column, row) = TextGridBlank(grid);
     }
+
+    grid->wrapped[row] = false;
 }
 
 /// @brief How many cells a character takes: 2 for the wide and full-width characters of East Asian scripts and for most emoji, and 1 for the others.
@@ -150,6 +153,7 @@ static void TextGridSet(TextGridGrid *grid, i32 column, i32 row, u32 character, 
 static void TextGridScroll(TextGridGrid *grid)
 {
     SDL_memmove(grid->cells, grid->cells + grid->columns, (usz)(grid->rows - 1) * (usz)grid->columns * sizeof(TextGridCell));
+    SDL_memmove(grid->wrapped, grid->wrapped + 1, (usz)(grid->rows - 1) * sizeof(bool));
     TextGridClearRow(grid, grid->rows - 1);
 }
 
@@ -158,37 +162,194 @@ static void TextGridDestroy(void *object)
 {
     TextGridGrid *grid = object;
     SDL_free(grid->cells);
+    SDL_free(grid->wrapped);
     SDL_free(grid);
 }
 
-/// @brief Gives the cells to a new size, keeping the cells that still fit, at the same places.
+/// @brief Whether a cell is empty as a blank one is: a space on the grid's background, without a style.
+static bool TextGridIsBlank(const TextGridGrid *grid, const TextGridCell *cell)
+{
+    return cell->character == ' ' && cell->background == grid->background && cell->style == 0;
+}
+
+/// @brief Where a layout puts the cells of the old grid's lines: the new rows, the first ones of which it skips, so the last ones stay.
+typedef struct TextGridLayout
+{
+    i32 columns;
+    i32 skip;            // the rows before the first one that is kept
+    i32 rows;            // the rows kept; the layout counts the rows when there are no cells
+    TextGridCell *cells; // nullptr to count only
+    bool *wrapped;
+    TextGridCell blank;
+    i32 row;    // the row being written, counted from the first row of the layout
+    i32 column; // where the next cell goes in it
+} TextGridLayout;
+
+/// @brief Writes a cell, or both halves of a wide character, at the layout's place, if that row is kept.
+static void TextGridLayOut(TextGridLayout *layout, const TextGridCell *cell, i32 width)
+{
+    i32 row = layout->row - layout->skip;
+
+    for (i32 i = 0; layout->cells != nullptr && row >= 0 && row < layout->rows && i < width; i++)
+    {
+        layout->cells[(usz)row * (usz)layout->columns + (usz)(layout->column + i)] = cell[i];
+    }
+
+    layout->column += width;
+}
+
+/// @brief Ends a row of the layout; a row that the line goes on from is marked wrapped.
+static void TextGridNextRow(TextGridLayout *layout, bool wrapped)
+{
+    i32 row = layout->row - layout->skip;
+
+    // the rest of the row is blank
+    while (layout->column < layout->columns)
+    {
+        TextGridLayOut(layout, &layout->blank, 1);
+    }
+
+    if (layout->wrapped != nullptr && row >= 0 && row < layout->rows)
+    {
+        layout->wrapped[row] = wrapped;
+    }
+
+    layout->row++;
+    layout->column = 0;
+}
+
+/// @brief Lays the grid's lines out at a width: rows that wrap are joined into their lines, and each line is cut into rows again.
+/// The blanks at the end of a line are left out, except before the cursor, whose new place it gives.
+/// @return The number of rows the lines take.
+static i32 TextGridReflow(TextGridGrid *grid, TextGridLayout *layout, i32 *retCursorRow, i32 *retCursorColumn)
+{
+    // rows below the cursor and the last written row are blank, and are left out
+    i32 last = grid->cursorRow;
+
+    for (i32 row = grid->rows - 1; row > last; row--)
+    {
+        for (i32 column = 0; column < grid->columns && row > last; column++)
+        {
+            last = TextGridIsBlank(grid, TextGridCellAt(grid, column, row)) ? last : row;
+        }
+    }
+
+    *retCursorRow = 0;
+    *retCursorColumn = 0;
+
+    for (i32 first = 0; first <= last;)
+    {
+        // a line is its first row and the rows that its wrapped rows go on to
+        i32 end = first;
+
+        while (end < last && grid->wrapped[end])
+        {
+            end++;
+        }
+
+        // its cells are those rows, without the blanks at the end, but with those before the cursor
+        usz length = (usz)(end - first + 1) * (usz)grid->columns;
+        const TextGridCell *cells = TextGridCellAt(grid, 0, first);
+
+        while (length > 0 && TextGridIsBlank(grid, &cells[length - 1]))
+        {
+            length--;
+        }
+
+        bool cursorHere = grid->cursorRow >= first && grid->cursorRow <= end;
+        usz cursor = cursorHere ? (usz)(grid->cursorRow - first) * (usz)grid->columns + (usz)grid->cursorColumn : 0;
+        length = cursorHere ? SDL_max(length, SDL_min(cursor, (usz)(end - first + 1) * (usz)grid->columns)) : length;
+
+        for (usz i = 0; i < length;)
+        {
+            // a wide character moves whole, and is left out where it never fits; a right half without its left is a blank
+            i32 width = i + 1 < length && cells[i].character != 0 && cells[i + 1].character == 0 ? 2 : 1;
+            const TextGridCell *cell = cells[i].character == 0 ? &layout->blank : &cells[i];
+
+            if (layout->column + width > layout->columns && width <= layout->columns)
+            {
+                TextGridNextRow(layout, true);
+            }
+
+            if (cursorHere && cursor >= i && cursor < i + (usz)width)
+            {
+                *retCursorRow = layout->row;
+                *retCursorColumn = layout->column;
+            }
+
+            if (width <= layout->columns)
+            {
+                TextGridLayOut(layout, cell, width);
+            }
+
+            i += (usz)width;
+        }
+
+        if (cursorHere && cursor >= length)
+        {
+            *retCursorRow = layout->row;
+            *retCursorColumn = layout->column;
+        }
+
+        TextGridNextRow(layout, false);
+        first = end + 1;
+    }
+
+    return layout->row;
+}
+
+/// @brief Gives the cells to a new size. The lines are laid out again at the new width, so a line that no longer fits wraps instead of being cut;
+/// when they take more rows than the grid has, the first ones go, so the cursor stays.
 /// @return false if out of memory; the grid is unchanged.
 static bool TextGridResizeCells(TextGridGrid *grid, i32 columns, i32 rows)
 {
     columns = SDL_max(1, columns);
     rows = SDL_max(1, rows);
-    TextGridCell *cells = SDL_malloc((usz)columns * (usz)rows * sizeof(TextGridCell));
 
-    if (cells == nullptr)
+    if (grid->cells != nullptr && columns == grid->columns && rows == grid->rows)
     {
+        return true;
+    }
+
+    TextGridCell *cells = SDL_malloc((usz)columns * (usz)rows * sizeof(TextGridCell));
+    bool *wrapped = SDL_calloc((usz)rows, sizeof(bool));
+
+    if (cells == nullptr || wrapped == nullptr)
+    {
+        SDL_free(cells);
+        SDL_free(wrapped);
         return false;
     }
 
-    for (i32 row = 0; row < rows; row++)
+    TextGridLayout layout = {.columns = columns, .rows = rows, .blank = TextGridBlank(grid)};
+    i32 cursorRow = 0;
+    i32 cursorColumn = 0;
+    i32 used = 0;
+
+    // the lines are counted first, then written, without the rows that do not fit
+    if (grid->cells != nullptr)
+    {
+        used = TextGridReflow(grid, &layout, &cursorRow, &cursorColumn);
+        layout = (TextGridLayout){.columns = columns, .skip = SDL_max(0, used - rows), .rows = rows, .cells = cells, .wrapped = wrapped, .blank = layout.blank};
+        TextGridReflow(grid, &layout, &cursorRow, &cursorColumn);
+    }
+
+    for (i32 row = SDL_max(0, used - layout.skip); row < rows; row++)
     {
         for (i32 column = 0; column < columns; column++)
         {
-            bool kept = grid->cells != nullptr && row < grid->rows && column < grid->columns;
-            cells[(usz)row * (usz)columns + (usz)column] = kept ? *TextGridCellAt(grid, column, row) : TextGridBlank(grid);
+            cells[(usz)row * (usz)columns + (usz)column] = layout.blank;
         }
     }
 
     SDL_free(grid->cells);
+    SDL_free(grid->wrapped);
     grid->cells = cells;
+    grid->wrapped = wrapped;
     grid->columns = columns;
     grid->rows = rows;
-    grid->cursorColumn = SDL_min(grid->cursorColumn, columns - 1);
-    grid->cursorRow = SDL_min(grid->cursorRow, rows - 1);
+    grid->cursorColumn = SDL_min(cursorColumn, columns);
+    grid->cursorRow = SDL_clamp(cursorRow - layout.skip, 0, rows - 1);
     return true;
 }
 
@@ -354,9 +515,10 @@ static void TextGridPrint(TextGridGrid *grid, const char *text)
             continue;
         }
 
-        // a line ends at a new line, or when the character does not fit in the rest of the row
+        // a line ends at a new line; when the character does not fit in the rest of the row, the line goes on in the next row
         if (character == '\n' || grid->cursorColumn + width > grid->columns)
         {
+            grid->wrapped[grid->cursorRow] = character != '\n';
             grid->cursorColumn = 0;
             grid->cursorRow++;
 
@@ -511,7 +673,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     } functions[] = {
         {"new", (ECSFunction)TextGridNew, "handle<textgrid.grid>(int columns, int rows)", "Make a grid of empty cells, in the theme's colours of text"},
         {"free", (ECSFunction)TextGridFree, "void(handle<textgrid.grid> grid)", "Free a grid now, instead of when no one uses its handle"},
-        {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)", "Change a grid's size, keeping the cells that fit"},
+        {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)", "Change a grid's size; its lines wrap again at the new width, and the first rows go when they do not fit"},
         {"size", (ECSFunction)TextGridSize, "void(handle<textgrid.grid> grid, out int columns, out int rows)", "Give a grid's size"},
         {"clear", (ECSFunction)TextGridClear, "void(handle<textgrid.grid> grid)", "Empty every cell, and move the cursor to the top left"},
         {"style", (ECSFunction)TextGridStyle, "void(handle<textgrid.grid> grid, string style)", "Set the style that later writing uses: the words bold and underline, or an empty text for none"},

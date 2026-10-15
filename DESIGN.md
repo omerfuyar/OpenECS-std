@@ -18,6 +18,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 12. The settings window
 13. The launcher
 14. The panel list
+15. gpu
 
 ## 1. Rules
 
@@ -57,7 +58,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ### 1.4 How panels draw
 
-- Every standard plugin draws on the CPU, into the pixels surface of the panel that calls it (OpenECS DESIGN 5.1): 32-bit ARGB pixels with premultiplied alpha. The core then uploads the surface to a texture and shows it with SDL's GPU renderer, with the core's own interface over it (OpenECS DESIGN 5.3).
+- The standard plugins draw on the CPU, into the pixels surface of the panel that calls it (OpenECS DESIGN 5.1): 32-bit ARGB pixels with premultiplied alpha. The core then uploads the surface to a texture and shows it with SDL's GPU renderer, with the core's own interface over it (OpenECS DESIGN 5.3). gpu is the one that draws on the GPU, into GPU surfaces (15).
 - draw (2) is the one plugin that writes those pixels: shapes, images and text. textgrid (4) and ui (5) draw through draw, so a font or a way of blending is in one place.
 - A panel that draws with the GPU instead uses a GPU surface and the sdl plugin's device (OpenECS DESIGN 5.4); no standard plugin does yet.
 
@@ -110,7 +111,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - A cell holds one character, a Unicode code point, its foreground and background colours, and its style. A grid starts with every cell empty: a space in the theme's text colour on its background, without a style.
 - A wide character, of an East Asian script or most emoji, takes two cells, as in terminals; the right cell holds nothing. Writing over half of one empties its other half. A table of Unicode's wide ranges tells which characters are wide. Draw's default monospace font has no East Asian characters, so they show only in a font that has them, set with `draw.monoFont`.
 - `textgrid.put(grid, column, row, text)` writes text from a cell to the right, and cuts it at the grid's edge. `textgrid.print(grid, text)` writes at the cursor, as a terminal does: a new line moves the cursor to the start of the next row, a full row goes on in the next one, a tab moves to the next column that is a multiple of 8, and writing past the last row moves every row up by one. A wide character that does not fit in the rest of a row goes to the next; `put` leaves it out. A grid of one column leaves wide characters out, and its cursor stays.
-- `textgrid.colors(grid, foreground, background)` sets the colours that later writing uses, and `textgrid.style(grid, style)` the style: the words `bold` and `underline`, or an empty text for none. The monospace font has no bold face, so bold text is drawn twice, a pixel apart. `textgrid.get(grid, column, row)` gives a cell's character and style. `textgrid.clear(grid)` empties every cell and moves the cursor to the top left. `textgrid.setCursor` and `textgrid.cursor` move the cursor and give where it is. `textgrid.resize` changes a grid's size and keeps the cells that still fit, at the same places, and `textgrid.size` gives it.
+- `textgrid.colors(grid, foreground, background)` sets the colours that later writing uses, and `textgrid.style(grid, style)` the style: the words `bold` and `underline`, or an empty text for none. The monospace font has no bold face, so bold text is drawn twice, a pixel apart. `textgrid.get(grid, column, row)` gives a cell's character and style. `textgrid.clear(grid)` empties every cell and moves the cursor to the top left. `textgrid.setCursor` and `textgrid.cursor` move the cursor and give where it is. `textgrid.size` gives a grid's size, and `textgrid.resize` changes it. A row that `print` filled to the edge is marked as going on in the next row, so resizing joins such rows into their lines and lays the lines out again at the new width: a line wraps instead of being cut, and the cursor keeps its place in its line. When the lines take more rows than the grid has, the first rows go, so the cursor stays. `put` never wraps, so its rows stay apart.
 - `textgrid.draw(surface, grid, x, y, size, cursor)` draws a grid with its top left at `x, y`, in layout units, in draw's `"mono"` font at a size; with `cursor`, a line under the cursor's cell shows it. Cells of the same colours and style in a row are drawn as one text, and a wide character alone, over its two cells. `textgrid.cell(size)` gives the size of a cell, and `textgrid.fit(width, height, size)` how many columns and rows fit a rectangle, so a panel can make its grid as large as itself.
 
 ## 5. ui
@@ -306,3 +307,23 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 **TLS (Transport Layer Security).** The protocol that encrypts HTTPS and other connections, and checks the server's certificate.
 
 **Unity build.** Compiling a library as one C file that includes all of its C files.
+
+## 15. gpu
+
+- The `gpu` plugin draws shapes, lines and textures into the GPU surface of another plugin's panel, on the GPU (OpenECS DESIGN 5.4). Its functions are those of draw, for a frame of a surface instead of the surface. It is a native plugin, and Lua and C use it alike.
+- It draws with an offscreen SDL renderer of its own, `SDL_CreateGPURenderer(device, nullptr)`, on OpenECS's GPU device, which `ECSGpu_GetDevice` gives (OpenECS DESIGN 9.8). The renderer draws into the panel's texture as a target, so gpu needs no shaders of its own. Without a GPU device it still loads, and its functions log why they cannot draw.
+- **Frames.** A GPU panel's `draw` starts a frame of its surface with `gpu.frame(surface)`, a handle of type `gpu.frame`, draws with its methods, and calls `frame:submit()` before `draw` returns. Submitting presents the offscreen renderer, which sends what it drew to the GPU before the core's renderer shows the texture. A frame cannot draw after it is submitted. One that is dropped without being submitted sends what it drew with the next frame.
+- Positions and sizes are in layout units; gpu multiplies them by the surface's scale. Colours have the type `color` (OpenECS DESIGN 10.2), and gpu blends them by their alpha.
+- Its functions, each also a method of the frame or the texture in Lua:
+
+  | Function                                                 | Does                                                                                                                                    |
+  | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+  | `frame`, `submit`                                        | Start drawing into a GPU surface, and send what the frame drew to the GPU.                                                              |
+  | `clear`                                                  | Fill the whole surface with a colour, replacing what it holds.                                                                         |
+  | `fill`, `line`                                           | Fill a rectangle, and draw a line in a thickness.                                                                                      |
+  | `triangles`                                              | Fill triangles between points, a buffer of x and y floats, with indices, three 32-bit numbers each, or none for points in threes, as draw's do. |
+  | `texture`, `updateTexture`, `textureSize`, `freeTexture` | Make a texture of type `gpu.texture` on the GPU from ARGB pixels with premultiplied alpha, as draw's images have; replace its pixels, give its size, and free it. |
+  | `image`, `imageTransformed`                              | Draw a texture stretched to a rectangle, or also turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour. |
+
+- A texture keeps its pixels on the GPU, so drawing it each frame costs no upload. `gpu.texture(width, height, image:pixels())` makes one of a draw image.
+- Shaders of a plugin's own, and text, are not yet in gpu (OpenECS TODO).
