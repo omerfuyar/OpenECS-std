@@ -411,7 +411,8 @@ static void BuildNative(const char *name, const char *root, const char *output)
     RunCheck("gcc -shared -o %s -Wl,--whole-archive %slib%s.a -Wl,--no-whole-archive%s", library.data, archives.data, name, link.data);
 }
 
-/// @brief Builds a standard plugin into bin/plugins/: its C files make its native library, and its Lua files, the manifest among them, and its folders are copied.
+/// @brief Builds a standard plugin into bin/plugins/: its C files make its native library, and its Lua files, the manifest among them, its header.h and its folders are copied.
+/// OpenECS --definitions reads types.lua and header.h from there (OpenECS DESIGN 10.10).
 static void BuildPlugin(const char *path, const char *name)
 {
     SHUI_String root;
@@ -419,6 +420,6 @@ static void BuildPlugin(const char *path, const char *name)
     SHUI_SFormat(&root, "%s%s/", path, name);
     SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilCreateDirectory(output.data);
-    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -rp {} %s \\;", root.data, output.data);
+    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -name header.h -o -type d \\) -exec cp -rp {} %s \\;", root.data, output.data);
     BuildNative(name, root.data, output.data);
 }

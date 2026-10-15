@@ -121,3 +121,19 @@
 ---@class ui.KeyProps: ui.Props
 ---@field id string
 ---@field onChange? fun(combination: string)
+
+---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its kind.
+---@class ui.Description
+---@field kind string The element's kind, which names its function, such as "column" or "button".
+---@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button.
+---@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number or a path.
+---@field choices? string[] A selector's, tabs' or dropdown's choices.
+---@field columns? ui.TableColumn[] A table's columns.
+---@field rows? ui.TableRow[] A table's rows.
+---@field nodes? ui.TreeNode[] A tree's nodes.
+---@field children? ui.Description[] A container's children.
+
+---What a callback of a described element got, which ui.take gives.
+---@class ui.Taken
+---@field value boolean|number|string|nil The callback's first argument: a new state, number, text or choice, an item's number, or a node's or column's id.
+---@field open? boolean onToggle's second argument: whether the node is open now.
