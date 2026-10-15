@@ -75,6 +75,8 @@ typedef struct MixerReverb
     i32 rate;
     MixerDelay *delays; // for each channel, its comb filters, then its all-pass filters
     f32 *memory;        // the samples of every delay
+    usz samples;        // how many samples memory holds
+    bool resting;       // the audio thread saw a mix of 0, so the delays hold an old sound
     SDL_AtomicInt mix;  // how much of the reverb is added, in thousandths; 0 adds none
     SDL_AtomicInt size; // the room's size, in thousandths: a larger room rings longer
 } MixerReverb;
@@ -251,6 +253,12 @@ static const f32 *MixerTake(MixerVoice *voice, u64 wanted, u64 *retCount)
     return frames;
 }
 
+/// @brief A sample that has faded to almost nothing becomes 0, as in Freeverb: numbers that small are denormal, which many processors work on far slower.
+static f32 MixerFlush(f32 sample)
+{
+    return SDL_fabsf(sample) < 1e-20f ? 0.0f : sample;
+}
+
 /// @brief Tunes a filter to a frequency, keeping what it heard: a Butterworth low-pass or high-pass of the Audio EQ Cookbook, or, at 0 hertz, one that lets everything through.
 static void MixerTune(MixerBiquad *filter, i32 hertz, i32 rate, bool high)
 {
@@ -312,8 +320,9 @@ static void MixerFilter(MixerVoice *voice, f32 *frames, u64 count)
                 f32 out = f->b0 * sample + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
                 f->x2 = f->x1;
                 f->x1 = sample;
+                // a filter that hears silence fades toward 0 through denormal numbers, so its memory is flushed as the reverb's is
                 f->y2 = f->y1;
-                f->y1 = out;
+                f->y1 = MixerFlush(out);
                 sample = out;
             }
 
@@ -473,7 +482,7 @@ static MixerReverb *MixerNewReverb(i32 channels, i32 rate)
         at += (usz)delays[i].length;
     }
 
-    *reverb = (MixerReverb){.channels = channels, .rate = rate, .delays = delays, .memory = memory};
+    *reverb = (MixerReverb){.channels = channels, .rate = rate, .delays = delays, .memory = memory, .samples = total};
     return reverb;
 }
 
@@ -502,7 +511,21 @@ static void MixerReverbProcess(MixerReverb *reverb, f32 *samples, usz frames)
 
     if (mix <= 0.0f)
     {
+        reverb->resting = true;
         return;
+    }
+
+    // a reverb turned on again starts silent, rather than with what rang when it was turned off
+    if (reverb->resting)
+    {
+        SDL_memset(reverb->memory, 0, reverb->samples * sizeof(f32));
+
+        for (usz i = 0; i < (usz)reverb->channels * filters; i++)
+        {
+            reverb->delays[i].kept = 0.0f;
+        }
+
+        reverb->resting = false;
     }
 
     for (usz frame = 0; frame < frames; frame++)
@@ -527,8 +550,8 @@ static void MixerReverbProcess(MixerReverb *reverb, f32 *samples, usz frames)
             {
                 MixerDelay *comb = &delays[i];
                 f32 delayed = comb->samples[comb->at];
-                comb->kept = delayed * (1.0f - damp) + comb->kept * damp;
-                comb->samples[comb->at] = input + comb->kept * feedback;
+                comb->kept = MixerFlush(delayed * (1.0f - damp) + comb->kept * damp);
+                comb->samples[comb->at] = MixerFlush(input + comb->kept * feedback);
                 comb->at = comb->at + 1 == comb->length ? 0 : comb->at + 1;
                 out += delayed;
             }
@@ -537,7 +560,7 @@ static void MixerReverbProcess(MixerReverb *reverb, f32 *samples, usz frames)
             {
                 MixerDelay *allpass = &delays[i];
                 f32 delayed = allpass->samples[allpass->at];
-                allpass->samples[allpass->at] = out + delayed * 0.5f;
+                allpass->samples[allpass->at] = MixerFlush(out + delayed * 0.5f);
                 allpass->at = allpass->at + 1 == allpass->length ? 0 : allpass->at + 1;
                 out = delayed - out;
             }
