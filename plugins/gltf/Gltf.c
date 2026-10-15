@@ -243,6 +243,25 @@ static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node
     return SHUResult_Ok;
 }
 
+/// @brief The time of an animation's last key, in seconds: when it ends.
+static f32 GltfDuration(const cgltf_animation *animation)
+{
+    f32 duration = 0.0f;
+
+    for (usz i = 0; i < animation->samplers_count; i++)
+    {
+        const cgltf_accessor *input = animation->samplers[i].input;
+        f32 last = 0.0f;
+
+        if (input != nullptr && input->count > 0 && cgltf_accessor_read_float(input, input->count - 1, &last, 1))
+        {
+            duration = SDL_max(duration, last);
+        }
+    }
+
+    return duration;
+}
+
 static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
 {
     ECSValue *meshes = nullptr;
@@ -250,6 +269,7 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     ECSValue *nodes = nullptr;
     ECSValue *roots = nullptr;
     ECSValue *images = nullptr;
+    ECSValue *animations = nullptr;
     ECSValue *item = nullptr;
     ECSValue_SetTable(info);
     SHU_ReturnResult(GltfSetTable(info, "meshes", &meshes));
@@ -257,6 +277,7 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     SHU_ReturnResult(GltfSetTable(info, "nodes", &nodes));
     SHU_ReturnResult(GltfSetTable(info, "roots", &roots));
     SHU_ReturnResult(GltfSetTable(info, "images", &images));
+    SHU_ReturnResult(GltfSetTable(info, "animations", &animations));
 
     for (usz i = 0; i < data->meshes_count; i++)
     {
@@ -274,6 +295,15 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     {
         SHU_ReturnResult(GltfSetTable(images, nullptr, &item));
         SHU_ReturnResult(GltfDescribeImage(&data->images[i], item));
+    }
+
+    for (usz i = 0; i < data->animations_count; i++)
+    {
+        ECSValue *field = nullptr;
+        SHU_ReturnResult(GltfSetTable(animations, nullptr, &item));
+        SHU_ReturnResult(GltfSetString(item, "name", data->animations[i].name));
+        SHU_ReturnResult(ECSValue_TableSetField(item, "duration", &field));
+        ECSValue_SetNumber(field, (f64)GltfDuration(&data->animations[i]));
     }
 
     for (usz i = 0; i < data->nodes_count; i++)
@@ -374,6 +404,203 @@ static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
     }
 
     return GltfGive(model, indices, count * sizeof(u32));
+}
+
+/// @brief A node's translation, rotation as a quaternion x, y, z, w, and scale.
+typedef struct GltfTransform
+{
+    f32 translation[3];
+    f32 rotation[4];
+    f32 scale[3];
+} GltfTransform;
+
+/// @brief The matrix of a transform, column by column: the translation of the rotation of the scale.
+static void GltfMatrix(const GltfTransform *transform, f32 *matrix)
+{
+    f32 x = transform->rotation[0], y = transform->rotation[1], z = transform->rotation[2], w = transform->rotation[3];
+    const f32 *s = transform->scale;
+    const f32 *t = transform->translation;
+    const f32 columns[16] = {
+        (1.0f - 2.0f * (y * y + z * z)) * s[0], 2.0f * (x * y + z * w) * s[0], 2.0f * (x * z - y * w) * s[0], 0.0f,
+        2.0f * (x * y - z * w) * s[1], (1.0f - 2.0f * (x * x + z * z)) * s[1], 2.0f * (y * z + x * w) * s[1], 0.0f,
+        2.0f * (x * z + y * w) * s[2], 2.0f * (y * z - x * w) * s[2], (1.0f - 2.0f * (x * x + y * y)) * s[2], 0.0f,
+        t[0], t[1], t[2], 1.0f,
+    };
+    SDL_memcpy(matrix, columns, sizeof(columns));
+}
+
+/// @brief Makes a quaternion one unit long, as a rotation must be.
+static void GltfNormalize(f32 *quaternion)
+{
+    f32 length = SDL_sqrtf(quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] + quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
+
+    for (usz i = 0; length > 0.0f && i < 4; i++)
+    {
+        quaternion[i] /= length;
+    }
+}
+
+/// @brief Turns from one rotation toward another by a share from 0 to 1, along the shorter way: spherical linear interpolation.
+static void GltfSlerp(const f32 *from, const f32 *to, f32 share, f32 *result)
+{
+    f32 dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2] + from[3] * to[3];
+    f32 sign = dot < 0.0f ? -1.0f : 1.0f;
+    dot *= sign;
+    f32 a = 1.0f - share;
+    f32 b = share;
+
+    // nearly the same rotations are mixed straight, as the sine below would be about 0
+    if (dot < 0.9995f)
+    {
+        f32 angle = SDL_acosf(dot);
+        a = SDL_sinf(a * angle) / SDL_sinf(angle);
+        b = SDL_sinf(b * angle) / SDL_sinf(angle);
+    }
+
+    for (usz i = 0; i < 4; i++)
+    {
+        result[i] = a * from[i] + b * sign * to[i];
+    }
+
+    GltfNormalize(result);
+}
+
+/// @brief Reads a key's value from a sampler's output: one element, or the middle of its three for a cubic spline, whose others are its tangents.
+static void GltfKey(const cgltf_animation_sampler *sampler, usz key, usz part, f32 *value, usz components)
+{
+    bool cubic = sampler->interpolation == cgltf_interpolation_type_cubic_spline;
+    (void)cgltf_accessor_read_float(sampler->output, cubic ? key * 3 + part : key, value, components);
+}
+
+/// @brief Sets the part of a transform that a channel animates to its value at a time: before the first key the first, after the last the last.
+static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, GltfTransform *transform)
+{
+    const cgltf_animation_sampler *sampler = channel->sampler;
+    usz keys = sampler->input->count;
+    bool rotation = channel->target_path == cgltf_animation_path_type_rotation;
+    usz components = rotation ? 4 : 3;
+    f32 *target = rotation ? transform->rotation : channel->target_path == cgltf_animation_path_type_translation ? transform->translation : transform->scale;
+
+    // the key before the time, found by halves, as the keys' times rise
+    usz low = 0;
+    usz high = keys;
+
+    while (high - low > 1)
+    {
+        usz middle = (low + high) / 2;
+        f32 time = 0.0f;
+        (void)cgltf_accessor_read_float(sampler->input, middle, &time, 1);
+        low = time <= seconds ? middle : low;
+        high = time <= seconds ? high : middle;
+    }
+
+    f32 start = 0.0f;
+    f32 end = 0.0f;
+    (void)cgltf_accessor_read_float(sampler->input, low, &start, 1);
+
+    if (low + 1 >= keys || seconds <= start || sampler->interpolation == cgltf_interpolation_type_step)
+    {
+        GltfKey(sampler, seconds < start ? 0 : low, 1, target, components);
+        return;
+    }
+
+    (void)cgltf_accessor_read_float(sampler->input, low + 1, &end, 1);
+    f32 span = end - start;
+    f32 share = span > 0.0f ? (seconds - start) / span : 0.0f;
+    f32 from[4] = {0};
+    f32 to[4] = {0};
+    GltfKey(sampler, low, 1, from, components);
+    GltfKey(sampler, low + 1, 1, to, components);
+
+    if (sampler->interpolation == cgltf_interpolation_type_linear)
+    {
+        if (rotation)
+        {
+            GltfSlerp(from, to, share, target);
+            return;
+        }
+
+        for (usz i = 0; i < components; i++)
+        {
+            target[i] = from[i] + (to[i] - from[i]) * share;
+        }
+
+        return;
+    }
+
+    // a cubic Hermite spline between the two keys, with the first key's out-tangent and the second's in-tangent, scaled by the time between them
+    f32 out[4] = {0};
+    f32 in[4] = {0};
+    GltfKey(sampler, low, 2, out, components);
+    GltfKey(sampler, low + 1, 0, in, components);
+    f32 s2 = share * share;
+    f32 s3 = s2 * share;
+
+    for (usz i = 0; i < components; i++)
+    {
+        target[i] = (2.0f * s3 - 3.0f * s2 + 1.0f) * from[i] + (s3 - 2.0f * s2 + share) * span * out[i] + (-2.0f * s3 + 3.0f * s2) * to[i] + (s3 - s2) * span * in[i];
+    }
+
+    if (rotation)
+    {
+        GltfNormalize(target);
+    }
+}
+
+/// @brief Gives each node's matrix in its parent at a time of an animation, 16 floats each, column by column; animation 0 gives the nodes' own matrices.
+static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
+{
+    const cgltf_data *data = model->data;
+    usz count = data->nodes_count;
+    GltfTransform *transforms = count == 0 ? nullptr : SDL_malloc(count * sizeof(GltfTransform));
+    f32 *matrices = transforms == nullptr ? nullptr : SDL_malloc(count * 16 * sizeof(f32));
+
+    if (matrices == nullptr)
+    {
+        SDL_free(transforms);
+        return GltfGive(model, nullptr, 0);
+    }
+
+    for (usz i = 0; i < count; i++)
+    {
+        const cgltf_node *node = &data->nodes[i];
+        GltfTransform *transform = &transforms[i];
+        *transform = (GltfTransform){.rotation = {0.0f, 0.0f, 0.0f, 1.0f}, .scale = {1.0f, 1.0f, 1.0f}};
+        SDL_memcpy(transform->translation, node->translation, node->has_translation ? sizeof(transform->translation) : 0);
+        SDL_memcpy(transform->rotation, node->rotation, node->has_rotation ? sizeof(transform->rotation) : 0);
+        SDL_memcpy(transform->scale, node->scale, node->has_scale ? sizeof(transform->scale) : 0);
+    }
+
+    // a node that glTF animates has no matrix of its own, so its parts change; morph weights are not part of a matrix
+    if (animation >= 1 && (usz)animation <= data->animations_count)
+    {
+        const cgltf_animation *clip = &data->animations[animation - 1];
+
+        for (usz i = 0; i < clip->channels_count; i++)
+        {
+            const cgltf_animation_channel *channel = &clip->channels[i];
+
+            if (channel->target_node != nullptr && !channel->target_node->has_matrix && channel->target_path != cgltf_animation_path_type_weights && channel->sampler->input->count > 0)
+            {
+                GltfSample(channel, seconds, &transforms[cgltf_node_index(data, channel->target_node)]);
+            }
+        }
+    }
+
+    for (usz i = 0; i < count; i++)
+    {
+        if (data->nodes[i].has_matrix)
+        {
+            SDL_memcpy(matrices + i * 16, data->nodes[i].matrix, 16 * sizeof(f32));
+        }
+        else
+        {
+            GltfMatrix(&transforms[i], matrices + i * 16);
+        }
+    }
+
+    SDL_free(transforms);
+    return GltfGive(model, matrices, count * 16 * sizeof(f32));
 }
 
 /// @brief Reads the bytes of an image: from its buffer, as in a .glb, from the data of its URI, or from its file, next to the model's.
@@ -490,9 +717,10 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
         {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
         {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
-        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices or image call on the model"},
-        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices or image call on the model"},
-        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices or image call on the model"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image or pose call on the model"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image or pose call on the model"},
+        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)", "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image or pose call on the model"},
+        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image or pose call on the model"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
