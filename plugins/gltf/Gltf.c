@@ -232,6 +232,11 @@ static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node
         SHU_ReturnResult(GltfSetInteger(item, "mesh", (i64)cgltf_mesh_index(data, node->mesh) + 1));
     }
 
+    if (node->skin != nullptr)
+    {
+        SHU_ReturnResult(GltfSetInteger(item, "skin", (i64)cgltf_skin_index(data, node->skin) + 1));
+    }
+
     ECSValue *children = nullptr;
     SHU_ReturnResult(GltfSetTable(item, "children", &children));
 
@@ -270,6 +275,7 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     ECSValue *roots = nullptr;
     ECSValue *images = nullptr;
     ECSValue *animations = nullptr;
+    ECSValue *skins = nullptr;
     ECSValue *item = nullptr;
     ECSValue_SetTable(info);
     SHU_ReturnResult(GltfSetTable(info, "meshes", &meshes));
@@ -278,6 +284,7 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     SHU_ReturnResult(GltfSetTable(info, "roots", &roots));
     SHU_ReturnResult(GltfSetTable(info, "images", &images));
     SHU_ReturnResult(GltfSetTable(info, "animations", &animations));
+    SHU_ReturnResult(GltfSetTable(info, "skins", &skins));
 
     for (usz i = 0; i < data->meshes_count; i++)
     {
@@ -304,6 +311,19 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
         SHU_ReturnResult(GltfSetString(item, "name", data->animations[i].name));
         SHU_ReturnResult(ECSValue_TableSetField(item, "duration", &field));
         ECSValue_SetNumber(field, (f64)GltfDuration(&data->animations[i]));
+    }
+
+    for (usz i = 0; i < data->skins_count; i++)
+    {
+        ECSValue *list = nullptr;
+        SHU_ReturnResult(GltfSetTable(skins, nullptr, &item));
+        SHU_ReturnResult(GltfSetString(item, "name", data->skins[i].name));
+        SHU_ReturnResult(GltfSetTable(item, "joints", &list));
+
+        for (usz j = 0; j < data->skins[i].joints_count; j++)
+        {
+            SHU_ReturnResult(GltfSetInteger(list, nullptr, (i64)cgltf_node_index(data, data->skins[i].joints[j]) + 1));
+        }
     }
 
     for (usz i = 0; i < data->nodes_count; i++)
@@ -548,9 +568,9 @@ static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, Gltf
 }
 
 /// @brief Gives each node's matrix in its parent at a time of an animation, 16 floats each, column by column; animation 0 gives the nodes' own matrices.
-static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
+/// @return The matrices, to free with SDL_free, or nullptr if out of memory or the model has no nodes.
+static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds)
 {
-    const cgltf_data *data = model->data;
     usz count = data->nodes_count;
     GltfTransform *transforms = count == 0 ? nullptr : SDL_malloc(count * sizeof(GltfTransform));
     f32 *matrices = transforms == nullptr ? nullptr : SDL_malloc(count * 16 * sizeof(f32));
@@ -558,7 +578,7 @@ static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
     if (matrices == nullptr)
     {
         SDL_free(transforms);
-        return GltfGive(model, nullptr, 0);
+        return nullptr;
     }
 
     for (usz i = 0; i < count; i++)
@@ -600,7 +620,160 @@ static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
     }
 
     SDL_free(transforms);
-    return GltfGive(model, matrices, count * 16 * sizeof(f32));
+    return matrices;
+}
+
+static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
+{
+    f32 *matrices = GltfLocalMatrices(model->data, animation, seconds);
+    return GltfGive(model, matrices, model->data->nodes_count * 16 * sizeof(f32));
+}
+
+/// @brief Multiplies two matrices of 16 floats, column by column: result = a times b; result may not be a or b.
+static void GltfMultiply(const f32 *a, const f32 *b, f32 *result)
+{
+    for (usz column = 0; column < 4; column++)
+    {
+        for (usz row = 0; row < 4; row++)
+        {
+            f32 sum = 0.0f;
+
+            for (usz k = 0; k < 4; k++)
+            {
+                sum += a[k * 4 + row] * b[column * 4 + k];
+            }
+
+            result[column * 4 + row] = sum;
+        }
+    }
+}
+
+/// @brief Sets a node's matrix in the model's space from its matrix in its parent, the parent's first; done marks the nodes whose matrix is set.
+static void GltfWorld(const cgltf_data *data, const f32 *locals, usz node, f32 *worlds, bool *done)
+{
+    if (done[node])
+    {
+        return;
+    }
+
+    const cgltf_node *parent = data->nodes[node].parent;
+
+    if (parent == nullptr)
+    {
+        SDL_memcpy(worlds + node * 16, locals + node * 16, 16 * sizeof(f32));
+    }
+    else
+    {
+        usz index = cgltf_node_index(data, parent);
+        GltfWorld(data, locals, index, worlds, done);
+        GltfMultiply(worlds + index * 16, locals + node * 16, worlds + node * 16);
+    }
+
+    done[node] = true;
+}
+
+/// @brief Finds a primitive's attribute of a type, such as its positions, or nullptr.
+static const cgltf_accessor *GltfFindAttribute(const cgltf_primitive *part, cgltf_attribute_type type)
+{
+    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
+    {
+        if (part->attributes[i].type == type && part->attributes[i].index == 0)
+        {
+            return part->attributes[i].data;
+        }
+    }
+
+    return nullptr;
+}
+
+/// @brief Gives a primitive's positions moved by a skin's joints at a time of an animation, three floats each, in the model's space, as glTF skins them:
+/// each vertex goes through the joints that JOINTS_0 names, by the shares that WEIGHTS_0 gives. A primitive without them, or a missing skin, gives its positions as they are.
+static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skin, i32 animation, f32 seconds)
+{
+    const cgltf_data *data = model->data;
+    const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
+    const cgltf_accessor *positions = GltfFindAttribute(part, cgltf_attribute_type_position);
+    const cgltf_accessor *joints = GltfFindAttribute(part, cgltf_attribute_type_joints);
+    const cgltf_accessor *weights = GltfFindAttribute(part, cgltf_attribute_type_weights);
+    const cgltf_skin *bones = skin >= 1 && (usz)skin <= data->skins_count ? &data->skins[skin - 1] : nullptr;
+    usz count = positions == nullptr ? 0 : positions->count;
+    f32 *out = count == 0 ? nullptr : SDL_malloc(count * 3 * sizeof(f32));
+
+    if (out == nullptr || cgltf_accessor_unpack_floats(positions, out, count * 3) != count * 3)
+    {
+        SDL_free(out);
+        return GltfGive(model, nullptr, 0);
+    }
+
+    if (bones == nullptr || joints == nullptr || weights == nullptr || bones->joints_count == 0)
+    {
+        return GltfGive(model, out, count * 3 * sizeof(f32));
+    }
+
+    // each joint's matrix: where its node is now, after the inverse of where it was when the mesh was bound to it
+    f32 *locals = GltfLocalMatrices(data, animation, seconds);
+    f32 *worlds = locals == nullptr ? nullptr : SDL_malloc(data->nodes_count * 16 * sizeof(f32));
+    bool *done = worlds == nullptr ? nullptr : SDL_calloc(data->nodes_count, sizeof(bool));
+    f32 *matrices = done == nullptr ? nullptr : SDL_malloc(bones->joints_count * 16 * sizeof(f32));
+
+    for (usz i = 0; matrices != nullptr && i < bones->joints_count; i++)
+    {
+        usz node = cgltf_node_index(data, bones->joints[i]);
+        f32 inverse[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+        if (bones->inverse_bind_matrices != nullptr)
+        {
+            (void)cgltf_accessor_read_float(bones->inverse_bind_matrices, i, inverse, 16);
+        }
+
+        GltfWorld(data, locals, node, worlds, done);
+        GltfMultiply(worlds + node * 16, inverse, matrices + i * 16);
+    }
+
+    for (usz v = 0; matrices != nullptr && v < count; v++)
+    {
+        cgltf_uint index[4] = {0};
+        f32 share[4] = {0};
+        f32 *p = out + v * 3;
+        f32 x = p[0], y = p[1], z = p[2];
+        f32 sum[3] = {0};
+        f32 total = 0.0f;
+        (void)cgltf_accessor_read_uint(joints, v, index, 4);
+        (void)cgltf_accessor_read_float(weights, v, share, 4);
+
+        for (usz k = 0; k < 4; k++)
+        {
+            if (share[k] == 0.0f || index[k] >= bones->joints_count)
+            {
+                continue;
+            }
+
+            const f32 *m = matrices + (usz)index[k] * 16;
+            sum[0] += share[k] * (m[0] * x + m[4] * y + m[8] * z + m[12]);
+            sum[1] += share[k] * (m[1] * x + m[5] * y + m[9] * z + m[13]);
+            sum[2] += share[k] * (m[2] * x + m[6] * y + m[10] * z + m[14]);
+            total += share[k];
+        }
+
+        // a vertex that no joint moves stays
+        if (total > 0.0f)
+        {
+            p[0] = sum[0] / total;
+            p[1] = sum[1] / total;
+            p[2] = sum[2] / total;
+        }
+    }
+
+    if (matrices == nullptr)
+    {
+        ECS_LogError(GLTF.plugin, "Out of memory while skinning a primitive of the model '%s'", model->path);
+    }
+
+    SDL_free(matrices);
+    SDL_free(done);
+    SDL_free(worlds);
+    SDL_free(locals);
+    return GltfGive(model, out, count * 3 * sizeof(f32));
 }
 
 /// @brief Reads the bytes of an image: from its buffer, as in a .glb, from the data of its URI, or from its file, next to the model's.
@@ -717,10 +890,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
         {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
         {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
-        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image or pose call on the model"},
-        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image or pose call on the model"},
-        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)", "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image or pose call on the model"},
-        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image or pose call on the model"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image, pose or skin call on the model"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image, pose or skin call on the model"},
+        {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds)", "Give a primitive's positions moved by a skin's joints at a time of an animation, in the model's space; kept until the next attribute, indices, image, pose or skin call on the model"},
+        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)", "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image, pose or skin call on the model"},
+        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image, pose or skin call on the model"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
