@@ -58,7 +58,7 @@ static bool ImageEndsWith(const char *text, const char *suffix)
 
 /// @brief Draws a parsed SVG image at a scale of its own size, and frees it.
 /// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if there is no image.
-static SDL_Surface *ImageDrawSvg(NSVGimage *svg, f32 scale)
+static SDL_Surface *ImageDrawSVG(NSVGimage *svg, f32 scale)
 {
     i32 width = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->width * scale);
     i32 height = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->height * scale);
@@ -78,9 +78,9 @@ static SDL_Surface *ImageDrawSvg(NSVGimage *svg, f32 scale)
 
 /// @brief Reads an SVG file and draws it at a scale of its own size.
 /// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
-static SDL_Surface *ImageReadSvg(const char *path, f32 scale)
+static SDL_Surface *ImageReadSVG(const char *path, f32 scale)
 {
-    return ImageDrawSvg(nsvgParseFromFile(path, "px", IMAGE_SVG_DPI), scale);
+    return ImageDrawSVG(nsvgParseFromFile(path, "px", IMAGE_SVG_DPI), scale);
 }
 
 /// @brief Converts pixels of red, green, blue and alpha bytes, stretched by a scale.
@@ -150,7 +150,7 @@ static char *ImageFullPath(const char *path, f32 scale)
 static void *ImageLoad(const char *path, f32 scale)
 {
     char *full = ImageFullPath(path, scale);
-    SDL_Surface *surface = full == nullptr ? nullptr : ImageEndsWith(full, ".svg") ? ImageReadSvg(full, scale) : ImageReadRaster(full, scale);
+    SDL_Surface *surface = full == nullptr ? nullptr : ImageEndsWith(full, ".svg") ? ImageReadSVG(full, scale) : ImageReadRaster(full, scale);
 
     if (full != nullptr && surface == nullptr)
     {
@@ -193,7 +193,7 @@ static void *ImageDecode(SHUSlice bytes, f32 scale)
             svg = nsvgParse(text, "px", IMAGE_SVG_DPI);
         }
 
-        surface = ImageDrawSvg(svg, scale);
+        surface = ImageDrawSVG(svg, scale);
         SDL_free(text);
     }
     else
@@ -230,7 +230,7 @@ static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
 
 /// @brief Skips a GIF's sub-blocks: each starts with its size, and an empty one ends them.
 /// @return Where the sub-blocks end, or size if the data ends first.
-static usz ImageGifSkipBlocks(const u8 *data, usz size, usz at)
+static usz ImageGIFSkipBlocks(const u8 *data, usz size, usz at)
 {
     while (at < size && data[at] != 0)
     {
@@ -243,7 +243,7 @@ static usz ImageGifSkipBlocks(const u8 *data, usz size, usz at)
 /// @brief Makes every frame of a GIF that restores the frame before it restore the background instead, in place.
 /// stb_image reads the frame two back from before its buffer for that disposal, so a file could make it read memory it does not own;
 /// for stb, restoring the background means restoring what showed before the frame, which is the same.
-static void ImageGifAvoidPrevious(u8 *data, usz size)
+static void ImageGIFAvoidPrevious(u8 *data, usz size)
 {
     // the header, then the logical screen, with the global colour table if its flag is set
     if (size < 13 || SDL_memcmp(data, "GIF", 3) != 0)
@@ -263,14 +263,14 @@ static void ImageGifAvoidPrevious(u8 *data, usz size)
                 data[at + 3] = (u8)((data[at + 3] & ~0x1C) | (2 << 2));
             }
 
-            at = ImageGifSkipBlocks(data, size, at + 2);
+            at = ImageGIFSkipBlocks(data, size, at + 2);
         }
         else if (data[at] == 0x2C && at + 10 < size)
         {
             // an image: its descriptor, its local colour table if its flag is set, the size of its codes, then its data
             u8 flags = data[at + 9];
             at += 10 + ((flags & 0x80) != 0 ? 3 * ((usz)2 << (flags & 0x07)) : 0) + 1;
-            at = ImageGifSkipBlocks(data, size, at);
+            at = ImageGIFSkipBlocks(data, size, at);
         }
         else
         {
@@ -317,7 +317,7 @@ static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
 
     if (read)
     {
-        ImageGifAvoidPrevious(file, size);
+        ImageGIFAvoidPrevious(file, size);
     }
 
     stbi_uc *pixels = read ? stbi_load_gif_from_memory(file, (int)size, &delays, &width, &height, &count, &channels, 4) : nullptr;

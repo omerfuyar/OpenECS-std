@@ -1086,13 +1086,13 @@ local function listItem(node)
   return node.item ~= nil
 end
 
-local function byId(node, id)
+local function byID(node, id)
   if node.id == id then
     return node
   end
 
   for _, child in ipairs(node.children or {}) do
-    local found = byId(child, id)
+    local found = byID(child, id)
 
     if found then
       return found
@@ -1263,7 +1263,7 @@ end
 
 -- handles a key or text event while a field or key element has the focus
 local function typing(panel, state, event)
-  local node = state.root and byId(state.root, state.focus)
+  local node = state.root and byID(state.root, state.focus)
 
   if not node then
     blur(panel, state)
@@ -1449,7 +1449,7 @@ local function press(panel, state, event)
     return step(panel, state, event.shift)
   end
 
-  local node = state.target and byId(state.root, state.target)
+  local node = state.target and byID(state.root, state.target)
 
   if not node then
     return false
@@ -1523,7 +1523,7 @@ end
 
 -- draws the shown tooltip below and right of the pointer, inside the surface
 local function paintTip(surface, state, width, height)
-  local node = state.tipShown and byId(state.root, state.tip)
+  local node = state.tipShown and byID(state.root, state.tip)
 
   if not node then
     return
@@ -1586,7 +1586,7 @@ local function handle(panel, event)
     state.pointerX, state.pointerY = x, y
 
     if state.dragging then
-      local node = byId(root, state.dragging)
+      local node = byID(root, state.dragging)
       local _, length = thumb(node)
       local travel = node.h - length
 
@@ -1599,7 +1599,7 @@ local function handle(panel, event)
     end
 
     if state.selecting then
-      local node = byId(root, state.selecting)
+      local node = byID(root, state.selecting)
 
       if node and state.focus == node.id then
         state.at = positionAt(node, state.typed, state.textX or node.x + size.paddingX, x)
@@ -1610,7 +1610,7 @@ local function handle(panel, event)
     end
 
     if state.sliding then
-      local node = byId(root, state.sliding)
+      local node = byID(root, state.sliding)
 
       if node then
         slide(node, x)
@@ -1739,7 +1739,7 @@ function services.show(panel, surface, root)
 
   -- the element under the pointer and the pressed element are found again in the new layout
   state.hover = state.hover and state.pointerX and find(root, state.pointerX, state.pointerY, interactive) or nil
-  state.pressed = state.pressed and byId(root, state.pressed.id) or nil
+  state.pressed = state.pressed and byID(root, state.pressed.id) or nil
   state.root = root
 
   draw.unclip(surface)
@@ -1772,7 +1772,7 @@ end
 -- the rectangle of an element in the last layout, in layout units
 function services.rect(panel, id)
   local root = panelState(panel).root
-  local node = root and byId(root, id)
+  local node = root and byID(root, id)
 
   if not node then
     return nil
@@ -1795,7 +1795,7 @@ end
 -- gives a field or key element the focus, as a click on it does
 function services.edit(panel, id)
   local state = panelState(panel)
-  local node = state.root and byId(state.root, id)
+  local node = state.root and byID(state.root, id)
 
   -- the keyboard's target follows, without its ring, as after a click
   if node and (node.kind == "field" or node.kind == "key") then
@@ -1806,23 +1806,23 @@ function services.edit(panel, id)
 end
 
 -- scrolls a scroll element so that one of its children shows
-function services.reveal(panel, scrollId, childId)
+function services.reveal(panel, scrollID, childID)
   local state = panelState(panel)
-  local scroll = state.root and byId(state.root, scrollId)
-  local child = scroll and byId(scroll, childId)
+  local scroll = state.root and byID(state.root, scrollID)
+  local child = scroll and byID(scroll, childID)
 
   if child then
     local top = child.y - scroll.y + scroll.offset
-    local offset = state.scroll[scrollId] or 0
-    state.scroll[scrollId] = math.min(math.max(offset, top + child.h - scroll.h), top)
+    local offset = state.scroll[scrollID] or 0
+    state.scroll[scrollID] = math.min(math.max(offset, top + child.h - scroll.h), top)
     panel:redraw()
   end
 end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
-function services.move(panel, listId, step)
+function services.move(panel, listID, step)
   local state = panelState(panel)
-  local list = state.root and byId(state.root, listId)
+  local list = state.root and byID(state.root, listID)
 
   if not list or not list.items or #list.items == 0 then
     return
@@ -1831,13 +1831,13 @@ function services.move(panel, listId, step)
   local index = list.selected and list.selected + step or (step > 0 and 1 or #list.items)
   index = math.min(math.max(index, 1), #list.items)
   call(list.onSelect, index)
-  services.reveal(panel, listId, list.items[index].id)
+  services.reveal(panel, listID, list.items[index].id)
 end
 
 -- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
-function services.expand(panel, treeId, open)
+function services.expand(panel, treeID, open)
   local state = panelState(panel)
-  local node = state.root and byId(state.root, treeId)
+  local node = state.root and byID(state.root, treeID)
   local tree = node and node.tree
   local index = node and node.selected
 
@@ -1851,16 +1851,16 @@ function services.expand(panel, treeId, open)
     call(tree.onToggle, tree.ids[index], open)
     panel:redraw()
   elseif open and folder == "open" and tree.parents[index + 1] == index then
-    services.move(panel, treeId, 1)
+    services.move(panel, treeID, 1)
   elseif not open and tree.parents[index] then
-    services.move(panel, treeId, tree.parents[index] - index)
+    services.move(panel, treeID, tree.parents[index] - index)
   end
 end
 
 -- activates a list's chosen item, as a click on it does
-function services.activate(panel, listId)
+function services.activate(panel, listID)
   local state = panelState(panel)
-  local list = state.root and byId(state.root, listId)
+  local list = state.root and byID(state.root, listID)
 
   if list and list.selected and list.items and list.items[list.selected] then
     call(list.onActivate, list.selected)
