@@ -169,6 +169,58 @@ static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
     return SHUResult_Ok;
 }
 
+/// @brief Skips a GIF's sub-blocks: each starts with its size, and an empty one ends them.
+/// @return Where the sub-blocks end, or size if the data ends first.
+static usz ImageGifSkipBlocks(const u8 *data, usz size, usz at)
+{
+    while (at < size && data[at] != 0)
+    {
+        at += 1 + (usz)data[at];
+    }
+
+    return at < size ? at + 1 : size;
+}
+
+/// @brief Makes every frame of a GIF that restores the frame before it restore the background instead, in place.
+/// stb_image reads the frame two back from before its buffer for that disposal, so a file could make it read memory it does not own;
+/// for stb, restoring the background means restoring what showed before the frame, which is the same.
+static void ImageGifAvoidPrevious(u8 *data, usz size)
+{
+    // the header, then the logical screen, with the global colour table if its flag is set
+    if (size < 13 || SDL_memcmp(data, "GIF", 3) != 0)
+    {
+        return;
+    }
+
+    usz at = 13 + ((data[10] & 0x80) != 0 ? 3 * ((usz)2 << (data[10] & 0x07)) : 0);
+
+    while (at < size)
+    {
+        if (data[at] == 0x21 && at + 1 < size)
+        {
+            // a graphic control extension: its first sub-block has 4 bytes, and its first byte holds the disposal in bits 2 to 4
+            if (data[at + 1] == 0xF9 && at + 3 < size && data[at + 2] == 4 && ((data[at + 3] >> 2) & 0x07) == 3)
+            {
+                data[at + 3] = (u8)((data[at + 3] & ~0x1C) | (2 << 2));
+            }
+
+            at = ImageGifSkipBlocks(data, size, at + 2);
+        }
+        else if (data[at] == 0x2C && at + 10 < size)
+        {
+            // an image: its descriptor, its local colour table if its flag is set, the size of its codes, then its data
+            u8 flags = data[at + 9];
+            at += 10 + ((flags & 0x80) != 0 ? 3 * ((usz)2 << (flags & 0x07)) : 0) + 1;
+            at = ImageGifSkipBlocks(data, size, at);
+        }
+        else
+        {
+            // the trailer, or data that stb stops at too
+            return;
+        }
+    }
+}
+
 /// @brief Reads the frames of an animated GIF file into new images of draw, each with the seconds it shows for; any other image file gives one frame of 0 seconds.
 /// The frames are a list; a file that cannot be read gives nil, and the reason is logged.
 static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
@@ -202,13 +254,19 @@ static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
     int height = 0;
     int count = 0;
     int channels = 0;
-    bool read = file != nullptr;
+    bool read = file != nullptr && size <= (usz)SDL_MAX_SINT32;
+
+    if (read)
+    {
+        ImageGifAvoidPrevious(file, size);
+    }
+
     stbi_uc *pixels = read ? stbi_load_gif_from_memory(file, (int)size, &delays, &width, &height, &count, &channels, 4) : nullptr;
     SDL_free(file);
 
     if (pixels == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, !read ? SDL_GetError() : stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, file == nullptr ? SDL_GetError() : !read ? "the file is too large" : stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
         SDL_free(full);
         return;
     }

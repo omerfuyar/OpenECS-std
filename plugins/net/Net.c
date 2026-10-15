@@ -115,6 +115,8 @@ static const char *NetFindCertificates(void)
 }
 
 /// @brief Makes what TLS connections share, once: the random generator, the trusted certificates and the configuration of a client.
+static void NetTlsStop(void);
+
 static bool NetTlsStart(void)
 {
     if (NET.tlsReady)
@@ -139,7 +141,9 @@ static bool NetTlsStart(void)
         mbedtls_ctr_drbg_seed(&NET.random, mbedtls_entropy_func, &NET.entropy, (const unsigned char *)"openecs.net", 11) != 0 ||
         mbedtls_ssl_config_defaults(&NET.tlsConfig, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
     {
+        // a later connection tries again from the start
         ECS_LogError(NET.plugin, "Cannot start TLS");
+        NetTlsStop();
         return false;
     }
 
@@ -288,7 +292,12 @@ static NetConnection *NetConnectTls(const char *host, i32 port)
 
     if (tls == nullptr)
     {
-        SDL_free(connection);
+        if (connection != nullptr)
+        {
+            NET_UnrefAddress(connection->address);
+            SDL_free(connection);
+        }
+
         return nullptr;
     }
 

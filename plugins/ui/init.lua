@@ -88,6 +88,49 @@ local function lineHeight(font, textSize)
   return line
 end
 
+-- whether a byte continues a UTF-8 character
+local function continues(text, at)
+  local byte = text:byte(at)
+  return byte ~= nil and byte >= 0x80 and byte < 0xC0
+end
+
+-- the byte position of the character after the one at a position; unlike utf8.offset, a text that is not valid UTF-8 raises no error
+local function nextCharacter(text, at)
+  at = at + 1
+
+  while continues(text, at) do
+    at = at + 1
+  end
+
+  return at
+end
+
+-- the byte position of the character before a position
+local function previousCharacter(text, at)
+  at = at - 1
+
+  while at > 1 and continues(text, at) do
+    at = at - 1
+  end
+
+  return at
+end
+
+-- the first characters of a text
+local function prefix(text, count)
+  local at = 1
+
+  for _ = 1, count do
+    if at > #text then
+      break
+    end
+
+    at = nextCharacter(text, at)
+  end
+
+  return text:sub(1, at - 1)
+end
+
 -- the text that fits a width, ended with an ellipsis when it is cut
 local function fit(font, text, textSize, width)
   if measureText(font, text, textSize) <= width then
@@ -98,7 +141,7 @@ local function fit(font, text, textSize, width)
 
   while low < high do
     local middle = (low + high + 1) // 2
-    local cut = text:sub(1, (utf8.offset(text, middle + 1) or #text + 1) - 1) .. "…"
+    local cut = prefix(text, middle) .. "…"
 
     if measureText(font, cut, textSize) <= width then
       low = middle
@@ -107,7 +150,7 @@ local function fit(font, text, textSize, width)
     end
   end
 
-  return text:sub(1, (utf8.offset(text, low + 1) or #text + 1) - 1) .. "…"
+  return prefix(text, low) .. "…"
 end
 
 -- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own
@@ -313,7 +356,8 @@ function elements.number(value, props)
   end
 
   local function show(number)
-    return math.type(number) == "integer" and tostring(number) or ("%g"):format(number)
+    -- 14 digits keep what a user types, such as 0.1, and leave out the float's last digits
+    return math.type(number) == "integer" and tostring(number) or ("%.14g"):format(number)
   end
 
   node.value = settle(node.value)
@@ -695,7 +739,9 @@ local function paint(node, surface, state, clip)
     draw.text(surface, font, fit(font, tostring(node.value or ""), textSize, room), node.x + size.paddingX, textY, textSize, node.color or "text")
     arrow(surface, node.x + node.w - size.paddingX - line / 4, node.y + node.h / 2, line / 4, "textDim")
   elseif node.kind == "selector" and node.look == "tabs" then
-    -- a line under the whole row, and a thicker one in the accent colour under the chosen tab
+    -- a line under the whole row, and a thicker one in the accent colour under the chosen tab; tabs past the element's width are cut at its edge
+    local inner = intersect({ x = node.x, y = node.y, w = node.w, h = node.h }, clip)
+    draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
     draw.fill(surface, node.x, node.y + node.h - 1, node.w, 1, "tabShown")
 
     for i, rect in ipairs(segmentRects(node)) do
@@ -713,6 +759,8 @@ local function paint(node, surface, state, clip)
       local shown = fit(font, tostring(choice), textSize, rect.w - 2 * size.paddingX)
       draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
     end
+
+    restoreClip(surface, clip)
   elseif node.kind == "selector" then
     for i, rect in ipairs(segmentRects(node)) do
       local choice = node.choices[i]
@@ -1030,17 +1078,16 @@ local function typing(panel, state, event)
     state.at = at + #event.text
     call(node.onChange, state.typed)
   elseif event.type == "keyDown" and event.key == "Backspace" and at > 1 then
-    local previous = utf8.offset(typed, -1, at)
+    local previous = previousCharacter(typed, at)
     state.typed, state.at = typed:sub(1, previous - 1) .. typed:sub(at), previous
     call(node.onChange, state.typed)
   elseif event.type == "keyDown" and event.key == "Delete" and at <= #typed then
-    local next = utf8.offset(typed, 2, at)
-    state.typed = typed:sub(1, at - 1) .. typed:sub(next)
+    state.typed = typed:sub(1, at - 1) .. typed:sub(nextCharacter(typed, at))
     call(node.onChange, state.typed)
   elseif event.type == "keyDown" and event.key == "Left" then
-    state.at = at > 1 and utf8.offset(typed, -1, at) or 1
+    state.at = at > 1 and previousCharacter(typed, at) or 1
   elseif event.type == "keyDown" and event.key == "Right" then
-    state.at = at <= #typed and utf8.offset(typed, 2, at) or at
+    state.at = at <= #typed and nextCharacter(typed, at) or at
   elseif event.type == "keyDown" and event.key == "Home" then
     state.at = 1
   elseif event.type == "keyDown" and event.key == "End" then
@@ -1206,13 +1253,14 @@ local function hideTip(panel, state)
   state.tip, state.tipTimer, state.tipShown = nil, nil, false
 end
 
--- starts waiting to show the tooltip of the element under the pointer, unless it is the one already shown or waiting
+-- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
+-- the pointer rests before a tooltip shows, so each move starts the wait again
 local function followTip(panel, state, x, y)
   local node = find(state.root, x, y, function(candidate)
     return candidate.tooltip ~= nil
   end)
 
-  if node and node.id == state.tip then
+  if node and node.id == state.tip and state.tipShown then
     return
   end
 
@@ -1489,7 +1537,9 @@ function services.edit(panel, id)
   local state = panelState(panel)
   local node = state.root and byId(state.root, id)
 
+  -- the keyboard's target follows, without its ring, as after a click
   if node and (node.kind == "field" or node.kind == "key") then
+    state.target, state.ring = node.id, false
     activate(panel, state, node, 0)
     panel:redraw()
   end
