@@ -912,5 +912,26 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description));
     }
 
+    // Lua calls these on a handle, such as handle:describe(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"model", "describe", "describe"},
+        {"model", "attribute", "attribute"},
+        {"model", "indices", "indices"},
+        {"model", "pose", "pose"},
+        {"model", "skin", "skin"},
+        {"model", "image", "image"},
+        {"model", "free", "free"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function));
+    }
+
     return SHUResult_Ok;
 }

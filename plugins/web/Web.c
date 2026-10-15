@@ -854,12 +854,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"header", (ECSFunction)WebHeader, "string(handle<web.request> request, string name)", "Give a header of a request's answer once it is done, or nothing"},
         {"error", (ECSFunction)WebError, "string(handle<web.request> request)", "Give why a request failed"},
         {"free", (ECSFunction)WebFree, "void(handle<web.request> request)", "Free a request now; one that runs stops"},
-        {"socket.open", (ECSFunction)WebSocketOpen, "handle<web.socket>(string url, value<string[]?> headers)", "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")"},
-        {"socket.status", (ECSFunction)WebSocketStatus, "int(handle<web.socket> socket)", "Give a connection's state: 1 open, 0 connecting, -1 failed or closed"},
-        {"socket.send", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text)", "Send a message, as text or as bytes; it goes once the connection is open"},
-        {"socket.receive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string kind)", "Take the oldest message that arrived, and its kind, \"text\" or \"binary\"; nothing if none has"},
-        {"socket.error", (ECSFunction)WebSocketError, "string(handle<web.socket> socket)", "Give why a connection failed or closed"},
-        {"socket.close", (ECSFunction)WebFree, "void(handle<web.socket> socket)", "Close a connection and free it now"},
+        {"socket", (ECSFunction)WebSocketOpen, "handle<web.socket>(string url, value<string[]?> headers)", "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")"},
+        {"socketStatus", (ECSFunction)WebSocketStatus, "int(handle<web.socket> socket)", "Give a connection's state: 1 open, 0 connecting, -1 failed or closed"},
+        {"socketSend", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text)", "Send a message, as text or as bytes; it goes once the connection is open"},
+        {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string kind)", "Take the oldest message that arrived, and its kind, \"text\" or \"binary\"; nothing if none has"},
+        {"socketError", (ECSFunction)WebSocketError, "string(handle<web.socket> socket)", "Give why a connection failed or closed"},
+        {"socketClose", (ECSFunction)WebFree, "void(handle<web.socket> socket)", "Close a connection and free it now"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here
@@ -872,6 +872,30 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     for (usz i = 0; i < (usz)SDL_arraysize(functions); i++)
     {
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), WebQuit(nullptr););
+    }
+
+    // Lua calls these on a handle, such as handle:status(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"request", "status", "status"},
+        {"request", "body", "body"},
+        {"request", "header", "header"},
+        {"request", "error", "error"},
+        {"request", "free", "free"},
+        {"socket", "status", "socketStatus"},
+        {"socket", "send", "socketSend"},
+        {"socket", "receive", "socketReceive"},
+        {"socket", "error", "socketError"},
+        {"socket", "close", "socketClose"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), WebQuit(nullptr););
     }
 
     return SHUResult_Ok;

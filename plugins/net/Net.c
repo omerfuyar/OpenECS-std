@@ -772,5 +772,26 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), NetFree(nullptr););
     }
 
+    // Lua calls these on a handle, such as handle:status(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"connection", "status", "status"},
+        {"connection", "send", "send"},
+        {"connection", "receive", "receive"},
+        {"connection", "close", "close"},
+        {"server", "accept", "accept"},
+        {"udp", "sendTo", "sendTo"},
+        {"udp", "receiveFrom", "receiveFrom"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), NetFree(nullptr););
+    }
+
     return SHUResult_Ok;
 }

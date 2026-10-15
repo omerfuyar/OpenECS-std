@@ -531,5 +531,30 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description));
     }
 
+    // Lua calls these on a handle, such as handle:print(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"grid", "print", "print"},
+        {"grid", "put", "put"},
+        {"grid", "clear", "clear"},
+        {"grid", "style", "style"},
+        {"grid", "colors", "colors"},
+        {"grid", "cursor", "cursor"},
+        {"grid", "setCursor", "setCursor"},
+        {"grid", "resize", "resize"},
+        {"grid", "size", "size"},
+        {"grid", "get", "get"},
+        {"grid", "free", "free"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function));
+    }
+
     return SHUResult_Ok;
 }
