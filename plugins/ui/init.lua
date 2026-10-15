@@ -288,6 +288,76 @@ function elements.list(props, children)
   return node
 end
 
+-- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
+-- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
+-- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
+function elements.tree(props, nodes)
+  props = props or {}
+  assert(props.id, "a tree needs an id, which keeps its offset")
+  local open, rows = props.open or {}, {}
+  local ids, parents, folders = {}, {}, {}
+
+  local function add(list, depth, parent)
+    for _, item in ipairs(list) do
+      local folder = item.children ~= nil
+      local shown = folder and open[item.id] == true
+      local index = #rows + 1
+
+      -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
+      local arrow = elements.space({ width = size.checkSize, grow = 0 })
+
+      if folder then
+        arrow = elements.row({ onClick = function()
+          if props.onToggle then
+            props.onToggle(item.id, not shown)
+          end
+        end }, { element("disclosure", { open = shown }) })
+      end
+
+      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, {
+        elements.space({ width = depth * size.checkSize, grow = 0 }),
+        arrow,
+        elements.text(item.label or tostring(item.id), { color = item.color }),
+      })
+      ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
+
+      if shown then
+        add(item.children, depth + 1, index)
+      end
+    end
+  end
+
+  add(nodes or {}, 0, nil)
+
+  -- the list works with indexes, and the tree with ids
+  local listProps = {}
+
+  for key, value in pairs(props) do
+    listProps[key] = value
+  end
+
+  listProps.open, listProps.onToggle = nil, nil
+  listProps.selected = nil
+
+  for index, id in ipairs(ids) do
+    if id == props.selected then
+      listProps.selected = index
+    end
+  end
+
+  listProps.onSelect = props.onSelect and function(index)
+    props.onSelect(ids[index])
+  end
+
+  listProps.onActivate = props.onActivate and function(index)
+    props.onActivate(ids[index])
+  end
+
+  local node = elements.list(listProps, rows)
+  node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  return node
+end
+
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
@@ -533,6 +603,8 @@ local function measure(node, state, room)
     width, height = 1, 1
   elseif node.kind == "space" then
     width, height = 0, 0
+  elseif node.kind == "disclosure" then
+    width, height = size.checkSize, line
   else
     local across, along = 0, 0
     local count = 0
@@ -878,6 +950,15 @@ local function paint(node, surface, state, clip)
   elseif node.kind == "image" then
     if node.picture then
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
+    end
+  elseif node.kind == "disclosure" then
+    -- down when open, right when closed
+    local half, x, y = size.checkSize / 4, node.x + node.w / 2, node.y + node.h / 2
+
+    if node.open then
+      arrow(surface, x, y, half, "textDim")
+    else
+      draw.triangles(surface, string.pack("ffffff", x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
     end
   elseif node.kind == "separator" then
     if node.vertical then
@@ -1692,6 +1773,29 @@ function services.move(panel, listId, step)
   services.reveal(panel, listId, list.items[index].id)
 end
 
+-- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
+function services.expand(panel, treeId, open)
+  local state = panelState(panel)
+  local node = state.root and byId(state.root, treeId)
+  local tree = node and node.tree
+  local index = node and node.selected
+
+  if not tree or not index or not tree.ids[index] then
+    return
+  end
+
+  local folder = tree.folders[index]
+
+  if folder and (folder == "open") ~= open then
+    call(tree.onToggle, tree.ids[index], open)
+    panel:redraw()
+  elseif open and folder == "open" and tree.parents[index + 1] == index then
+    services.move(panel, treeId, 1)
+  elseif not open and tree.parents[index] then
+    services.move(panel, treeId, tree.parents[index] - index)
+  end
+end
+
 -- activates a list's chosen item, as a click on it does
 function services.activate(panel, listId)
   local state = panelState(panel)
@@ -1713,11 +1817,13 @@ assert(ecs.service.register({
   reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
   move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },
   activate = { sig = "void(handle<ecs.panel> panel, string list)", doc = "Activate a list's chosen item; onActivate gets it", fn = services.activate },
+  expand = { sig = "void(handle<ecs.panel> panel, string tree, bool open)", doc = "Open or close a tree's chosen node; onToggle gets it, opening an open node chooses its first child, and closing a closed one its parent", fn = services.expand },
   column = { sig = "value(value props, value children)", doc = "Elements below each other", fn = elements.column },
   row = { sig = "value(value props, value children)", doc = "Elements beside each other", fn = elements.row },
   scroll = { sig = "value(value props, value children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
   list = { sig = "value(value props, value children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
   group = { sig = "value(value props, value children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
+  tree = { sig = "value(value props, value nodes)", doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id", fn = elements.tree },
   separator = { sig = "value(value props)", doc = "A line across a column, or up a row", fn = elements.separator },
   text = { sig = "value(string text, value props)", doc = "A line of text", fn = elements.text },
   button = { sig = "value(string label, value props)", doc = "A button; onClick runs when it is clicked", fn = elements.button },
