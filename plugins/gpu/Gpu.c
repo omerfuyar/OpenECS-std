@@ -1,6 +1,7 @@
-// The gpu standard plugin: draws shapes, lines and textures into the GPU surface of another plugin's panel, on the GPU (DESIGN 15).
-// Its functions are those of draw, for a frame instead of a surface: a panel's Draw starts a frame of its surface, draws, and submits it.
-// It draws with an offscreen SDL renderer of its own on OpenECS's GPU device, which draws into the panel's texture, so it needs no shaders.
+// The gpu standard plugin: draws into the GPU surface of another plugin's panel, on the GPU (DESIGN 15).
+// A panel's Draw starts a frame of its surface, draws, and submits it. A frame draws shapes, lines and textures as draw does, with an offscreen SDL
+// renderer of its own on OpenECS's GPU device, and draws vertex buffers with a plugin's own shaders, through pipelines, with SDL's GPU API.
+// It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
 
 #include "OpenECS.h"
 
@@ -8,17 +9,54 @@
 
 #pragma region Source Only
 
-/// @brief Drawing into one GPU surface: the renderer's view of the surface's texture, until the frame is submitted.
+/// @brief How many depth textures are kept, one for each size of the surfaces drawn into lately.
+#define GPU_DEPTHS 4
+
+/// @brief The most vertex attributes a pipeline takes.
+#define GPU_ATTRIBUTES 16
+
+/// @brief Drawing into one GPU surface, until the frame is submitted. Shapes go through the renderer; pipelines draw in a render pass of their own.
 typedef struct GpuFrame
 {
-    SDL_Texture *target; // the surface's texture, which the renderer draws into without owning it
-    f32 scale;           // the surface's pixels per layout unit
+    SDL_Texture *target;            // the surface's texture, which the renderer draws into without owning it
+    SDL_GPUTexture *color;          // the same texture, which render passes draw into
+    i32 width;                      // the surface's size in pixels
+    i32 height;
+    f32 scale;                      // the surface's pixels per layout unit
+    SDL_GPUCommandBuffer *commands; // the command buffer of the open render pass, or nullptr
+    SDL_GPURenderPass *pass;        // the render pass that pipelines draw in, or nullptr
+    bool depthCleared;              // the frame's first render pass cleared the depth texture
 } GpuFrame;
+
+/// @brief A buffer on the GPU of vertices or of indices, 32-bit numbers.
+typedef struct GpuBuffer
+{
+    SDL_GPUBuffer *buffer;
+    u32 size; // in bytes
+    bool index;
+} GpuBuffer;
+
+/// @brief A graphics pipeline: shaders, how vertices are laid out, and how triangles are drawn.
+typedef struct GpuPipeline
+{
+    SDL_GPUGraphicsPipeline *pipeline;
+    u32 pitch; // bytes from one vertex to the next
+} GpuPipeline;
 
 static struct
 {
     ECSPlugin plugin;
-    SDL_Renderer *renderer; // an offscreen GPU renderer on OpenECS's device, or nullptr without a GPU renderer
+    SDL_GPUDevice *device;  // OpenECS's GPU device, or nullptr without a GPU renderer
+    SDL_Renderer *renderer; // an offscreen GPU renderer on the device, or nullptr without a GPU renderer
+    bool rendered;          // the renderer has commands that are not sent yet, such as shapes or a texture's pixels
+    SDL_GPUSampler *sampler;
+    struct
+    {
+        i32 width;
+        i32 height;
+        SDL_GPUTexture *texture;
+    } depths[GPU_DEPTHS]; // depth textures by size
+    usz nextDepth;        // the one a new size replaces
 } GPU = {0};
 
 /// @brief Frees the renderer; the plugin's Destroy, after the handles of its frames and textures are gone.
@@ -26,25 +64,70 @@ static void GpuFree(void *data)
 {
     (void)data;
 
+    for (usz i = 0; i < GPU_DEPTHS; i++)
+    {
+        if (GPU.depths[i].texture != nullptr)
+        {
+            SDL_ReleaseGPUTexture(GPU.device, GPU.depths[i].texture);
+        }
+    }
+
+    if (GPU.sampler != nullptr)
+    {
+        SDL_ReleaseGPUSampler(GPU.device, GPU.sampler);
+    }
+
     if (GPU.renderer != nullptr)
     {
         SDL_DestroyRenderer(GPU.renderer);
     }
 
+    SDL_zero(GPU.depths);
+    GPU.nextDepth = 0;
+    GPU.sampler = nullptr;
     GPU.renderer = nullptr;
 }
 
-/// @brief Draws into a frame's texture from now on, with a colour, and blends by its alpha.
+/// @brief Ends a frame's render pass and sends its commands, so shapes drawn after it come after it.
+static void GpuEndPass(GpuFrame *frame)
+{
+    if (frame->pass != nullptr)
+    {
+        SDL_EndGPURenderPass(frame->pass);
+        SDL_SubmitGPUCommandBuffer(frame->commands);
+    }
+
+    frame->pass = nullptr;
+    frame->commands = nullptr;
+}
+
+/// @brief Sends what the renderer drew, and the pixels it uploaded, to the GPU, before later commands.
+static void GpuSendRendered(void)
+{
+    if (GPU.rendered)
+    {
+        // presenting the offscreen renderer submits its commands
+        SDL_SetRenderTarget(GPU.renderer, nullptr);
+        SDL_RenderPresent(GPU.renderer);
+    }
+
+    GPU.rendered = false;
+}
+
+/// @brief Draws shapes into a frame's texture from now on, after what its pipelines drew, with a colour, and blends by its alpha.
 static bool GpuTarget(GpuFrame *frame, ECSColor color)
 {
+    GpuEndPass(frame);
+    GPU.rendered = true;
     SDL_SetRenderTarget(GPU.renderer, frame->target);
     return SDL_SetRenderDrawColor(GPU.renderer, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, (color >> 24) & 0xFF);
 }
 
-/// @brief Frees a frame that was not submitted; what it drew is still sent with the renderer's next frame.
+/// @brief Frees a frame that was not submitted; what its pipelines drew is sent now, and its shapes with the next frame.
 static void GpuFrameDestroy(void *object)
 {
     GpuFrame *frame = object;
+    GpuEndPass(frame);
     SDL_DestroyTexture(frame->target);
     SDL_free(frame);
 }
@@ -81,15 +164,18 @@ static GpuFrame *GpuStartFrame(ECSSurface *surface)
     }
 
     frame->target = target;
+    frame->color = surface->texture;
+    frame->width = surface->width;
+    frame->height = surface->height;
     frame->scale = surface->scale;
     return frame;
 }
 
 static void GpuSubmit(GpuFrame *frame)
 {
-    // presenting the offscreen renderer sends what it drew to the GPU, before the core's renderer shows the texture
-    SDL_SetRenderTarget(GPU.renderer, nullptr);
-    SDL_RenderPresent(GPU.renderer);
+    // what the frame drew reaches the GPU before the core's renderer shows the texture
+    GpuEndPass(frame);
+    GpuSendRendered();
     ECSHandle_Forget(frame);
     GpuFrameDestroy(frame);
 }
@@ -178,6 +264,56 @@ static void GpuTriangles(GpuFrame *frame, SHUSlice points, SHUSlice indices, ECS
     SDL_free(index);
 }
 
+static void GpuMesh(GpuFrame *frame, SHUSlice points, SHUSlice colors, SHUSlice indices)
+{
+    usz count = points.size / (2 * sizeof(f32));
+    usz indexCount = indices.size / sizeof(u32);
+
+    if (count == 0 || colors.size / sizeof(u32) < count || count > (usz)SDL_MAX_SINT32 || indexCount > (usz)SDL_MAX_SINT32)
+    {
+        ECS_LogWarn(GPU.plugin, count == 0 ? "A mesh needs points." : "A mesh needs a colour for each of its points.");
+        return;
+    }
+
+    // the points are in layout units, and the renderer takes pixels; each colour is ARGB, not premultiplied, as a colour text is, and blends across its triangles
+    f32 *xy = SDL_malloc(count * 2 * sizeof(f32));
+    SDL_FColor *fcolors = SDL_malloc(count * sizeof(SDL_FColor));
+    int *index = indexCount > 0 ? SDL_malloc((indexCount - indexCount % 3) * sizeof(int)) : nullptr;
+    usz used = 0;
+
+    for (usz i = 0; xy != nullptr && fcolors != nullptr && i < count; i++)
+    {
+        u32 color = ((const u32 *)colors.data)[i];
+        xy[2 * i] = ((const f32 *)points.data)[2 * i] * frame->scale;
+        xy[2 * i + 1] = ((const f32 *)points.data)[2 * i + 1] * frame->scale;
+        fcolors[i] = (SDL_FColor){(f32)((color >> 16) & 0xFF) / 255.0f, (f32)((color >> 8) & 0xFF) / 255.0f, (f32)(color & 0xFF) / 255.0f, (f32)((color >> 24) & 0xFF) / 255.0f};
+    }
+
+    // indices that name no point leave their triangle out
+    for (usz i = 0; index != nullptr && i + 2 < indexCount; i += 3)
+    {
+        const u32 *triangle = (const u32 *)indices.data + i;
+
+        if (triangle[0] < count && triangle[1] < count && triangle[2] < count)
+        {
+            index[used++] = (int)triangle[0];
+            index[used++] = (int)triangle[1];
+            index[used++] = (int)triangle[2];
+        }
+    }
+
+    if (xy != nullptr && fcolors != nullptr && (indexCount == 0 || index != nullptr))
+    {
+        GpuTarget(frame, 0xFFFFFFFF);
+        int drawn = (int)(count - (indexCount == 0 ? count % 3 : 0));
+        SDL_RenderGeometryRaw(GPU.renderer, nullptr, xy, 2 * sizeof(f32), fcolors, sizeof(SDL_FColor), nullptr, 0, drawn, index, (int)used, sizeof(int));
+    }
+
+    SDL_free(xy);
+    SDL_free(fcolors);
+    SDL_free(index);
+}
+
 static SDL_Texture *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
 {
     if (GPU.renderer == nullptr || width < 1 || height < 1 || pixels.size != (usz)width * (usz)height * 4)
@@ -196,6 +332,8 @@ static SDL_Texture *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
         return nullptr;
     }
 
+    // the upload is one of the renderer's commands, which goes before pipelines sample the texture
+    GPU.rendered = true;
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
     return texture;
 }
@@ -208,6 +346,7 @@ static bool GpuUpdateTexture(SDL_Texture *texture, SHUSlice pixels)
         return false;
     }
 
+    GPU.rendered = true;
     return SDL_UpdateTexture(texture, nullptr, pixels.data, texture->w * 4);
 }
 
@@ -240,6 +379,439 @@ static void GpuImage(GpuFrame *frame, SDL_Texture *texture, f32 x, f32 y, f32 wi
     GpuImageTransformed(frame, texture, x, y, width, height, 0.0f, 0xFFFFFFFF);
 }
 
+#pragma region Pipelines
+
+/// @brief Copies bytes into a GPU buffer, with a transfer buffer and a copy pass of their own, which reach the GPU before later draws.
+static bool GpuUpload(SDL_GPUBuffer *buffer, SHUSlice bytes)
+{
+    const SDL_GPUTransferBufferCreateInfo info = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = (Uint32)bytes.size};
+    SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(GPU.device, &info);
+    void *mapped = transfer == nullptr ? nullptr : SDL_MapGPUTransferBuffer(GPU.device, transfer, false);
+    SDL_GPUCommandBuffer *commands = mapped == nullptr ? nullptr : SDL_AcquireGPUCommandBuffer(GPU.device);
+
+    if (commands == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot upload %zu bytes to the GPU: %s", bytes.size, SDL_GetError());
+
+        if (mapped != nullptr)
+        {
+            SDL_UnmapGPUTransferBuffer(GPU.device, transfer);
+        }
+
+        SDL_ReleaseGPUTransferBuffer(GPU.device, transfer);
+        return false;
+    }
+
+    SDL_memcpy(mapped, bytes.data, bytes.size);
+    SDL_UnmapGPUTransferBuffer(GPU.device, transfer);
+    SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(commands);
+    const SDL_GPUTransferBufferLocation source = {.transfer_buffer = transfer};
+    const SDL_GPUBufferRegion destination = {.buffer = buffer, .size = (Uint32)bytes.size};
+    SDL_UploadToGPUBuffer(copy, &source, &destination, false);
+    SDL_EndGPUCopyPass(copy);
+    SDL_SubmitGPUCommandBuffer(commands);
+
+    // the device keeps the transfer buffer until the copy is done
+    SDL_ReleaseGPUTransferBuffer(GPU.device, transfer);
+    return true;
+}
+
+static void GpuBufferDestroy(void *object)
+{
+    GpuBuffer *buffer = object;
+    SDL_ReleaseGPUBuffer(GPU.device, buffer->buffer);
+    SDL_free(buffer);
+}
+
+/// @brief Gives a buffer new bytes; a buffer of another size is made again.
+static bool GpuFillBuffer(GpuBuffer *buffer, SHUSlice bytes)
+{
+    if (bytes.size == 0 || bytes.size > SDL_MAX_UINT32 || (buffer->index && bytes.size % 4 != 0))
+    {
+        ECS_LogWarn(GPU.plugin, buffer->index ? "An index buffer needs 32-bit indices, 4 bytes each." : "A buffer needs bytes.");
+        return false;
+    }
+
+    if (buffer->buffer == nullptr || buffer->size != bytes.size)
+    {
+        const SDL_GPUBufferCreateInfo info = {.usage = buffer->index ? SDL_GPU_BUFFERUSAGE_INDEX : SDL_GPU_BUFFERUSAGE_VERTEX, .size = (Uint32)bytes.size};
+        SDL_GPUBuffer *made = SDL_CreateGPUBuffer(GPU.device, &info);
+
+        if (made == nullptr)
+        {
+            ECS_LogError(GPU.plugin, "Cannot make a buffer of %zu bytes: %s", bytes.size, SDL_GetError());
+            return false;
+        }
+
+        SDL_ReleaseGPUBuffer(GPU.device, buffer->buffer);
+        buffer->buffer = made;
+        buffer->size = (u32)bytes.size;
+    }
+
+    return GpuUpload(buffer->buffer, bytes);
+}
+
+static GpuBuffer *GpuNewBuffer(const char *usage, SHUSlice bytes)
+{
+    bool index = SDL_strcmp(usage, "index") == 0;
+
+    if (GPU.device == nullptr || (!index && SDL_strcmp(usage, "vertex") != 0))
+    {
+        ECS_LogWarn(GPU.plugin, GPU.device == nullptr ? "gpu cannot make a buffer: OpenECS has no GPU renderer." : "A buffer is for \"vertex\" or \"index\" data, not '%s'.", usage);
+        return nullptr;
+    }
+
+    GpuBuffer *buffer = SDL_calloc(1, sizeof(GpuBuffer));
+
+    if (buffer != nullptr)
+    {
+        buffer->index = index;
+    }
+
+    if (buffer == nullptr || !GpuFillBuffer(buffer, bytes))
+    {
+        SDL_free(buffer);
+        return nullptr;
+    }
+
+    return buffer;
+}
+
+static bool GpuUpdateBuffer(GpuBuffer *buffer, SHUSlice bytes)
+{
+    return GpuFillBuffer(buffer, bytes);
+}
+
+static i32 GpuBufferSize(GpuBuffer *buffer)
+{
+    return (i32)buffer->size;
+}
+
+static void GpuFreeBuffer(GpuBuffer *buffer)
+{
+    ECSHandle_Forget(buffer);
+    GpuBufferDestroy(buffer);
+}
+
+static void GpuShaderDestroy(void *object)
+{
+    SDL_ReleaseGPUShader(GPU.device, object);
+}
+
+static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
+{
+    if (GPU.device == nullptr)
+    {
+        ECS_LogWarn(GPU.plugin, "gpu cannot make a shader: OpenECS has no GPU renderer.");
+        return nullptr;
+    }
+
+    // the device takes one kind of code, by its driver: SPIR-V for Vulkan, DXIL for Direct3D 12, MSL for Metal; the first one given that it takes is used
+    const struct
+    {
+        const char *field;
+        SDL_GPUShaderFormat format;
+    } kinds[] = {{"spirv", SDL_GPU_SHADERFORMAT_SPIRV}, {"dxil", SDL_GPU_SHADERFORMAT_DXIL}, {"msl", SDL_GPU_SHADERFORMAT_MSL}};
+    SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(GPU.device);
+    SHUSlice code = {0};
+    SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
+
+    for (usz i = 0; i < SDL_arraysize(kinds) && format == SDL_GPU_SHADERFORMAT_INVALID; i++)
+    {
+        code = ECSValue_GetBuffer(ECSValue_GetTableField(desc, kinds[i].field), (SHUSlice){0});
+        format = code.size > 0 && (formats & kinds[i].format) != 0 ? kinds[i].format : SDL_GPU_SHADERFORMAT_INVALID;
+    }
+
+    const char *stage = ECSValue_GetString(ECSValue_GetTableField(desc, "stage"), "");
+    bool vertex = SDL_strcmp(stage, "vertex") == 0;
+
+    if (format == SDL_GPU_SHADERFORMAT_INVALID || (!vertex && SDL_strcmp(stage, "fragment") != 0))
+    {
+        ECS_LogWarn(GPU.plugin, format == SDL_GPU_SHADERFORMAT_INVALID ? "A shader needs code that the GPU's driver takes: spirv, dxil or msl." : "A shader's stage is \"vertex\" or \"fragment\".");
+        return nullptr;
+    }
+
+    const SDL_GPUShaderCreateInfo info = {
+        .code_size = code.size,
+        .code = code.data,
+        .entrypoint = ECSValue_GetString(ECSValue_GetTableField(desc, "entry"), "main"),
+        .format = format,
+        .stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT,
+        .num_samplers = (Uint32)SDL_max(0, ECSValue_GetInteger(ECSValue_GetTableField(desc, "samplers"), 0)),
+        .num_uniform_buffers = (Uint32)SDL_max(0, ECSValue_GetInteger(ECSValue_GetTableField(desc, "uniforms"), 0)),
+    };
+    SDL_GPUShader *shader = SDL_CreateGPUShader(GPU.device, &info);
+
+    if (shader == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot make a %s shader: %s", stage, SDL_GetError());
+    }
+
+    return shader;
+}
+
+static void GpuPipelineDestroy(void *object)
+{
+    GpuPipeline *pipeline = object;
+    SDL_ReleaseGPUGraphicsPipeline(GPU.device, pipeline->pipeline);
+    SDL_free(pipeline);
+}
+
+/// @brief Finds a word in a list of names, which are in the order of their values.
+static i32 GpuChoose(const char *word, const char *const *names, usz count)
+{
+    for (usz i = 0; i < count; i++)
+    {
+        if (SDL_strcmp(word, names[i]) == 0)
+        {
+            return (i32)i;
+        }
+    }
+
+    return -1;
+}
+
+static GpuPipeline *GpuNewPipeline(const ECSValue *desc)
+{
+    SDL_GPUShader *vertex = ECSValue_GetHandle(ECSValue_GetTableField(desc, "vertex"), "gpu.shader");
+    SDL_GPUShader *fragment = ECSValue_GetHandle(ECSValue_GetTableField(desc, "fragment"), "gpu.shader");
+    const ECSValue *attributes = ECSValue_GetTableField(desc, "attributes");
+    usz count = ECSValue_GetListCount(attributes);
+
+    if (GPU.device == nullptr || vertex == nullptr || fragment == nullptr || count == 0 || count > GPU_ATTRIBUTES)
+    {
+        ECS_LogWarn(GPU.plugin, GPU.device == nullptr ? "gpu cannot make a pipeline: OpenECS has no GPU renderer." : "A pipeline needs a vertex shader, a fragment shader, and from 1 to 16 attributes.");
+        return nullptr;
+    }
+
+    // each attribute of a vertex, in order, at the location of its number from 0; the vertices are one after another in one buffer
+    static const char *const formatNames[] = {"float", "float2", "float3", "float4", "color"};
+    static const SDL_GPUVertexElementFormat formats[] = {SDL_GPU_VERTEXELEMENTFORMAT_FLOAT, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM};
+    static const u32 sizes[] = {4, 8, 12, 16, 4};
+    SDL_GPUVertexAttribute vertexAttributes[GPU_ATTRIBUTES] = {0};
+    u32 pitch = 0;
+
+    for (usz i = 0; i < count; i++)
+    {
+        const char *name = ECSValue_GetString(ECSValue_GetListItem(attributes, i), "");
+        i32 chosen = GpuChoose(name, formatNames, SDL_arraysize(formatNames));
+
+        if (chosen < 0)
+        {
+            ECS_LogWarn(GPU.plugin, "A vertex attribute is float, float2, float3, float4 or color, not '%s'.", name);
+            return nullptr;
+        }
+
+        vertexAttributes[i] = (SDL_GPUVertexAttribute){.location = (Uint32)i, .format = formats[chosen], .offset = pitch};
+        pitch += sizes[chosen];
+    }
+
+    static const char *const primitiveNames[] = {"triangles", "triangleStrip", "lines", "lineStrip", "points"};
+    static const SDL_GPUPrimitiveType primitives[] = {SDL_GPU_PRIMITIVETYPE_TRIANGLELIST, SDL_GPU_PRIMITIVETYPE_TRIANGLESTRIP, SDL_GPU_PRIMITIVETYPE_LINELIST, SDL_GPU_PRIMITIVETYPE_LINESTRIP, SDL_GPU_PRIMITIVETYPE_POINTLIST};
+    static const char *const cullNames[] = {"none", "front", "back"};
+    static const SDL_GPUCullMode culls[] = {SDL_GPU_CULLMODE_NONE, SDL_GPU_CULLMODE_FRONT, SDL_GPU_CULLMODE_BACK};
+    static const char *const blendNames[] = {"none", "alpha", "add"};
+    i32 primitive = GpuChoose(ECSValue_GetString(ECSValue_GetTableField(desc, "primitive"), "triangles"), primitiveNames, SDL_arraysize(primitiveNames));
+    i32 cull = GpuChoose(ECSValue_GetString(ECSValue_GetTableField(desc, "cull"), "none"), cullNames, SDL_arraysize(cullNames));
+    i32 blend = GpuChoose(ECSValue_GetString(ECSValue_GetTableField(desc, "blend"), "none"), blendNames, SDL_arraysize(blendNames));
+    bool depth = ECSValue_GetBool(ECSValue_GetTableField(desc, "depth"), true);
+
+    if (primitive < 0 || cull < 0 || blend < 0)
+    {
+        ECS_LogWarn(GPU.plugin, "A pipeline's primitive is triangles, triangleStrip, lines, lineStrip or points; its cull none, front or back; its blend none, alpha or add.");
+        return nullptr;
+    }
+
+    // alpha blends by the fragment's alpha, which is not premultiplied; add adds the fragment's colour
+    SDL_GPUColorTargetDescription target = {.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM};
+    target.blend_state = (SDL_GPUColorTargetBlendState){
+        .enable_blend = blend != 0,
+        .src_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE,
+        .dst_color_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE,
+        .color_blend_op = SDL_GPU_BLENDOP_ADD,
+        .src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE,
+        .dst_alpha_blendfactor = blend == 1 ? SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA : SDL_GPU_BLENDFACTOR_ONE,
+        .alpha_blend_op = SDL_GPU_BLENDOP_ADD,
+    };
+
+    const SDL_GPUVertexBufferDescription buffer = {.slot = 0, .pitch = pitch, .input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX};
+    const SDL_GPUGraphicsPipelineCreateInfo info = {
+        .vertex_shader = vertex,
+        .fragment_shader = fragment,
+        .vertex_input_state = {.vertex_buffer_descriptions = &buffer, .num_vertex_buffers = 1, .vertex_attributes = vertexAttributes, .num_vertex_attributes = (Uint32)count},
+        .primitive_type = primitives[primitive],
+        .rasterizer_state = {.fill_mode = SDL_GPU_FILLMODE_FILL, .cull_mode = culls[cull], .front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE},
+        // every render pass of a frame has a depth texture, so a pipeline without depth only leaves it alone
+        .depth_stencil_state = {.compare_op = SDL_GPU_COMPAREOP_LESS, .enable_depth_test = depth, .enable_depth_write = depth},
+        .target_info = {.color_target_descriptions = &target, .num_color_targets = 1, .depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM, .has_depth_stencil_target = true},
+    };
+    GpuPipeline *pipeline = SDL_calloc(1, sizeof(GpuPipeline));
+
+    if (pipeline != nullptr)
+    {
+        pipeline->pitch = pitch;
+        pipeline->pipeline = SDL_CreateGPUGraphicsPipeline(GPU.device, &info);
+    }
+
+    if (pipeline == nullptr || pipeline->pipeline == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot make a pipeline: %s", SDL_GetError());
+        SDL_free(pipeline);
+        return nullptr;
+    }
+
+    return pipeline;
+}
+
+/// @brief Gives a depth texture of a size, the same one each time for a size, so a frame's passes share it; a new size takes the place of the oldest.
+static SDL_GPUTexture *GpuDepth(i32 width, i32 height)
+{
+    for (usz i = 0; i < GPU_DEPTHS; i++)
+    {
+        if (GPU.depths[i].texture != nullptr && GPU.depths[i].width == width && GPU.depths[i].height == height)
+        {
+            return GPU.depths[i].texture;
+        }
+    }
+
+    const SDL_GPUTextureCreateInfo info = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
+        .width = (Uint32)width,
+        .height = (Uint32)height,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+    };
+    SDL_GPUTexture *texture = SDL_CreateGPUTexture(GPU.device, &info);
+
+    if (texture == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot make a %dx%d depth texture: %s", width, height, SDL_GetError());
+        return nullptr;
+    }
+
+    usz slot = GPU.nextDepth;
+    if (GPU.depths[slot].texture != nullptr)
+    {
+        SDL_ReleaseGPUTexture(GPU.device, GPU.depths[slot].texture);
+    }
+
+    GPU.depths[slot].texture = texture;
+    GPU.depths[slot].width = width;
+    GPU.depths[slot].height = height;
+    GPU.nextDepth = (slot + 1) % GPU_DEPTHS;
+    return texture;
+}
+
+/// @brief Opens a frame's render pass after what the renderer drew; the frame's first pass clears the depth texture, and later ones keep it.
+static SDL_GPURenderPass *GpuBeginPass(GpuFrame *frame)
+{
+    if (frame->pass != nullptr)
+    {
+        return frame->pass;
+    }
+
+    GpuSendRendered();
+    SDL_GPUTexture *depth = GpuDepth(frame->width, frame->height);
+    frame->commands = depth == nullptr ? nullptr : SDL_AcquireGPUCommandBuffer(GPU.device);
+
+    if (frame->commands == nullptr)
+    {
+        return nullptr;
+    }
+
+    const SDL_GPUColorTargetInfo color = {.texture = frame->color, .load_op = SDL_GPU_LOADOP_LOAD, .store_op = SDL_GPU_STOREOP_STORE};
+    const SDL_GPUDepthStencilTargetInfo depthTarget = {
+        .texture = depth,
+        .clear_depth = 1.0f,
+        .load_op = frame->depthCleared ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR,
+        .store_op = SDL_GPU_STOREOP_STORE,
+        .stencil_load_op = SDL_GPU_LOADOP_DONT_CARE,
+        .stencil_store_op = SDL_GPU_STOREOP_DONT_CARE,
+    };
+    frame->pass = SDL_BeginGPURenderPass(frame->commands, &color, 1, &depthTarget);
+    frame->depthCleared = true;
+
+    if (frame->pass == nullptr)
+    {
+        SDL_SubmitGPUCommandBuffer(frame->commands);
+        frame->commands = nullptr;
+    }
+
+    return frame->pass;
+}
+
+static void GpuDraw(GpuFrame *frame, GpuPipeline *pipeline, const ECSValue *draw)
+{
+    GpuBuffer *vertices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "vertices"), "gpu.buffer");
+    GpuBuffer *indices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "indices"), "gpu.buffer");
+    SDL_Texture *texture = ECSValue_GetHandle(ECSValue_GetTableField(draw, "texture"), "gpu.texture");
+
+    if (vertices == nullptr || vertices->index || (indices != nullptr && !indices->index))
+    {
+        ECS_LogWarn(GPU.plugin, "A draw needs a vertex buffer as its vertices, and an index buffer as its indices, if it has any.");
+        return;
+    }
+
+    // without a count, a draw takes every index, or every vertex
+    i64 all = indices != nullptr ? indices->size / 4 : vertices->size / pipeline->pitch;
+    i64 count = ECSValue_GetInteger(ECSValue_GetTableField(draw, "count"), all);
+    SHUSlice vertexUniforms = ECSValue_GetBuffer(ECSValue_GetTableField(draw, "vertexUniforms"), (SHUSlice){0});
+    SHUSlice fragmentUniforms = ECSValue_GetBuffer(ECSValue_GetTableField(draw, "fragmentUniforms"), (SHUSlice){0});
+
+    // a texture whose pixels changed since the pass began gets them first
+    if (texture != nullptr && GPU.rendered)
+    {
+        GpuEndPass(frame);
+    }
+
+    SDL_GPURenderPass *pass = count <= 0 ? nullptr : GpuBeginPass(frame);
+
+    if (pass == nullptr)
+    {
+        return;
+    }
+
+    SDL_BindGPUGraphicsPipeline(pass, pipeline->pipeline);
+    const SDL_GPUBufferBinding vertexBinding = {.buffer = vertices->buffer};
+    SDL_BindGPUVertexBuffers(pass, 0, &vertexBinding, 1);
+
+    // uniforms are each stage's first uniform block, laid out as std140 lays it out
+    if (vertexUniforms.size > 0)
+    {
+        SDL_PushGPUVertexUniformData(frame->commands, 0, vertexUniforms.data, (Uint32)vertexUniforms.size);
+    }
+
+    if (fragmentUniforms.size > 0)
+    {
+        SDL_PushGPUFragmentUniformData(frame->commands, 0, fragmentUniforms.data, (Uint32)fragmentUniforms.size);
+    }
+
+    // a texture is the fragment shader's first sampler
+    if (texture != nullptr)
+    {
+        const SDL_GPUTextureSamplerBinding binding = {
+            .texture = SDL_GetPointerProperty(SDL_GetTextureProperties(texture), SDL_PROP_TEXTURE_GPU_TEXTURE_POINTER, nullptr),
+            .sampler = GPU.sampler,
+        };
+        SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+    }
+
+    if (indices != nullptr)
+    {
+        const SDL_GPUBufferBinding indexBinding = {.buffer = indices->buffer};
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        SDL_DrawGPUIndexedPrimitives(pass, (Uint32)SDL_min(count, all), 1, 0, 0, 0);
+    }
+    else
+    {
+        SDL_DrawGPUPrimitives(pass, (Uint32)SDL_min(count, all), 1, 0, 0);
+    }
+}
+
+#pragma endregion Pipelines
+
 #pragma endregion Source Only
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
@@ -255,9 +827,20 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         ECS_LogWarn(plugin, "Cannot make a renderer on the GPU device: %s", SDL_GetError());
     }
 
+    // pipelines draw on the same device; a texture is sampled linearly, and its edges are clamped
     if (GPU.renderer != nullptr)
     {
         SDL_SetRenderDrawBlendMode(GPU.renderer, SDL_BLENDMODE_BLEND);
+        GPU.device = device;
+        const SDL_GPUSamplerCreateInfo sampler = {
+            .min_filter = SDL_GPU_FILTER_LINEAR,
+            .mag_filter = SDL_GPU_FILTER_LINEAR,
+            .mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
+            .address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        };
+        GPU.sampler = SDL_CreateGPUSampler(device, &sampler);
     }
 
     // a plugin whose Init fails is not destroyed, so it cleans up here
@@ -265,6 +848,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "frame", GpuFrameDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "texture", GpuTextureDestroy), GpuFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "buffer", GpuBufferDestroy), GpuFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "shader", GpuShaderDestroy), GpuFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "pipeline", GpuPipelineDestroy), GpuFree(nullptr););
 
     const struct
     {
@@ -279,10 +865,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"fill", (ECSFunction)GpuFill, "void(handle<gpu.frame> frame, float x, float y, float width, float height, color color)", "Fill a rectangle"},
         {"line", (ECSFunction)GpuLine, "void(handle<gpu.frame> frame, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
         {"triangles", (ECSFunction)GpuTriangles, "void(handle<gpu.frame> frame, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
+        {"mesh", (ECSFunction)GpuMesh, "void(handle<gpu.frame> frame, buffer points, buffer colors, buffer indices)", "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones"},
         {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)", "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have"},
         {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)", "Replace a texture's pixels with as many new ones"},
         {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)", "Give a texture's size in pixels"},
         {"freeTexture", (ECSFunction)GpuFreeTexture, "void(handle<gpu.texture> texture)", "Free a texture now, instead of when no one uses its handle"},
+        {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes)", "Make a buffer on the GPU of \"vertex\" data, vertices one after another as a pipeline's attributes lay them out, or of \"index\" data, 32-bit indices"},
+        {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)", "Replace a buffer's bytes; bytes of another size make the buffer again"},
+        {"bufferSize", (ECSFunction)GpuBufferSize, "int(handle<gpu.buffer> buffer)", "Give a buffer's size in bytes"},
+        {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)", "Free a buffer now, instead of when no one uses its handle"},
+        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)", "Make a vertex or fragment shader from compiled code: SPIR-V, DXIL or MSL, the one the GPU's driver takes"},
+        {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)", "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn"},
+        {"draw", (ECSFunction)GpuDraw, "void(handle<gpu.frame> frame, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
         {"image", (ECSFunction)GpuImage, "void(handle<gpu.frame> frame, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
         {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<gpu.frame> frame, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
     };
@@ -304,8 +898,13 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"frame", "fill", "fill"},
         {"frame", "line", "line"},
         {"frame", "triangles", "triangles"},
+        {"frame", "mesh", "mesh"},
         {"frame", "image", "image"},
         {"frame", "imageTransformed", "imageTransformed"},
+        {"frame", "draw", "draw"},
+        {"buffer", "update", "updateBuffer"},
+        {"buffer", "size", "bufferSize"},
+        {"buffer", "free", "freeBuffer"},
         {"texture", "update", "updateTexture"},
         {"texture", "size", "textureSize"},
         {"texture", "free", "freeTexture"},
