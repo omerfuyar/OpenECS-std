@@ -397,8 +397,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"info", (ECSFunction)FsInfo, "void(string path, out value info)", "Tell what a path is: its type (file, folder or other), size and when it changed; nothing if it does not exist"},
-        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value entries)", "List the entries of a folder whose names match a pattern, such as *.lua, by name; an empty pattern matches every name"},
+        {"info", (ECSFunction)FsInfo, "void(string path, out value<fs.Info?> info)", "Tell what a path is: its type (file, folder or other), size and when it changed; nothing if it does not exist"},
+        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value<fs.Entry[]?> entries)", "List the entries of a folder whose names match a pattern, such as *.lua, by name; an empty pattern matches every name"},
         {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path)", "Make a folder, and the folders above it that are missing"},
         {"copy", (ECSFunction)FsCopy, "bool(string from, string to)", "Copy a file, replacing what is at the new path"},
         {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed)", "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change"},

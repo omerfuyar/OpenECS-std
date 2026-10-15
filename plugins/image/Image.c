@@ -432,7 +432,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "decode", (ECSFunction)ImageDecode, "handle<draw.image>(buffer bytes, float scale)",
                                                  "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does. Nothing if they are not an image"));
 
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value frames)",
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value<image.Frame[]?> frames)",
                                                  "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame"));
 
     return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path)",

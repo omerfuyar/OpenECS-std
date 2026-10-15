@@ -899,7 +899,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     } functions[] = {
         {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
         {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
-        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
+        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
         {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image, pose or skin call on the model"},
         {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image, pose or skin call on the model"},
         {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds)", "Give a primitive's positions moved by a skin's joints at a time of an animation, in the model's space; kept until the next attribute, indices, image, pose or skin call on the model"},
