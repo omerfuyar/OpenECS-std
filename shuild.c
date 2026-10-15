@@ -7,7 +7,6 @@
 #define SHUC_MAX_COMMAND_BUFFER_SIZE 65536 // a library of many files is packed with one command that names each of them
 #include "shuild/shuild.h"
 
-#include <dirent.h>
 
 #pragma region Setup
 
@@ -190,78 +189,58 @@ static void SetBuildFlags(void)
     }
 }
 
-static bool EndsWith(const char *name, const char *suffix)
+/// @brief A folder that ForEachFolder lists, and the function it calls.
+typedef struct FolderVisit
 {
-    size_t nameLength = strlen(name);
-    size_t suffixLength = strlen(suffix);
-    return nameLength >= suffixLength && strcmp(name + nameLength - suffixLength, suffix) == 0;
+    const char *path;
+    void (*function)(const char *path, const char *name);
+} FolderVisit;
+
+static void VisitFolder(const char *entry, SHUFileType type, void *data)
+{
+    const FolderVisit *visit = (const FolderVisit *)data;
+
+    if (type == SHUFileType_Directory)
+    {
+        // the entry is the folder's path, with a separator at its end; the function gets its name alone
+        SHUI_String name;
+        SHUI_SFormat(&name, "%.*s", (int)(strlen(entry) - strlen(visit->path) - 1), entry + strlen(visit->path));
+        visit->function(visit->path, name.data);
+    }
 }
 
-/// @brief Calls a function for each folder in a folder, in no order; names starting with a dot are left out.
+/// @brief Calls a function for each folder in a folder, sorted by name; names starting with a dot are left out.
 static void ForEachFolder(const char *path, void (*function)(const char *path, const char *name))
 {
-    DIR *folder = opendir(path);
-    struct dirent *entry = NULL;
+    FolderVisit visit = {path, function};
+    SHU_UtilListDirectory(path, false, VisitFolder, &visit);
+}
 
-    while (folder != NULL && (entry = readdir(folder)) != NULL)
-    {
-        if (entry->d_type == DT_DIR && entry->d_name[0] != '.')
-        {
-            function(path, entry->d_name);
-        }
-    }
-
-    if (folder != NULL)
-    {
-        closedir(folder);
-    }
+static void FindCode(const char *path, SHUFileType type, void *data)
+{
+    *(bool *)data = *(bool *)data || (type == SHUFileType_Regular && SHU_UtilMatch(path, "*.c"));
 }
 
 /// @brief Tells whether a folder holds a C file.
 static bool HasCode(const char *path)
 {
     bool code = false;
-    DIR *folder = opendir(path);
-    struct dirent *entry = NULL;
-
-    while (folder != NULL && (entry = readdir(folder)) != NULL)
-    {
-        code = code || EndsWith(entry->d_name, ".c");
-    }
-
-    if (folder != NULL)
-    {
-        closedir(folder);
-    }
-
+    SHU_UtilListDirectory(path, false, FindCode, &code);
     return code;
+}
+
+static void WriteInclude(const char *path, SHUFileType type, void *data)
+{
+    if (type == SHUFileType_Regular && SHU_UtilMatch(path, "*.c"))
+    {
+        fprintf((FILE *)data, "#include \"%s%s\"\n", SHU_UtilGetExecutablePath(), path);
+    }
 }
 
 /// @brief Writes an #include of each C file in a folder and in its folders, sorted by path.
 static void WriteIncludes(FILE *file, const char *folder)
 {
-    struct dirent **entries = NULL;
-    int count = scandir(folder, &entries, NULL, alphasort);
-
-    for (int i = 0; i < count; i++)
-    {
-        SHUI_String path;
-        SHUI_SFormat(&path, "%s%s", folder, entries[i]->d_name);
-
-        if (entries[i]->d_type == DT_DIR && entries[i]->d_name[0] != '.')
-        {
-            SHUI_SAppendC(&path, "/");
-            WriteIncludes(file, path.data);
-        }
-        else if (EndsWith(entries[i]->d_name, ".c"))
-        {
-            fprintf(file, "#include \"%s%s\"\n", SHU_UtilGetExecutablePath(), path.data);
-        }
-
-        free(entries[i]);
-    }
-
-    free(entries);
+    SHU_UtilListDirectory(folder, true, WriteInclude, file);
 }
 
 /// @brief Writes a library's unity file, and replaces the old one only if it changed, so the library compiles again only when its files change.
@@ -283,15 +262,6 @@ static void WriteUnity(const Library *library, const char *path)
 /// @brief Compiles a library of dependencies/ into a static archive in a folder. Like OpenECS's dependencies, it gets neither the warnings, nor the static analyzer, nor the sanitizers (OpenECS DESIGN 17.3).
 static void BuildLibrary(const Library *library, const char *folder)
 {
-    // shuild packs the archive only when a file compiles, so an archive that is missing is built from all of them
-    SHUI_String archive;
-    SHUI_SFormat(&archive, "%slib%s.a", folder, library->name);
-
-    if (SHU_UtilFileExists(archive.data) != SHUFileType_Regular)
-    {
-        SHU_CacheClearModule(library->name);
-    }
-
     SHU_ModuleBegin(library->name, "dependencies/");
     SHU_CompilerClearFlags();
     SHU_CompilerAddFlags(" -std=gnu17 -fPIC -fvisibility=hidden -w");
@@ -347,14 +317,8 @@ static void BuildNative(const char *name, const char *root, const char *output)
         }
     }
 
-    // shuild compiles only the files that changed, so a library that is missing is built from all of them
     SHUI_String library;
     SHUI_SFormat(&library, "%slib%s.so", output, name);
-
-    if (SHU_UtilFileExists(library.data) != SHUFileType_Regular)
-    {
-        SHU_CacheClearModule(name);
-    }
 
     SHU_ModuleBegin(name, root);
     SetBuildFlags();
