@@ -52,7 +52,7 @@ local function panelState(panel)
   local state = panels[panel]
 
   if not state then
-    state = { scroll = {}, scale = 1 }
+    state = { scroll = {}, scale = 1, taken = {} }
     panels[panel] = state
   end
 
@@ -1867,6 +1867,97 @@ function services.activate(panel, listID)
   end
 end
 
+-- descriptions, for plugins in C -------------------------------------------
+
+-- the callbacks of each kind of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+local CALLBACKS = {
+  button = { "onClick" },
+  toggle = { "onChange" },
+  slider = { "onChange" },
+  selector = { "onChange" },
+  tabs = { "onChange" },
+  dropdown = { "onChange" },
+  number = { "onChange" },
+  key = { "onChange" },
+  field = { "onChange", "onSubmit" },
+  list = { "onSelect", "onActivate" },
+  table = { "onSelect", "onActivate", "onSort" },
+  tree = { "onSelect", "onActivate", "onToggle" },
+}
+
+-- what each kind's element function takes besides its props: its children, a value, choices, columns and rows, or nodes; the others take a value
+local TAKES = {
+  column = "children", row = "children", scroll = "children", list = "children", group = "children",
+  selector = "choices", tabs = "choices", dropdown = "choices",
+  table = "table", tree = "tree", separator = "none", space = "none",
+}
+
+-- an element from a description, built with the element functions, as Lua code builds it
+local function build(panel, description)
+  local props = {}
+
+  for key, value in pairs(description.props or {}) do
+    props[key] = value
+  end
+
+  -- a column or row with clickable = true is clicked like a button
+  local kind = description.kind
+  local callbacks = CALLBACKS[kind] or (props.clickable and { "onClick" }) or {}
+  props.clickable = nil
+
+  for _, callback in ipairs(callbacks) do
+    local id = props.id
+
+    if id then
+      props[callback] = function(value, open)
+        local taken = panelState(panel).taken
+        taken[id .. "\0" .. callback] = { value = value, open = open }
+        panel:redraw()
+      end
+    end
+  end
+
+  local takes = TAKES[kind]
+  local make = elements[kind]
+  assert(make, ("no element of kind '%s'"):format(tostring(kind)))
+
+  if takes == "children" then
+    local children = {}
+
+    for i, child in ipairs(description.children or {}) do
+      children[i] = build(panel, child)
+    end
+
+    return make(props, children)
+  elseif takes == "choices" then
+    return make(description.value, description.choices, props)
+  elseif takes == "table" then
+    return make(props, description.columns, description.rows)
+  elseif takes == "tree" then
+    return make(props, description.nodes)
+  elseif takes == "none" then
+    return make(props)
+  end
+
+  return make(description.value, props)
+end
+
+-- builds the elements of a description and shows them; what the callbacks got and no one took is forgotten, so each draw takes only what came since the last
+function services.showDescription(panel, surface, description)
+  local root = build(panel, description)
+  panelState(panel).taken = {}
+  services.show(panel, surface, root)
+end
+
+-- takes what a callback of a described element got since the last draw, or nil if it did not run
+function services.take(panel, id, callback)
+  local taken = panelState(panel).taken
+  local key = id .. "\0" .. callback
+  local got = taken[key]
+  taken[key] = nil
+  return got
+end
+
 assert(ecs.service.register({
   show = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)", doc = "Lay out elements in a panel and draw them", fn = services.show },
   event = { sig = "bool(handle<ecs.panel> panel, value<ecs.PanelEvent> event)", doc = "Handle a panel's event, and call the callbacks of the elements it reaches", fn = services.event },
@@ -1899,4 +1990,6 @@ assert(ecs.service.register({
   key = { sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
   image = { sig = "value<ui.Element>(string path, value<ui.Props?> props)", doc = "An image file", fn = elements.image },
   space = { sig = "value<ui.Element>(value<ui.Props?> props)", doc = "Empty room, which grows by default", fn = elements.space },
+  showDescription = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Description> root)", doc = "Build the elements of a description, as C plugins give them, and show them; a described element with an id keeps what its callbacks get, for take", fn = services.showDescription },
+  take = { sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)", doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run", fn = services.take },
 }))
