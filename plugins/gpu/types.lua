@@ -2,6 +2,11 @@
 -- The types of gpu's descriptions, for editors. gpu never runs this file: OpenECS --definitions adds it to gpu's definitions,
 -- and the value<...> types of gpu's signatures name these classes (OpenECS DESIGN 10.10).
 
+-- the handle types that these descriptions name; gpu's definitions declare them with their methods too
+---@class gpu.shader
+---@class gpu.buffer
+---@class gpu.texture
+
 ---A shader: compiled code for one stage. The GPU's driver takes one kind of code, SPIR-V for Vulkan, DXIL for Direct3D 12 or MSL for Metal;
 ---gpu uses the first one given that it takes, so a plugin gives the kinds of the systems it runs on.
 ---@class gpu.ShaderDesc
