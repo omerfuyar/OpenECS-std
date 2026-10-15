@@ -533,7 +533,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *description;
     } functions[] = {
         {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done)", "Start a GET request to a URL; done, if given, gets the request once it is done"},
-        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value headers, buffer body, keep fn<void(handle<web.request> request)> done)", "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done"},
+        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)", "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done"},
         {"status", (ECSFunction)WebStatus, "int(handle<web.request> request)", "Give a request's HTTP status once it is done, 0 while it runs, or -1 if it failed"},
         {"body", (ECSFunction)WebBody, "buffer(handle<web.request> request)", "Give the body of a request's answer once it is done"},
         {"header", (ECSFunction)WebHeader, "string(handle<web.request> request, string name)", "Give a header of a request's answer once it is done, or nothing"},

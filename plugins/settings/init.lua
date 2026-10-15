@@ -364,7 +364,7 @@ function services.edit(panel)
   local window = findWindow(panel)
 
   if window and ui.focus(panel) then
-    ui.event(panel, { type = "keyDown", key = "Return" })
+    ui.event(panel, { type = "keyDown", key = "Return", shift = false, ctrl = false, alt = false, super = false })
   elseif window and #window.settings > 0 then
     edit(window)
   end
