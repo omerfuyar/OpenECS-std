@@ -365,6 +365,13 @@ static const cgltf_primitive *GltfFindPrimitive(const GltfModel *model, i32 mesh
     return &model->data->meshes[mesh - 1].primitives[primitive - 1];
 }
 
+/// @brief The bytes of a number of values of a size each, or 0 if they would not fit in memory, as a hostile file may ask for.
+static usz GltfBytes(usz count, usz each)
+{
+    usz bytes = 0;
+    return SDL_size_mul_check_overflow(count, each, &bytes) ? bytes : 0;
+}
+
 /// @brief Keeps what the model gives, freeing what it gave last.
 static SHUSlice GltfGive(GltfModel *model, void *data, usz size)
 {
@@ -387,7 +394,8 @@ static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const c
     }
 
     // sparse and normalized data are unpacked to plain floats
-    usz count = accessor == nullptr ? 0 : accessor->count * cgltf_num_components(accessor->type);
+    usz count = accessor == nullptr ? 0 : GltfBytes(accessor->count, cgltf_num_components(accessor->type));
+    count = GltfBytes(count, sizeof(f32)) == 0 ? 0 : count;
     f32 *floats = count == 0 ? nullptr : SDL_malloc(count * sizeof(f32));
 
     if (floats != nullptr && cgltf_accessor_unpack_floats(accessor, floats, count) != count)
@@ -416,6 +424,7 @@ static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
     usz count = part == nullptr ? 0 : part->indices != nullptr ? part->indices->count
                                : position != nullptr        ? position->count
                                                          : 0;
+    count = GltfBytes(count, sizeof(u32)) == 0 ? 0 : count;
     u32 *indices = count == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
 
     for (usz i = 0; indices != nullptr && i < count; i++)
@@ -696,7 +705,7 @@ static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skin, i3
     const cgltf_accessor *joints = GltfFindAttribute(part, cgltf_attribute_type_joints);
     const cgltf_accessor *weights = GltfFindAttribute(part, cgltf_attribute_type_weights);
     const cgltf_skin *bones = skin >= 1 && (usz)skin <= data->skins_count ? &data->skins[skin - 1] : nullptr;
-    usz count = positions == nullptr ? 0 : positions->count;
+    usz count = positions == nullptr || GltfBytes(positions->count, 3 * sizeof(f32)) == 0 ? 0 : positions->count;
     f32 *out = count == 0 ? nullptr : SDL_malloc(count * 3 * sizeof(f32));
 
     if (out == nullptr || cgltf_accessor_unpack_floats(positions, out, count * 3) != count * 3)
@@ -721,7 +730,8 @@ static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skin, i3
         usz node = cgltf_node_index(data, bones->joints[i]);
         f32 inverse[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
-        if (bones->inverse_bind_matrices != nullptr)
+        // glTF asks for a matrix for each joint, but nothing checks it, so a joint past the matrices keeps the identity
+        if (bones->inverse_bind_matrices != nullptr && i < bones->inverse_bind_matrices->count)
         {
             (void)cgltf_accessor_read_float(bones->inverse_bind_matrices, i, inverse, 16);
         }
