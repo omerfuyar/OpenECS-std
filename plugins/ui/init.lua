@@ -116,6 +116,35 @@ local function previousCharacter(text, at)
   return at
 end
 
+-- the byte position of the start of the word before a position, or of the end of the word after it; words are what lies between spaces
+local function wordEdge(text, at, forward)
+  local function space(position)
+    return text:sub(position, position):match("%s") ~= nil
+  end
+
+  if forward then
+    while at <= #text and space(at) do
+      at = at + 1
+    end
+
+    while at <= #text and not space(at) do
+      at = at + 1
+    end
+
+    return at
+  end
+
+  while at > 1 and space(at - 1) do
+    at = at - 1
+  end
+
+  while at > 1 and not space(at - 1) do
+    at = at - 1
+  end
+
+  return at
+end
+
 -- the first characters of a text
 local function prefix(text, count)
   local at = 1
@@ -378,7 +407,7 @@ function elements.number(value, props)
   node.change = function(state, up)
     local number = settle((tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
     state.typed = show(number)
-    state.at = #state.typed + 1
+    state.at, state.anchor = #state.typed + 1, nil
     onChange(number)
   end
 
@@ -637,6 +666,13 @@ local function thumb(node)
   return node.y + start, length
 end
 
+-- the first and the last byte positions of the selection of the focused field, or nil when nothing is selected; last is the position after it
+local function selection(state)
+  if state.anchor and state.anchor ~= state.at then
+    return math.min(state.anchor, state.at), math.max(state.anchor, state.at)
+  end
+end
+
 -- the part of a rectangle inside a clip rectangle, if there is one
 local function intersect(rect, clip)
   if not clip then
@@ -819,12 +855,20 @@ local function paint(node, surface, state, clip)
     local textX = node.x + size.paddingX - ((focused and before > room) and before - room or 0)
     local inner = intersect({ x = node.x + 1, y = node.y + 1, w = node.w - 2, h = node.h - 2 }, clip)
     draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
+    local first, last = selection(state)
+
+    if focused and node.kind == "field" and first then
+      local left = textX + measureText(font, text:sub(1, first - 1), textSize)
+      draw.fill(surface, left, textY, textX + measureText(font, text:sub(1, last - 1), textSize) - left, line, "selected")
+    end
+
     draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
       (focused and node.kind == "key") and "textDim" or node.color or "text")
 
     if focused and node.kind == "field" then
       draw.fill(surface, textX + before, textY, 2, line, "accent")
       state.cursor = { x = textX + before, y = textY, h = line }
+      state.textX = textX
     end
 
     restoreClip(surface, clip)
@@ -925,7 +969,7 @@ end
 
 local function blur(panel, state)
   if state.focus then
-    state.focus, state.typed, state.cursor, state.at = nil, nil, nil, nil
+    state.focus, state.typed, state.cursor, state.at, state.anchor, state.selecting = nil, nil, nil, nil, nil, nil
     panel:setTextInput(false)
     panel:redraw()
   end
@@ -1048,6 +1092,33 @@ local function activate(panel, state, node, x)
   end
 end
 
+-- puts text in place of the selection, or at the cursor
+local function replace(state, text)
+  local first, last = selection(state)
+  first, last = first or state.at, last or state.at
+  state.typed = state.typed:sub(1, first - 1) .. text .. state.typed:sub(last)
+  state.at, state.anchor = first + #text, nil
+end
+
+-- the byte position in a field's text nearest to a position across it, in layout units
+local function positionAt(node, text, textX, x)
+  local font, textSize = fontOf(node), node.size or fontSize()
+  local at, left = 1, textX
+
+  while at <= #text do
+    local after = nextCharacter(text, at)
+    local right = textX + measureText(font, text:sub(1, after - 1), textSize)
+
+    if x < (left + right) / 2 then
+      return at
+    end
+
+    at, left = after, right
+  end
+
+  return at
+end
+
 -- handles a key or text event while a field or key element has the focus
 local function typing(panel, state, event)
   local node = state.root and byId(state.root, state.focus)
@@ -1071,27 +1142,55 @@ local function typing(panel, state, event)
   end
 
   -- the cursor is a byte position before which text goes; a character may take several bytes
+  -- the selection lies between the anchor and the cursor, and what is typed replaces it
   local typed, at = state.typed, state.at
+  local first, last = selection(state)
+  local key = event.type == "keyDown" and event.key or nil
+  local moves = { Left = true, Right = true, Home = true, End = true }
 
   if event.type == "text" then
-    state.typed = typed:sub(1, at - 1) .. event.text .. typed:sub(at)
-    state.at = at + #event.text
+    replace(state, event.text)
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Backspace" and at > 1 then
-    local previous = previousCharacter(typed, at)
+  elseif (key == "Backspace" or key == "Delete") and first then
+    replace(state, "")
+    call(node.onChange, state.typed)
+  elseif key == "Backspace" and at > 1 then
+    local previous = event.ctrl and wordEdge(typed, at, false) or previousCharacter(typed, at)
     state.typed, state.at = typed:sub(1, previous - 1) .. typed:sub(at), previous
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Delete" and at <= #typed then
-    state.typed = typed:sub(1, at - 1) .. typed:sub(nextCharacter(typed, at))
+  elseif key == "Delete" and at <= #typed then
+    state.typed = typed:sub(1, at - 1) .. typed:sub(event.ctrl and wordEdge(typed, at, true) or nextCharacter(typed, at))
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Left" then
-    state.at = at > 1 and previousCharacter(typed, at) or 1
-  elseif event.type == "keyDown" and event.key == "Right" then
-    state.at = at <= #typed and nextCharacter(typed, at) or at
-  elseif event.type == "keyDown" and event.key == "Home" then
-    state.at = 1
-  elseif event.type == "keyDown" and event.key == "End" then
-    state.at = #typed + 1
+  elseif (key == "Left" or key == "Right") and first and not event.shift and not event.ctrl then
+    -- an arrow ends a selection at its side
+    state.at, state.anchor = key == "Left" and first or last, nil
+  elseif moves[key] then
+    -- Shift keeps the anchor, so the move selects; Ctrl moves by words
+    local to = key == "Home" and 1 or key == "End" and #typed + 1
+      or event.ctrl and wordEdge(typed, at, key == "Right")
+      or key == "Left" and (at > 1 and previousCharacter(typed, at) or 1)
+      or (at <= #typed and nextCharacter(typed, at) or at)
+    state.anchor = event.shift and (state.anchor or at) or nil
+    state.at = to
+  elseif key == "A" and event.ctrl then
+    state.anchor, state.at = 1, #typed + 1
+  elseif (key == "C" or key == "X") and event.ctrl then
+    if first then
+      ecs.clipboard.setText(typed:sub(first, last - 1))
+
+      if key == "X" then
+        replace(state, "")
+        call(node.onChange, state.typed)
+      end
+    end
+  elseif key == "V" and event.ctrl then
+    -- a field holds one line, so the lines of the pasted text are joined by spaces
+    local pasted = (ecs.clipboard.getText() or ""):gsub("\r?\n", " ")
+
+    if pasted ~= "" then
+      replace(state, pasted)
+      call(node.onChange, state.typed)
+    end
   elseif event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") then
     -- onSubmit gives false to keep typing, such as for a text it cannot read
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
@@ -1357,6 +1456,17 @@ local function handle(panel, event)
       return true
     end
 
+    if state.selecting then
+      local node = byId(root, state.selecting)
+
+      if node and state.focus == node.id then
+        state.at = positionAt(node, state.typed, state.textX or node.x + size.paddingX, x)
+      end
+
+      panel:redraw()
+      return true
+    end
+
     if state.sliding then
       local node = byId(root, state.sliding)
 
@@ -1411,7 +1521,15 @@ local function handle(panel, event)
     state.pressed = node
     state.target, state.ring = node and node.id, false
 
-    if node and (node.kind == "field" or node.kind == "key") then
+    if node and node.kind == "field" then
+      -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
+      local focused = state.focus == node.id
+      local textX = focused and state.textX or node.x + size.paddingX
+      activate(panel, state, node, x)
+      local to = positionAt(node, state.typed, textX, x)
+      state.anchor = (focused and event.shift) and (state.anchor or state.at) or to
+      state.at, state.selecting = to, node.id
+    elseif node and node.kind == "key" then
       activate(panel, state, node, x)
     elseif node and node.kind == "slider" then
       state.sliding = node.id
@@ -1425,7 +1543,7 @@ local function handle(panel, event)
     return node ~= nil or item ~= nil
   elseif event.type == "pointerUp" and event.button == 1 then
     local pressed = state.pressed
-    state.pressed, state.dragging, state.sliding = nil, nil, nil
+    state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
 
     -- a click is a press and a release on the same element
     local node = find(root, x, y, interactive)
