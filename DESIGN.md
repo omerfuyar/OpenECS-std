@@ -238,12 +238,12 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Once it is done, `web.body(request)` gives the answer's body as a buffer, a string in Lua, and `web.header(request, name)` one of its headers, or nothing. A request follows up to 10 redirects, and these are the last answer's.
 - `web.free(request)` frees a request now, and stops one that runs; its `done` is not called. Lua's garbage collector, or the plugin that made it, frees it otherwise.
 - The setting `web.timeout` is the number of seconds a request may take before it fails; 0 means no limit. For a WebSocket connection, it limits only how long connecting takes.
-- **WebSockets.** `web.socket(url, headers)` starts a connection to a `ws://` or `wss://` URL and gives a handle of type `web.socket`. As with net (9), nothing blocks: a plugin asks for the connection's state, and takes its messages, when it wants, such as from a timer.
-- `web.socketStatus(socket)` gives 1 once the server took the connection, 0 while it connects, and -1 if it failed or closed. `web.socketError(socket)` gives why.
-- `web.socketSend(socket, data, text)` queues a message, as text or as bytes, and gives false if the connection failed or closed. A message sent while the connection connects waits, and goes once it is open. Each message goes in one frame.
-- `web.socketReceive(socket)` takes the oldest message that arrived, a buffer, and its kind, `"text"` or `"binary"`. It gives nothing as the kind if no message waits. A message that the server sent in many frames comes as one. The buffer is kept until the next receive on the connection.
+- **WebSockets.** `web.socket.open(url, headers)` starts a connection to a `ws://` or `wss://` URL and gives a handle of type `web.socket`. As with net (9), nothing blocks: a plugin asks for the connection's state, and takes its messages, when it wants, such as from a timer.
+- `web.socket.status(socket)` gives 1 once the server took the connection, 0 while it connects, and -1 if it failed or closed. `web.socket.error(socket)` gives why.
+- `web.socket.send(socket, data, text)` queues a message, as text or as bytes, and gives false if the connection failed or closed. A message sent while the connection connects waits, and goes once it is open. Each message goes in one frame.
+- `web.socket.receive(socket)` takes the oldest message that arrived, a buffer, and its kind, `"text"` or `"binary"`. It gives nothing as the kind if no message waits. A message that the server sent in many frames comes as one. The buffer is kept until the next receive on the connection.
 - libcurl answers the server's pings. A close from the server, or the end of its connection, closes the connection.
-- `web.socketClose(socket)` closes a connection and frees it now. Lua's garbage collector, or the plugin that made it, frees it otherwise.
+- `web.socket.close(socket)` closes a connection and frees it now. Lua's garbage collector, or the plugin that made it, frees it otherwise.
 - HTTPS checks a server's certificate against the system's trusted certificates: the file that `SSL_CERT_FILE` names, or the one where Debian, Ubuntu, Arch, Fedora, openSUSE or Alpine keep it. The proxies that `http_proxy`, `https_proxy` and `no_proxy` name are used.
 - The plugin gives libcurl and mbedTLS SDL's allocator.
 
@@ -264,7 +264,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
 - An entry shows the tool's name. A session's entry also shows the file's name and when it was saved.
 - The panel reads both lists when it is created and each time it is shown again.
-- Every tool loads the plugin, as the core's settings file names it (OpenECS DESIGN 12.3). `launcher.open` opens the list in any tool, or gives an open one the focus, so the user can go to another tool; the core binds it to the prefix and Shift+O.
+- Every tool loads the plugin, as the core's settings file names it (OpenECS DESIGN 12.3). `launcher.open` opens the list in any tool, or gives an open one the focus, so the user can go to another tool; the core binds it to the prefix and `/`.
 - The functions `launcher.up`, `launcher.down` and `launcher.start` choose an entry and start it. The plugin binds them for its panel type (OpenECS DESIGN 7.8) to Up, Down and Return. A click on an entry opens it, and the wheel scrolls the list.
 - The panel's saved state is the chosen entry, so the launcher chooses it again at the next start.
 - It is built with ui (5): the entries are a list, whose `onActivate` opens the entry.
@@ -273,7 +273,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 14. The panel list
 
 - It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
-- The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then N (OpenECS DESIGN 12.3).
+- The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then `.` (OpenECS DESIGN 12.3).
 - It reads the list with `ecs.panel.types()` (OpenECS DESIGN 4.1), each time it is opened or shown, and leaves out its own type. The types are grouped by plugin, under the plugin's name and description; each row shows the type's title and name.
 - `panels.open` opens the list, or focuses it if it is open. The panel that had the focus is where a chosen type opens: in its group, or where the core puts new panels if it has closed.
 - A click on a row, or `panels.choose`, opens a panel of the type. `panels.up` and `panels.down` choose a row; the plugin binds them for its panel type to Up, Down and Return.

@@ -198,7 +198,7 @@ function services.choose(panel)
 end
 
 assert(ecs.service.register({
-  open = { sig = "void()", doc = "Open the panel list", fn = services.open },
+  open = { sig = "void()", doc = "Open panels", fn = services.open },
   up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type above", fn = services.up },
   down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type below", fn = services.down },
   choose = { sig = "void(handle<ecs.panel> panel)", doc = "Open a panel of the chosen type", fn = services.choose },
