@@ -1,6 +1,7 @@
 // The gpu standard plugin: draws into the GPU surface of another plugin's panel, on the GPU (DESIGN 15).
-// A panel's Draw starts a frame of its surface, draws, and submits it. A frame draws shapes, lines and textures as draw does, with an offscreen SDL
-// renderer of its own on OpenECS's GPU device, and draws vertex buffers with a plugin's own shaders, through pipelines, with SDL's GPU API.
+// A panel's Draw passes its surface to gpu's functions, as to draw's, and gpu sends what they drew to the GPU when the Draw returns. It draws shapes,
+// lines and textures as draw does, with an offscreen SDL renderer of its own on OpenECS's GPU device, and vertex buffers with a plugin's own
+// shaders, through pipelines, with SDL's GPU API.
 // It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
 
 #include "OpenECS.h"
@@ -15,9 +16,12 @@
 /// @brief The most vertex attributes a pipeline takes.
 #define GPU_ATTRIBUTES 16
 
-/// @brief Drawing into one GPU surface, until the frame is submitted. Shapes go through the renderer; pipelines draw in a render pass of their own.
+/// @brief Drawing into one GPU surface during its Draw, until the core says the Draw returned. Shapes go through the renderer; pipelines draw in a
+/// render pass of their own.
 typedef struct GpuFrame
 {
+    ECSSurface *surface;            // the surface it draws into
+    struct GpuFrame *next;          // the frame of another surface whose Draw runs, such as a panel's while one of its popups draws
     SDL_Texture *target;            // the surface's texture, which the renderer draws into without owning it
     SDL_GPUTexture *color;          // the same texture, which render passes draw into
     i32 width;                      // the surface's size in pixels
@@ -48,6 +52,7 @@ static struct
     ECSPlugin plugin;
     SDL_GPUDevice *device;  // OpenECS's GPU device, or nullptr without a GPU renderer
     SDL_Renderer *renderer; // an offscreen GPU renderer on the device, or nullptr without a GPU renderer
+    GpuFrame *frames;       // the surfaces being drawn into now
     bool rendered;          // the renderer has commands that are not sent yet, such as shapes or a texture's pixels
     SDL_GPUSampler *sampler;
     struct
@@ -123,22 +128,44 @@ static bool GpuTarget(GpuFrame *frame, ECSColor color)
     return SDL_SetRenderDrawColor(GPU.renderer, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, (color >> 24) & 0xFF);
 }
 
-/// @brief Frees a frame that was not submitted; what its pipelines drew is sent now, and its shapes with the next frame.
-static void GpuFrameDestroy(void *object)
-{
-    GpuFrame *frame = object;
-    GpuEndPass(frame);
-    SDL_DestroyTexture(frame->target);
-    SDL_free(frame);
-}
-
 static void GpuTextureDestroy(void *object)
 {
     SDL_DestroyTexture(object);
 }
 
-static GpuFrame *GpuStartFrame(ECSSurface *surface)
+/// @brief Ends drawing into a surface once its Draw returns: what it drew reaches the GPU before the core's renderer shows the texture.
+static void GpuFinish(ECSSurface *surface, void *data)
 {
+    (void)surface;
+    GpuFrame *frame = data;
+    GpuEndPass(frame);
+    GpuSendRendered();
+
+    for (GpuFrame **link = &GPU.frames; *link != nullptr; link = &(*link)->next)
+    {
+        if (*link == frame)
+        {
+            *link = frame->next;
+            break;
+        }
+    }
+
+    SDL_DestroyTexture(frame->target);
+    SDL_free(frame);
+}
+
+/// @brief Gives the frame of a GPU surface, which the first call of a Draw that draws into it starts; the core ends it when the Draw returns.
+/// @return The frame, or nullptr if the surface is not a GPU surface or OpenECS has no GPU renderer, which is logged.
+static GpuFrame *GpuFrameOf(ECSSurface *surface)
+{
+    for (GpuFrame *frame = GPU.frames; frame != nullptr; frame = frame->next)
+    {
+        if (frame->surface == surface)
+        {
+            return frame;
+        }
+    }
+
     if (GPU.renderer == nullptr || surface->type != ECSSurfaceType_Gpu || surface->texture == nullptr)
     {
         ECS_LogWarn(GPU.plugin, GPU.renderer == nullptr ? "gpu cannot draw: OpenECS has no GPU renderer." : "gpu draws only into GPU surfaces.");
@@ -156,39 +183,48 @@ static GpuFrame *GpuStartFrame(ECSSurface *surface)
     SDL_DestroyProperties(props);
     GpuFrame *frame = target == nullptr ? nullptr : SDL_calloc(1, sizeof(GpuFrame));
 
-    if (frame == nullptr)
+    if (frame == nullptr || ECSSurface_OnDrawn(surface, GpuFinish, frame))
     {
         ECS_LogError(GPU.plugin, "Cannot draw into a GPU surface: %s", SDL_GetError());
+        SDL_free(frame);
         SDL_DestroyTexture(target);
         return nullptr;
     }
 
+    frame->surface = surface;
     frame->target = target;
     frame->color = surface->texture;
     frame->width = surface->width;
     frame->height = surface->height;
     frame->scale = surface->scale;
+    frame->next = GPU.frames;
+    GPU.frames = frame;
     return frame;
 }
 
-static void GpuSubmit(GpuFrame *frame)
+static void GpuClear(ECSSurface *surface, ECSColor color)
 {
-    // what the frame drew reaches the GPU before the core's renderer shows the texture
-    GpuEndPass(frame);
-    GpuSendRendered();
-    ECSHandle_Forget(frame);
-    GpuFrameDestroy(frame);
-}
+    GpuFrame *frame = GpuFrameOf(surface);
 
-static void GpuClear(GpuFrame *frame, ECSColor color)
-{
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     // clearing replaces the pixels, whatever the blend mode
     GpuTarget(frame, color);
     SDL_RenderClear(GPU.renderer);
 }
 
-static void GpuFill(GpuFrame *frame, f32 x, f32 y, f32 width, f32 height, ECSColor color)
+static void GpuFill(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, ECSColor color)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     GpuTarget(frame, color);
     const SDL_FRect rect = {x * frame->scale, y * frame->scale, width * frame->scale, height * frame->scale};
     SDL_RenderFillRect(GPU.renderer, &rect);
@@ -201,8 +237,15 @@ static void GpuRenderTriangles(const f32 *xy, int count, const int *indices, int
     SDL_RenderGeometryRaw(GPU.renderer, nullptr, xy, 2 * sizeof(f32), &fcolor, 0, nullptr, 0, count, indices, indexCount, sizeof(int));
 }
 
-static void GpuLine(GpuFrame *frame, f32 x1, f32 y1, f32 x2, f32 y2, f32 thickness, ECSColor color)
+static void GpuLine(ECSSurface *surface, f32 x1, f32 y1, f32 x2, f32 y2, f32 thickness, ECSColor color)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     GpuTarget(frame, color);
     f32 s = frame->scale;
     f32 dx = (x2 - x1) * s;
@@ -222,8 +265,15 @@ static void GpuLine(GpuFrame *frame, f32 x1, f32 y1, f32 x2, f32 y2, f32 thickne
     GpuRenderTriangles(xy, 4, indices, 6, color);
 }
 
-static void GpuTriangles(GpuFrame *frame, SHUSlice points, SHUSlice indices, ECSColor color)
+static void GpuTriangles(ECSSurface *surface, SHUSlice points, SHUSlice indices, ECSColor color)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     usz count = points.size / (2 * sizeof(f32));
     usz indexCount = indices.size / sizeof(u32);
 
@@ -264,8 +314,15 @@ static void GpuTriangles(GpuFrame *frame, SHUSlice points, SHUSlice indices, ECS
     SDL_free(index);
 }
 
-static void GpuMesh(GpuFrame *frame, SHUSlice points, SHUSlice colors, SHUSlice indices)
+static void GpuMesh(ECSSurface *surface, SHUSlice points, SHUSlice colors, SHUSlice indices)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     usz count = points.size / (2 * sizeof(f32));
     usz indexCount = indices.size / sizeof(u32);
 
@@ -362,8 +419,15 @@ static void GpuFreeTexture(SDL_Texture *texture)
     SDL_DestroyTexture(texture);
 }
 
-static void GpuImageTransformed(GpuFrame *frame, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
+static void GpuImageTransformed(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     GpuTarget(frame, color);
     const SDL_FRect rect = {x * frame->scale, y * frame->scale, width * frame->scale, height * frame->scale};
 
@@ -374,9 +438,16 @@ static void GpuImageTransformed(GpuFrame *frame, SDL_Texture *texture, f32 x, f3
     SDL_RenderTextureRotated(GPU.renderer, texture, nullptr, &rect, angle, nullptr, SDL_FLIP_NONE);
 }
 
-static void GpuImage(GpuFrame *frame, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height)
+static void GpuImage(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height)
 {
-    GpuImageTransformed(frame, texture, x, y, width, height, 0.0f, 0xFFFFFFFF);
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
+    GpuImageTransformed(surface, texture, x, y, width, height, 0.0f, 0xFFFFFFFF);
 }
 
 #pragma region Pipelines
@@ -742,8 +813,15 @@ static SDL_GPURenderPass *GpuBeginPass(GpuFrame *frame)
     return frame->pass;
 }
 
-static void GpuDraw(GpuFrame *frame, GpuPipeline *pipeline, const ECSValue *draw)
+static void GpuDraw(ECSSurface *surface, GpuPipeline *pipeline, const ECSValue *draw)
 {
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
     GpuBuffer *vertices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "vertices"), "gpu.buffer");
     GpuBuffer *indices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "indices"), "gpu.buffer");
     SDL_Texture *texture = ECSValue_GetHandle(ECSValue_GetTableField(draw, "texture"), "gpu.texture");
@@ -846,7 +924,6 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     // a plugin whose Init fails is not destroyed, so it cleans up here
     const ECSPluginDesc desc = {.Destroy = GpuFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), GpuFree(nullptr););
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "frame", GpuFrameDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "texture", GpuTextureDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "buffer", GpuBufferDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "shader", GpuShaderDestroy), GpuFree(nullptr););
@@ -859,13 +936,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"frame", (ECSFunction)GpuStartFrame, "handle<gpu.frame>(handle<ecs.surface> surface)", "Start drawing into a GPU surface; submit the frame before the panel's draw returns"},
-        {"submit", (ECSFunction)GpuSubmit, "void(handle<gpu.frame> frame)", "Send what a frame drew to the GPU, so the panel shows it; the frame cannot draw after"},
-        {"clear", (ECSFunction)GpuClear, "void(handle<gpu.frame> frame, color color)", "Fill the whole surface with a colour, replacing what it holds"},
-        {"fill", (ECSFunction)GpuFill, "void(handle<gpu.frame> frame, float x, float y, float width, float height, color color)", "Fill a rectangle"},
-        {"line", (ECSFunction)GpuLine, "void(handle<gpu.frame> frame, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
-        {"triangles", (ECSFunction)GpuTriangles, "void(handle<gpu.frame> frame, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
-        {"mesh", (ECSFunction)GpuMesh, "void(handle<gpu.frame> frame, buffer points, buffer colors, buffer indices)", "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones"},
+        {"clear", (ECSFunction)GpuClear, "void(handle<ecs.surface> surface, color color)", "Fill the whole surface with a colour, replacing what it holds"},
+        {"fill", (ECSFunction)GpuFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)", "Fill a rectangle"},
+        {"line", (ECSFunction)GpuLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
+        {"triangles", (ECSFunction)GpuTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
+        {"mesh", (ECSFunction)GpuMesh, "void(handle<ecs.surface> surface, buffer points, buffer colors, buffer indices)", "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones"},
         {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)", "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have"},
         {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)", "Replace a texture's pixels with as many new ones"},
         {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)", "Give a texture's size in pixels"},
@@ -876,9 +951,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)", "Free a buffer now, instead of when no one uses its handle"},
         {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)", "Make a vertex or fragment shader from compiled code: SPIR-V, DXIL or MSL, the one the GPU's driver takes"},
         {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)", "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn"},
-        {"draw", (ECSFunction)GpuDraw, "void(handle<gpu.frame> frame, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
-        {"image", (ECSFunction)GpuImage, "void(handle<gpu.frame> frame, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
-        {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<gpu.frame> frame, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
+        {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
+        {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
+        {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
@@ -886,22 +961,13 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), GpuFree(nullptr););
     }
 
-    // Lua calls these on a handle, such as frame:fill(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    // Lua calls these on a handle, such as buffer:update(...); C calls the functions themselves (OpenECS DESIGN 10.6)
     const struct
     {
         const char *type;
         const char *method;
         const char *function;
     } methods[] = {
-        {"frame", "submit", "submit"},
-        {"frame", "clear", "clear"},
-        {"frame", "fill", "fill"},
-        {"frame", "line", "line"},
-        {"frame", "triangles", "triangles"},
-        {"frame", "mesh", "mesh"},
-        {"frame", "image", "image"},
-        {"frame", "imageTransformed", "imageTransformed"},
-        {"frame", "draw", "draw"},
         {"buffer", "update", "updateBuffer"},
         {"buffer", "size", "bufferSize"},
         {"buffer", "free", "freeBuffer"},
