@@ -36,7 +36,8 @@ typedef struct WebRequest
     bool done;
     bool forgotten;  // freed by its owner while it runs; the plugin's thread frees it
     bool running;    // given to the multi handle, on the plugin's thread
-    struct WebRequest *next; // in the queue of new or of forgotten requests
+    struct WebRequest *next;      // in the queue of new requests
+    struct WebRequest *forgottenNext; // in the queue of forgotten requests; apart from next, which the plugin's thread may still read after it took the queue
     WebDoneFunction Done;     // main thread: the function to call once it is done, or nullptr once called
     struct WebRequest *after; // main thread: in the list of every request that is not freed
 } WebRequest;
@@ -112,7 +113,7 @@ static void WebDelete(WebRequest *request)
     if (running)
     {
         request->forgotten = true;
-        request->next = WEB.forgotten;
+        request->forgottenNext = WEB.forgotten;
         WEB.forgotten = request;
     }
 
@@ -184,7 +185,7 @@ static bool WebTakeQueues(void)
 
     while (forgotten != nullptr)
     {
-        WebRequest *next = forgotten->next;
+        WebRequest *next = forgotten->forgottenNext;
         curl_multi_remove_handle(WEB.multi, forgotten->easy);
         WebFreeMemory(forgotten);
         forgotten = next;
@@ -294,7 +295,8 @@ static bool WebSetMethod(CURL *easy, const char *method, SHUSlice body)
         return ok && curl_easy_setopt(easy, CURLOPT_NOBODY, 1L) == CURLE_OK;
     }
 
-    if (SDL_strcasecmp(method, "GET") == 0 || SDL_strcasecmp(method, "POST") == 0)
+    // curl sends a body with POST, so a GET with a body names its method
+    if ((SDL_strcasecmp(method, "GET") == 0 && body.size == 0) || SDL_strcasecmp(method, "POST") == 0)
     {
         return ok;
     }
@@ -349,6 +351,7 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
     {
         SDL_free(request);
         curl_easy_cleanup(easy);
+        ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
     }
 

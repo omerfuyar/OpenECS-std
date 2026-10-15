@@ -17,6 +17,9 @@
 /// @brief How often, in seconds, the changes of watched folders are read.
 #define FS_WATCH_INTERVAL 0.1
 
+/// @brief How many reads of changes one call makes at most; the rest waits for the next call.
+#define FS_WATCH_READS 8
+
 /// @brief The function that hears a change in a watched folder: void(string folder, string name, string change). It is a kept callback (OpenECS DESIGN 10.4).
 typedef void (*FsChangedFunction)(const char *folder, const char *name, const char *change);
 
@@ -247,7 +250,8 @@ static void FsReadChanges(void *data)
     ssize_t length = 0;
     FS.telling = true;
 
-    while ((length = read(FS.inotify, buffer, sizeof(buffer))) > 0)
+    // a folder that changes all the time cannot hold the main thread: the rest waits for the next call
+    for (usz reads = 0; reads < FS_WATCH_READS && (length = read(FS.inotify, buffer, sizeof(buffer))) > 0; reads++)
     {
         for (char *at = buffer; at < buffer + length;)
         {
@@ -298,12 +302,31 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
         FS.watches = watches;
     }
 
-    int descriptor = watches == nullptr || FS.inotify < 0 ? -1 : inotify_add_watch(FS.inotify, full, IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB);
+    // IN_ONLYDIR: a file is not a folder to watch
+    int descriptor = watches == nullptr || FS.inotify < 0 ? -1 : inotify_add_watch(FS.inotify, full, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB);
     usz length = SDL_strlen(folder);
 
     if (descriptor < 0 || (FS.timer == nullptr && ECSTimer_Start(FS.plugin, &FS.timer, FS_WATCH_INTERVAL, true, FsReadChanges, nullptr) != SHUResult_Ok) ||
         SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && folder[length - 1] == '/' ? "" : "/") < 0)
     {
+        // inotify's watch stops unless another watch shares it, and the timer stops if nothing is watched
+        bool shared = false;
+
+        for (usz i = 0; descriptor >= 0 && i < FS.watchCount; i++)
+        {
+            shared = shared || FS.watches[i]->descriptor == descriptor;
+        }
+
+        if (descriptor >= 0 && !shared)
+        {
+            inotify_rm_watch(FS.inotify, descriptor);
+        }
+
+        if (FS.watchCount == 0 && FS.timer != nullptr)
+        {
+            ECSTimer_Stop(&FS.timer);
+        }
+
         ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s'", folder);
         SDL_free(watch);
         SDL_free(full);
