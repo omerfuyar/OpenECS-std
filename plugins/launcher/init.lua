@@ -218,7 +218,7 @@ assert(ecs.service.register({
   up = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry above", fn = services.up },
   down = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry below", fn = services.down },
   start = { sig = "void(handle<ecs.panel>)", doc = "Start the chosen preset or session", fn = services.start },
-  open = { sig = "void()", doc = "Open the launcher, the list of presets and saved sessions", fn = services.open },
+  open = { sig = "void()", doc = "Open launcher", fn = services.open },
 }))
 
 -- default keys for the list; presets and the user's settings can change them

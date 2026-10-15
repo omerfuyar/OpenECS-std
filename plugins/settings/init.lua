@@ -371,7 +371,7 @@ function services.edit(panel)
 end
 
 assert(ecs.service.register({
-  open = { sig = "void()", doc = "Open the settings window", fn = services.open },
+  open = { sig = "void()", doc = "Open settings", fn = services.open },
   up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting above", fn = services.up },
   down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting below", fn = services.down },
   previous = { sig = "void(handle<ecs.panel> panel)", doc = "Change the chosen setting one step back", fn = services.previous },

@@ -941,5 +941,27 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), MixerFree(nullptr););
     }
 
+    // Lua calls these on a handle, such as handle:play(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"sound", "play", "play"},
+        {"sound", "length", "length"},
+        {"sound", "queue", "queue"},
+        {"sound", "queued", "queued"},
+        {"sound", "finish", "finish"},
+        {"sound", "keep", "keepSound"},
+        {"sound", "release", "releaseSound"},
+        {"sound", "free", "freeSound"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), MixerFree(nullptr););
+    }
+
     return SHUResult_Ok;
 }
