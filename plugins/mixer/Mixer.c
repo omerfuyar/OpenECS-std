@@ -37,9 +37,37 @@ typedef struct MixerVoice
     usz scratchSize;        // in floats
 } MixerVoice;
 
+/// @brief The delays of the reverb's filters in frames at 44100 Hz, Freeverb's: eight comb filters and four all-pass filters for each channel.
+static const i32 MIXER_COMBS[] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+static const i32 MIXER_ALLPASSES[] = {556, 441, 341, 225};
+
+/// @brief How many frames longer an odd channel's delays are, so that two channels sound apart.
+#define MIXER_SPREAD 23
+
+/// @brief A delay line of a filter: its samples, and where it reads and writes next.
+typedef struct MixerDelay
+{
+    f32 *samples;
+    i32 length;
+    i32 at;
+    f32 kept; // a comb filter's last output, which damping smooths
+} MixerDelay;
+
+/// @brief A reverb on the output: each channel's filters, for the output's channels and rate. The audio thread uses it while it is set.
+typedef struct MixerReverb
+{
+    i32 channels;
+    i32 rate;
+    MixerDelay *delays; // for each channel, its comb filters, then its all-pass filters
+    f32 *memory;        // the samples of every delay
+    SDL_AtomicInt mix;  // how much of the reverb is added, in thousandths; 0 adds none
+    SDL_AtomicInt size; // the room's size, in thousandths: a larger room rings longer
+} MixerReverb;
+
 static struct
 {
     ECSPlugin plugin;
+    MixerReverb *reverb; // nullptr until a reverb is set
     MixerVoice **voices;
     usz voiceCount;
     i32 nextId;
@@ -307,6 +335,128 @@ static MixerVoice *MixerFindVoice(i32 id)
     return nullptr;
 }
 
+/// @brief Makes a reverb for an output's channels and rate, with every delay silent.
+/// @return The reverb, to free with MixerFreeReverb, or nullptr if out of memory.
+static MixerReverb *MixerNewReverb(i32 channels, i32 rate)
+{
+    const usz filters = SDL_arraysize(MIXER_COMBS) + SDL_arraysize(MIXER_ALLPASSES);
+    MixerReverb *reverb = SDL_calloc(1, sizeof(MixerReverb));
+    MixerDelay *delays = reverb == nullptr ? nullptr : SDL_calloc((usz)channels * filters, sizeof(MixerDelay));
+    usz total = 0;
+
+    // the delays are as long in seconds at any rate
+    for (i32 channel = 0; delays != nullptr && channel < channels; channel++)
+    {
+        for (usz i = 0; i < filters; i++)
+        {
+            i32 frames = i < SDL_arraysize(MIXER_COMBS) ? MIXER_COMBS[i] : MIXER_ALLPASSES[i - SDL_arraysize(MIXER_COMBS)];
+            MixerDelay *delay = &delays[(usz)channel * filters + i];
+            delay->length = SDL_max(1, (i32)((i64)(frames + (channel % 2) * MIXER_SPREAD) * rate / 44100));
+            total += (usz)delay->length;
+        }
+    }
+
+    f32 *memory = delays == nullptr ? nullptr : SDL_calloc(total, sizeof(f32));
+
+    if (memory == nullptr)
+    {
+        SDL_free(delays);
+        SDL_free(reverb);
+        return nullptr;
+    }
+
+    for (usz i = 0, at = 0; i < (usz)channels * filters; i++)
+    {
+        delays[i].samples = memory + at;
+        at += (usz)delays[i].length;
+    }
+
+    *reverb = (MixerReverb){.channels = channels, .rate = rate, .delays = delays, .memory = memory};
+    return reverb;
+}
+
+static void MixerFreeReverb(MixerReverb *reverb)
+{
+    if (reverb != nullptr)
+    {
+        SDL_free(reverb->memory);
+        SDL_free(reverb->delays);
+        SDL_free(reverb);
+    }
+}
+
+/// @brief Adds the reverb to the output's mixed samples, frame after frame, in place.
+static void MixerReverbProcess(MixerReverb *reverb, f32 *samples, usz frames)
+{
+    const usz combs = SDL_arraysize(MIXER_COMBS);
+    const usz filters = combs + SDL_arraysize(MIXER_ALLPASSES);
+    f32 mix = (f32)SDL_GetAtomicInt(&reverb->mix) / 1000.0f;
+
+    // Freeverb's tuning: a room's size sets the combs' feedback, and the damping softens the high sounds as they ring
+    f32 feedback = 0.7f + 0.28f * (f32)SDL_GetAtomicInt(&reverb->size) / 1000.0f;
+    const f32 damp = 0.2f;
+    const f32 gain = 0.015f;
+    const f32 wet = mix; // a mix of 1 is Freeverb's own wet level
+
+    if (mix <= 0.0f)
+    {
+        return;
+    }
+
+    for (usz frame = 0; frame < frames; frame++)
+    {
+        f32 *sample = samples + frame * (usz)reverb->channels;
+        f32 input = 0.0f;
+
+        // every channel's filters hear the channels together, as Freeverb's hear both of a stereo pair
+        for (i32 channel = 0; channel < reverb->channels; channel++)
+        {
+            input += sample[channel];
+        }
+
+        input *= gain * 2.0f / (f32)reverb->channels;
+
+        for (i32 channel = 0; channel < reverb->channels; channel++)
+        {
+            MixerDelay *delays = reverb->delays + (usz)channel * filters;
+            f32 out = 0.0f;
+
+            for (usz i = 0; i < combs; i++)
+            {
+                MixerDelay *comb = &delays[i];
+                f32 delayed = comb->samples[comb->at];
+                comb->kept = delayed * (1.0f - damp) + comb->kept * damp;
+                comb->samples[comb->at] = input + comb->kept * feedback;
+                comb->at = comb->at + 1 == comb->length ? 0 : comb->at + 1;
+                out += delayed;
+            }
+
+            for (usz i = combs; i < filters; i++)
+            {
+                MixerDelay *allpass = &delays[i];
+                f32 delayed = allpass->samples[allpass->at];
+                allpass->samples[allpass->at] = out + delayed * 0.5f;
+                allpass->at = allpass->at + 1 == allpass->length ? 0 : allpass->at + 1;
+                out = delayed - out;
+            }
+
+            sample[channel] += out * wet;
+        }
+    }
+}
+
+/// @brief Adds the reverb to what the output plays; SDL calls it on its audio thread after it mixes the voices.
+static void SDLCALL MixerPostmix(void *data, const SDL_AudioSpec *spec, float *buffer, int size)
+{
+    MixerReverb *reverb = data;
+
+    // an output that changed, such as to another device, plays without the reverb until it is set again
+    if (spec->channels == reverb->channels && spec->freq == reverb->rate && size > 0)
+    {
+        MixerReverbProcess(reverb, buffer, (usz)size / sizeof(f32) / (usz)reverb->channels);
+    }
+}
+
 /// @brief Opens the default output the first time a sound plays.
 /// @return false if there is none; the reason is logged.
 static bool MixerOpen(void)
@@ -329,6 +479,38 @@ static bool MixerOpen(void)
     }
 
     return MIXER.device != 0;
+}
+
+/// @brief Sets the reverb on the output: mix is how much of it is added, from 0, none, to 1, and size the room's, from 0 to 1.
+/// @return false if there is no output, or memory for the reverb.
+static bool MixerSetReverb(f32 mix, f32 size)
+{
+    SDL_AudioSpec spec = {0};
+
+    if (!MixerOpen() || !SDL_GetAudioDeviceFormat(MIXER.device, &spec, nullptr))
+    {
+        return false;
+    }
+
+    // a reverb for another output's format is replaced; SDL holds the output while it changes the callback, so the old one is not in use after
+    if (MIXER.reverb == nullptr || MIXER.reverb->channels != spec.channels || MIXER.reverb->rate != spec.freq)
+    {
+        MixerReverb *reverb = MixerNewReverb(spec.channels, spec.freq);
+
+        if (reverb == nullptr || !SDL_SetAudioPostmixCallback(MIXER.device, MixerPostmix, reverb))
+        {
+            ECS_LogError(MIXER.plugin, "Cannot add a reverb: %s", reverb == nullptr ? "out of memory" : SDL_GetError());
+            MixerFreeReverb(reverb);
+            return false;
+        }
+
+        MixerFreeReverb(MIXER.reverb);
+        MIXER.reverb = reverb;
+    }
+
+    SDL_SetAtomicInt(&MIXER.reverb->mix, (int)SDL_roundf(SDL_clamp(mix, 0.0f, 1.0f) * 1000.0f));
+    SDL_SetAtomicInt(&MIXER.reverb->size, (int)SDL_roundf(SDL_clamp(size, 0.0f, 1.0f) * 1000.0f));
+    return true;
 }
 
 static i32 MixerPlay(MixerSound *sound, f32 volume, bool loop)
@@ -448,10 +630,13 @@ static void MixerFree(void *data)
         MixerFreeVoice(MIXER.voices[i]);
     }
 
+    // the reverb is in use until the output closes
     if (MIXER.device != 0)
     {
         SDL_CloseAudioDevice(MIXER.device);
     }
+
+    MixerFreeReverb(MIXER.reverb);
 
     if (MIXER.audioStarted)
     {
@@ -492,6 +677,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"playing", (ECSFunction)MixerPlaying, "bool(int voice)", "Tell whether a voice still plays"},
         {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)", "Change a voice's volume; 1 is the sound's own"},
         {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)", "Move a voice from left, -1, to right, 1; 0 is the middle"},
+        {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)", "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output"},
         {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)", "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away"},
         {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)", "Let go of a sound that keepSound kept"},
         {"freeSound", (ECSFunction)MixerFreeSound, "void(handle<mixer.sound> sound)", "Free a sound now, instead of when no one uses its handle; voices that play it finish first"},
