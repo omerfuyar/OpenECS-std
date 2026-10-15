@@ -1775,10 +1775,10 @@ function services.rect(panel, id)
   local node = root and byId(root, id)
 
   if not node then
-    return false, 0, 0, 0, 0
+    return nil
   end
 
-  return true, node.x, node.y, node.w, node.h
+  return { x = node.x, y = node.y, width = node.w, height = node.h }
 end
 
 -- the id of the field or key element that has the focus, or nil
@@ -1871,7 +1871,7 @@ assert(ecs.service.register({
   show = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value root)", doc = "Lay out elements in a panel and draw them", fn = services.show },
   event = { sig = "bool(handle<ecs.panel> panel, value event)", doc = "Handle a panel's event, and call the callbacks of the elements it reaches", fn = services.event },
   forget = { sig = "void(handle<ecs.panel> panel)", doc = "Forget a panel's state", fn = services.forget },
-  rect = { sig = "bool(handle<ecs.panel> panel, string id, out float x, out float y, out float width, out float height)", doc = "Give an element's rectangle in the last layout", fn = services.rect },
+  rect = { sig = "value(handle<ecs.panel> panel, string id)", doc = "Give an element's rectangle in the last layout, a table of x, y, width and height, or nil if no element has the id", fn = services.rect },
   focus = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the focused field", fn = services.focus },
   tip = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the element whose tooltip shows", fn = services.tip },
   edit = { sig = "void(handle<ecs.panel> panel, string id)", doc = "Give a field the focus", fn = services.edit },
