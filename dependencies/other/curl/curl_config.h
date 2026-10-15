@@ -1,5 +1,5 @@
 // The configuration of libcurl for the web plugin, in place of the one curl's configure script or CMake would write.
-// It is for Linux with glibc, on x86_64 and aarch64: HTTP and HTTPS only, TLS from mbedTLS, and names resolved on a thread of their own.
+// It is for Linux with glibc, on x86_64 and aarch64: HTTP, HTTPS and WebSockets only, TLS from mbedTLS, and names resolved on a thread of their own.
 #pragma once
 
 // glibc's POSIX and GNU functions, which strict C leaves out
@@ -30,7 +30,6 @@
 #define CURL_DISABLE_SMTP 1
 #define CURL_DISABLE_TELNET 1
 #define CURL_DISABLE_TFTP 1
-#define CURL_DISABLE_WEBSOCKETS 1
 
 #define USE_IPV6 1
 #define USE_MBEDTLS 1
