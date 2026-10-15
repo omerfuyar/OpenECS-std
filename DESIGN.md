@@ -251,7 +251,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
 - An entry shows the tool's name. A session's entry also shows the file's name and when it was saved.
 - The panel reads both lists when it is created and each time it is shown again.
-- The functions `launcher.up`, `launcher.down` and `launcher.open` choose an entry and open it. The plugin binds them for its panel type (OpenECS DESIGN 7.8) to Up, Down and Return. A click on an entry opens it, and the wheel scrolls the list.
+- Every tool loads the plugin, as the core's settings file names it (OpenECS DESIGN 12.3). `launcher.open` opens the list in any tool, or gives an open one the focus, so the user can go to another tool; the core binds it to the prefix and Shift+O.
+- The functions `launcher.up`, `launcher.down` and `launcher.start` choose an entry and start it. The plugin binds them for its panel type (OpenECS DESIGN 7.8) to Up, Down and Return. A click on an entry opens it, and the wheel scrolls the list.
 - The panel's saved state is the chosen entry, so the launcher chooses it again at the next start.
 - It is built with ui (5): the entries are a list, whose `onActivate` opens the entry.
 - A preset opens with `ecs.session.openPreset`, a session with `ecs.session.open` (OpenECS DESIGN 13.5).
