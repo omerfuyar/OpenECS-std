@@ -66,7 +66,7 @@ typedef struct NetPendingDatagram
 } NetPendingDatagram;
 
 /// @brief A UDP socket: datagrams waiting to be sent, the hosts it resolved, and what it received last.
-typedef struct NetUdp
+typedef struct NetUDP
 {
     NET_DatagramSocket *socket;
     NetPendingDatagram *pending; // in the order they were sent
@@ -77,7 +77,7 @@ typedef struct NetUdp
     } hosts[NET_UDP_HOSTS]; // replaced in turn once full
     usz nextHost;
     NET_Datagram *received; // what receiveFrom gave last, kept until the next receiveFrom
-} NetUdp;
+} NetUDP;
 
 static struct
 {
@@ -115,9 +115,9 @@ static const char *NetFindCertificates(void)
 }
 
 /// @brief Makes what TLS connections share, once: the random generator, the trusted certificates and the configuration of a client.
-static void NetTlsStop(void);
+static void NetTLSStop(void);
 
-static bool NetTlsStart(void)
+static bool NetTLSStart(void)
 {
     if (NET.tlsReady)
     {
@@ -143,7 +143,7 @@ static bool NetTlsStart(void)
     {
         // a later connection tries again from the start
         ECS_LogError(NET.plugin, "Cannot start TLS");
-        NetTlsStop();
+        NetTLSStop();
         return false;
     }
 
@@ -153,7 +153,7 @@ static bool NetTlsStart(void)
     return true;
 }
 
-static void NetTlsStop(void)
+static void NetTLSStop(void)
 {
     if (NET.tlsReady)
     {
@@ -177,7 +177,7 @@ static char *NetFull(const char *path)
 static bool NetTrust(const char *path)
 {
     char *full = NetFull(path);
-    bool trusted = full != nullptr && NetTlsStart() && mbedtls_x509_crt_parse_file(&NET.certificates, full) == 0;
+    bool trusted = full != nullptr && NetTLSStart() && mbedtls_x509_crt_parse_file(&NET.certificates, full) == 0;
 
     if (!trusted)
     {
@@ -209,14 +209,14 @@ static void NetReleaseServer(NetServer *server)
 }
 
 /// @brief Gives TLS's bytes to the socket; SDL_net queues them all.
-static int NetTlsSend(void *data, const unsigned char *bytes, size_t length)
+static int NetTLSSend(void *data, const unsigned char *bytes, size_t length)
 {
     NetConnection *connection = data;
     return length <= (usz)SDL_MAX_SINT32 && NET_WriteToStreamSocket(connection->socket, bytes, (int)length) ? (int)length : MBEDTLS_ERR_NET_SEND_FAILED;
 }
 
 /// @brief Takes the bytes that have arrived for TLS; none yet means TLS waits.
-static int NetTlsReceive(void *data, unsigned char *bytes, size_t length)
+static int NetTLSReceive(void *data, unsigned char *bytes, size_t length)
 {
     NetConnection *connection = data;
     int count = NET_ReadFromStreamSocket(connection->socket, bytes, (int)SDL_min(length, (usz)SDL_MAX_SINT32));
@@ -224,7 +224,7 @@ static int NetTlsReceive(void *data, unsigned char *bytes, size_t length)
 }
 
 /// @brief Moves a TLS connection's handshake on, once its socket is connected.
-static void NetTlsHandshake(NetConnection *connection)
+static void NetTLSHandshake(NetConnection *connection)
 {
     if (connection->tls == nullptr || connection->secured || connection->failed || connection->socket == nullptr || NET_GetConnectionStatus(connection->socket) != NET_SUCCESS)
     {
@@ -249,7 +249,7 @@ static void NetTlsHandshake(NetConnection *connection)
 /// @brief Moves a connection on: makes its socket once its name resolves, then, for TLS, moves its handshake on.
 static void NetAdvance(NetConnection *connection)
 {
-    NetTlsHandshake(connection);
+    NetTLSHandshake(connection);
 
     if (connection->socket != nullptr || connection->failed || connection->address == nullptr)
     {
@@ -285,9 +285,9 @@ static NetConnection *NetConnect(const char *host, i32 port)
 }
 
 // a TLS connection checks the server's certificate against the name it was asked for
-static NetConnection *NetConnectTls(const char *host, i32 port)
+static NetConnection *NetConnectTLS(const char *host, i32 port)
 {
-    NetConnection *connection = NetTlsStart() ? NetConnect(host, port) : nullptr;
+    NetConnection *connection = NetTLSStart() ? NetConnect(host, port) : nullptr;
     mbedtls_ssl_context *tls = connection == nullptr ? nullptr : SDL_malloc(sizeof(mbedtls_ssl_context));
 
     if (tls == nullptr)
@@ -309,7 +309,7 @@ static NetConnection *NetConnectTls(const char *host, i32 port)
         connection->failed = true;
     }
 
-    mbedtls_ssl_set_bio(tls, connection, NetTlsSend, NetTlsReceive, nullptr);
+    mbedtls_ssl_set_bio(tls, connection, NetTLSSend, NetTLSReceive, nullptr);
     return connection;
 }
 
@@ -471,11 +471,11 @@ static NetServer *NetListen(i32 port)
 }
 
 // a TLS server shows its certificate to the clients, and proves it with the certificate's key
-static NetServer *NetListenTls(i32 port, const char *certificate, const char *key)
+static NetServer *NetListenTLS(i32 port, const char *certificate, const char *key)
 {
     char *certificatePath = NetFull(certificate);
     char *keyPath = NetFull(key);
-    NetServer *server = certificatePath != nullptr && keyPath != nullptr && NetTlsStart() ? NetListen(port) : nullptr;
+    NetServer *server = certificatePath != nullptr && keyPath != nullptr && NetTLSStart() ? NetListen(port) : nullptr;
     mbedtls_ssl_config *tls = server == nullptr ? nullptr : SDL_malloc(sizeof(mbedtls_ssl_config));
 
     if (tls != nullptr)
@@ -533,7 +533,7 @@ static NetConnection *NetAccept(NetServer *server)
         connection->from = server;
         server->users++;
         connection->failed = mbedtls_ssl_setup(tls, server->tls) != 0;
-        mbedtls_ssl_set_bio(tls, connection, NetTlsSend, NetTlsReceive, nullptr);
+        mbedtls_ssl_set_bio(tls, connection, NetTLSSend, NetTLSReceive, nullptr);
     }
 
     return connection;
@@ -548,9 +548,9 @@ static void NetDestroyServer(void *object)
     NetReleaseServer(server);
 }
 
-static NetUdp *NetUdpOpen(i32 port)
+static NetUDP *NetUDPOpen(i32 port)
 {
-    NetUdp *udp = SDL_calloc(1, sizeof(NetUdp));
+    NetUDP *udp = SDL_calloc(1, sizeof(NetUDP));
 
     if (udp == nullptr)
     {
@@ -584,7 +584,7 @@ static NetUdp *NetUdpOpen(i32 port)
 }
 
 /// @brief Sends the waiting datagrams whose hosts resolved, in order; one whose host cannot be resolved is dropped.
-static void NetUdpFlush(NetUdp *udp)
+static void NetUDPFlush(NetUDP *udp)
 {
     while (udp->pending != nullptr)
     {
@@ -610,7 +610,7 @@ static void NetUdpFlush(NetUdp *udp)
 
 /// @brief Gives a host's address, resolving it once per socket.
 /// @return A reference the caller owns, or nullptr if the name cannot be resolved.
-static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
+static NET_Address *NetUDPAddress(NetUDP *udp, const char *host)
 {
     for (usz i = 0; i < NET_UDP_HOSTS; i++)
     {
@@ -636,12 +636,12 @@ static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
     return address;
 }
 
-static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
+static bool NetUDPSendTo(NetUDP *udp, const char *host, i32 port, SHUSlice data)
 {
     NetPendingDatagram *datagram = data.size <= (usz)SDL_MAX_SINT32 ? SDL_calloc(1, sizeof(NetPendingDatagram)) : nullptr;
     datagram = datagram == nullptr ? nullptr : (datagram->data = SDL_malloc(SDL_max(data.size, 1)), datagram);
 
-    if (datagram == nullptr || datagram->data == nullptr || (datagram->address = NetUdpAddress(udp, host)) == nullptr)
+    if (datagram == nullptr || datagram->data == nullptr || (datagram->address = NetUDPAddress(udp, host)) == nullptr)
     {
         SDL_free(datagram == nullptr ? nullptr : datagram->data);
         SDL_free(datagram);
@@ -661,13 +661,13 @@ static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
     }
 
     *last = datagram;
-    NetUdpFlush(udp);
+    NetUDPFlush(udp);
     return true;
 }
 
-static SHUSlice NetUdpReceiveFrom(NetUdp *udp, const char **retHost, i32 *retPort)
+static SHUSlice NetUDPReceiveFrom(NetUDP *udp, const char **retHost, i32 *retPort)
 {
-    NetUdpFlush(udp);
+    NetUDPFlush(udp);
     NET_DestroyDatagram(udp->received);
     udp->received = nullptr;
     *retHost = nullptr;
@@ -683,9 +683,9 @@ static SHUSlice NetUdpReceiveFrom(NetUdp *udp, const char **retHost, i32 *retPor
     return (SHUSlice){.data = udp->received->buf, .size = (usz)udp->received->buflen};
 }
 
-static void NetDestroyUdp(void *object)
+static void NetDestroyUDP(void *object)
 {
-    NetUdp *udp = object;
+    NetUDP *udp = object;
 
     while (udp->pending != nullptr)
     {
@@ -711,7 +711,7 @@ static void NetFree(void *data)
 {
     (void)data;
 
-    NetTlsStop();
+    NetTLSStop();
 
     if (NET.started)
     {
@@ -739,7 +739,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "connection", NetDestroyConnection), NetFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "server", NetDestroyServer), NetFree(nullptr););
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "udp", NetDestroyUdp), NetFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "udp", NetDestroyUDP), NetFree(nullptr););
 
     const struct
     {
@@ -749,18 +749,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *description;
     } functions[] = {
         {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port)", "Start a TCP connection to a host and port"},
-        {"connectTls", (ECSFunction)NetConnectTls, "handle<net.connection>(string host, int port)", "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones"},
+        {"connectTLS", (ECSFunction)NetConnectTLS, "handle<net.connection>(string host, int port)", "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones"},
         {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)", "Give a connection's state: 1 connected, and for TLS secured, 0 waiting, -1 failed or closed"},
         {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data)", "Send data; it goes out in the background"},
         {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int most)", "Take what has arrived, at most a number of bytes; nothing if nothing has"},
         {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)", "Close a connection"},
         {"listen", (ECSFunction)NetListen, "handle<net.server>(int port)", "Wait for TCP connections on a port of every address of this computer"},
-        {"listenTls", (ECSFunction)NetListenTls, "handle<net.server>(int port, string certificate, string key)", "Wait for TLS connections on a port, with a certificate and its key from PEM files"},
+        {"listenTLS", (ECSFunction)NetListenTLS, "handle<net.server>(int port, string certificate, string key)", "Wait for TLS connections on a port, with a certificate and its key from PEM files"},
         {"trust", (ECSFunction)NetTrust, "bool(string path)", "Trust the certificates of a PEM file too, beside the system's, for later TLS connections"},
         {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server)", "Take a connection that a server has, if any"},
-        {"udp", (ECSFunction)NetUdpOpen, "handle<net.udp>(int port)", "Open a UDP socket on a port of every address of this computer; port 0 picks a free one"},
-        {"sendTo", (ECSFunction)NetUdpSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)", "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way"},
-        {"receiveFrom", (ECSFunction)NetUdpReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)", "Take a datagram that has arrived, with the address and port it came from; nothing if none has"},
+        {"udp", (ECSFunction)NetUDPOpen, "handle<net.udp>(int port)", "Open a UDP socket on a port of every address of this computer; port 0 picks a free one"},
+        {"sendTo", (ECSFunction)NetUDPSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)", "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way"},
+        {"receiveFrom", (ECSFunction)NetUDPReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)", "Take a datagram that has arrived, with the address and port it came from; nothing if none has"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here

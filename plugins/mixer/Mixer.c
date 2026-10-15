@@ -102,7 +102,7 @@ static struct
     MixerReverb *reverb; // nullptr until a reverb is set
     MixerVoice **voices;
     usz voiceCount;
-    i32 nextId;
+    i32 nextID;
     SDL_AudioDeviceID device; // 0 until the first sound plays
     bool audioStarted;
 } MIXER = {0};
@@ -723,7 +723,7 @@ static i32 MixerPlay(MixerSound *sound, f32 volume, bool loop)
     }
 
     // a mono sound plays in stereo, so it can be panned
-    *voice = (MixerVoice){.id = ++MIXER.nextId, .ringing = SDL_MAX_UINT64, .sound = sound, .loop = loop && sound->queue == nullptr, .channels = sound->spec.channels == 1 ? 2 : sound->spec.channels};
+    *voice = (MixerVoice){.id = ++MIXER.nextID, .ringing = SDL_MAX_UINT64, .sound = sound, .loop = loop && sound->queue == nullptr, .channels = sound->spec.channels == 1 ? 2 : sound->spec.channels};
     SDL_AudioSpec spec = {.format = SDL_AUDIO_F32, .channels = voice->channels, .freq = sound->spec.freq};
     voice->filters = SDL_calloc((usz)voice->channels * 2, sizeof(MixerBiquad));
     voice->stream = voice->filters == nullptr ? nullptr : SDL_CreateAudioStream(&spec, nullptr);
