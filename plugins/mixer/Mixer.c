@@ -22,6 +22,13 @@ typedef struct MixerSound
     bool playing;           // a voice plays it; a stream plays in one voice at a time
 } MixerSound;
 
+/// @brief A filter of a voice's channel: a biquad of the Audio EQ Cookbook, its coefficients, and what it last heard and gave.
+typedef struct MixerBiquad
+{
+    f32 b0, b1, b2, a1, a2;
+    f32 x1, x2, y1, y2;
+} MixerBiquad;
+
 /// @brief A sound that plays: an audio stream bound to the output, which asks for more of the sound as it plays.
 typedef struct MixerVoice
 {
@@ -35,6 +42,14 @@ typedef struct MixerVoice
     i32 channels;           // the channels the voice gives its stream: a mono sound plays in stereo, so it can be panned
     f32 *scratch;           // the audio thread's room for samples on their way
     usz scratchSize;        // in floats
+
+    // the low-pass and high-pass filters: their frequencies in hertz, 0 for none, which the main thread sets,
+    // and for each channel the two filters, which the audio thread tunes to the frequencies it last saw
+    SDL_AtomicInt lowpass;
+    SDL_AtomicInt highpass;
+    i32 tunedLowpass;
+    i32 tunedHighpass;
+    MixerBiquad *filters;
 } MixerVoice;
 
 /// @brief The delays of the reverb's filters in frames at 44100 Hz, Freeverb's: eight comb filters and four all-pass filters for each channel.
@@ -236,6 +251,77 @@ static const f32 *MixerTake(MixerVoice *voice, u64 wanted, u64 *retCount)
     return frames;
 }
 
+/// @brief Tunes a filter to a frequency, keeping what it heard: a Butterworth low-pass or high-pass of the Audio EQ Cookbook, or, at 0 hertz, one that lets everything through.
+static void MixerTune(MixerBiquad *filter, i32 hertz, i32 rate, bool high)
+{
+    if (hertz <= 0)
+    {
+        filter->b0 = 1.0f;
+        filter->b1 = filter->b2 = filter->a1 = filter->a2 = 0.0f;
+        return;
+    }
+
+    // a frequency at or past half the rate cannot be filtered, so it is kept just below; Q is 1/sqrt(2), for no peak at the edge
+    f32 frequency = SDL_min((f32)hertz, 0.49f * (f32)rate);
+    f32 omega = 2.0f * SDL_PI_F * frequency / (f32)rate;
+    f32 alpha = SDL_sinf(omega) / (2.0f * 0.70710678f);
+    f32 cosine = SDL_cosf(omega);
+    f32 a0 = 1.0f + alpha;
+    f32 edge = high ? (1.0f + cosine) / 2.0f : (1.0f - cosine) / 2.0f;
+    filter->b0 = edge / a0;
+    filter->b1 = (high ? -2.0f : 2.0f) * edge / a0;
+    filter->b2 = edge / a0;
+    filter->a1 = -2.0f * cosine / a0;
+    filter->a2 = (1.0f - alpha) / a0;
+}
+
+/// @brief Runs a voice's frames through its filters, in place, retuning them when their frequencies changed.
+static void MixerFilter(MixerVoice *voice, f32 *frames, u64 count)
+{
+    i32 lowpass = SDL_GetAtomicInt(&voice->lowpass);
+    i32 highpass = SDL_GetAtomicInt(&voice->highpass);
+    i32 channels = voice->channels;
+
+    if (lowpass != voice->tunedLowpass || highpass != voice->tunedHighpass)
+    {
+        // filters that were off forget what they heard before, so turning them on does not click
+        if (voice->tunedLowpass == 0 && voice->tunedHighpass == 0)
+        {
+            SDL_memset(voice->filters, 0, (usz)channels * 2 * sizeof(MixerBiquad));
+        }
+
+        for (i32 channel = 0; channel < channels; channel++)
+        {
+            MixerTune(&voice->filters[2 * channel], lowpass, voice->sound->spec.freq, false);
+            MixerTune(&voice->filters[2 * channel + 1], highpass, voice->sound->spec.freq, true);
+        }
+
+        voice->tunedLowpass = lowpass;
+        voice->tunedHighpass = highpass;
+    }
+
+    for (u64 i = 0; i < count; i++)
+    {
+        for (i32 channel = 0; channel < channels; channel++)
+        {
+            f32 sample = frames[i * (u64)channels + (u64)channel];
+
+            for (i32 k = 0; k < 2; k++)
+            {
+                MixerBiquad *f = &voice->filters[2 * channel + k];
+                f32 out = f->b0 * sample + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
+                f->x2 = f->x1;
+                f->x1 = sample;
+                f->y2 = f->y1;
+                f->y1 = out;
+                sample = out;
+            }
+
+            frames[i * (u64)channels + (u64)channel] = sample;
+        }
+    }
+}
+
 /// @brief Gives a voice's stream more of its sound, panned; SDL calls it on its audio thread when the stream runs low.
 static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, int total)
 {
@@ -260,7 +346,10 @@ static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, i
         f32 left = SDL_min(1.0f, 1.0f - pan);
         f32 right = SDL_min(1.0f, 1.0f + pan);
 
-        if (out == in && (out != 2 || pan == 0.0f))
+        // a filtered voice changes its samples, so they go through its room for samples even when nothing else changes them
+        bool filtered = voice->tunedLowpass != 0 || voice->tunedHighpass != 0 || SDL_GetAtomicInt(&voice->lowpass) != 0 || SDL_GetAtomicInt(&voice->highpass) != 0;
+
+        if (out == in && (out != 2 || pan == 0.0f) && !filtered)
         {
             SDL_PutAudioStreamData(stream, frames, (int)(count * outFrameSize));
         }
@@ -277,12 +366,24 @@ static void SDLCALL MixerFeed(void *data, SDL_AudioStream *stream, int needed, i
             frames = voice->sound->queue != nullptr ? voice->scratch : frames;
             f32 *panned = voice->scratch + offset;
 
-            for (u64 i = 0; i < count; i++)
+            if (out == in && (out != 2 || pan == 0.0f))
             {
-                f32 l = frames[i * (u64)in];
-                f32 r = in == 1 ? l : frames[i * (u64)in + 1];
-                panned[2 * i] = l * left;
-                panned[2 * i + 1] = r * right;
+                SDL_memmove(panned, frames, (usz)count * outFrameSize);
+            }
+            else
+            {
+                for (u64 i = 0; i < count; i++)
+                {
+                    f32 l = frames[i * (u64)in];
+                    f32 r = in == 1 ? l : frames[i * (u64)in + 1];
+                    panned[2 * i] = l * left;
+                    panned[2 * i + 1] = r * right;
+                }
+            }
+
+            if (filtered)
+            {
+                MixerFilter(voice, panned, count);
             }
 
             SDL_PutAudioStreamData(stream, panned, (int)(count * outFrameSize));
@@ -303,6 +404,7 @@ static void MixerFreeVoice(MixerVoice *voice)
     SDL_DestroyAudioStream(voice->stream);
     voice->sound->playing = false;
     SDL_free(voice->scratch);
+    SDL_free(voice->filters);
     MixerRelease(voice->sound);
     SDL_free(voice);
 }
@@ -534,12 +636,14 @@ static i32 MixerPlay(MixerSound *sound, f32 volume, bool loop)
     // a mono sound plays in stereo, so it can be panned
     *voice = (MixerVoice){.id = ++MIXER.nextId, .sound = sound, .loop = loop && sound->queue == nullptr, .channels = sound->spec.channels == 1 ? 2 : sound->spec.channels};
     SDL_AudioSpec spec = {.format = SDL_AUDIO_F32, .channels = voice->channels, .freq = sound->spec.freq};
-    voice->stream = SDL_CreateAudioStream(&spec, nullptr);
+    voice->filters = SDL_calloc((usz)voice->channels * 2, sizeof(MixerBiquad));
+    voice->stream = voice->filters == nullptr ? nullptr : SDL_CreateAudioStream(&spec, nullptr);
 
     if (voice->stream == nullptr || !SDL_SetAudioStreamGain(voice->stream, SDL_max(0.0f, volume)) || !SDL_SetAudioStreamGetCallback(voice->stream, MixerFeed, voice) || !SDL_BindAudioStream(MIXER.device, voice->stream))
     {
         ECS_LogError(MIXER.plugin, "Cannot play a sound: %s", SDL_GetError());
         SDL_DestroyAudioStream(voice->stream);
+        SDL_free(voice->filters);
         SDL_free(voice);
         return 0;
     }
@@ -598,6 +702,18 @@ static void MixerPan(i32 id, f32 pan)
     if (voice != nullptr)
     {
         SDL_SetAtomicInt(&voice->pan, (int)SDL_roundf(SDL_clamp(pan, -1.0f, 1.0f) * 1000.0f));
+    }
+}
+
+/// @brief Filters a voice: lowpass cuts the sounds above a frequency in hertz, and highpass those below one; 0 turns a filter off.
+static void MixerSetFilter(i32 id, f32 lowpass, f32 highpass)
+{
+    MixerVoice *voice = MixerFindVoice(id);
+
+    if (voice != nullptr)
+    {
+        SDL_SetAtomicInt(&voice->lowpass, (int)SDL_clamp(lowpass, 0.0f, 1000000.0f));
+        SDL_SetAtomicInt(&voice->highpass, (int)SDL_clamp(highpass, 0.0f, 1000000.0f));
     }
 }
 
@@ -677,6 +793,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"playing", (ECSFunction)MixerPlaying, "bool(int voice)", "Tell whether a voice still plays"},
         {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)", "Change a voice's volume; 1 is the sound's own"},
         {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)", "Move a voice from left, -1, to right, 1; 0 is the middle"},
+        {"filter", (ECSFunction)MixerSetFilter, "void(int voice, float lowpass, float highpass)", "Filter a voice: lowpass cuts the sounds above a frequency in hertz, and highpass those below one; 0 turns a filter off"},
         {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)", "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output"},
         {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)", "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away"},
         {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)", "Let go of a sound that keepSound kept"},
