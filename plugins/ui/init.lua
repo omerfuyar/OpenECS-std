@@ -116,6 +116,35 @@ local function previousCharacter(text, at)
   return at
 end
 
+-- the byte position of the start of the word before a position, or of the end of the word after it; words are what lies between spaces
+local function wordEdge(text, at, forward)
+  local function space(position)
+    return text:sub(position, position):match("%s") ~= nil
+  end
+
+  if forward then
+    while at <= #text and space(at) do
+      at = at + 1
+    end
+
+    while at <= #text and not space(at) do
+      at = at + 1
+    end
+
+    return at
+  end
+
+  while at > 1 and space(at - 1) do
+    at = at - 1
+  end
+
+  while at > 1 and not space(at - 1) do
+    at = at - 1
+  end
+
+  return at
+end
+
 -- the first characters of a text
 local function prefix(text, count)
   local at = 1
@@ -259,6 +288,135 @@ function elements.list(props, children)
   return node
 end
 
+-- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
+-- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
+-- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
+function elements.tree(props, nodes)
+  props = props or {}
+  assert(props.id, "a tree needs an id, which keeps its offset")
+  local open, rows = props.open or {}, {}
+  local ids, parents, folders = {}, {}, {}
+
+  local function add(list, depth, parent)
+    for _, item in ipairs(list) do
+      local folder = item.children ~= nil
+      local shown = folder and open[item.id] == true
+      local index = #rows + 1
+
+      -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
+      local arrow = elements.space({ width = size.checkSize, grow = 0 })
+
+      if folder then
+        arrow = elements.row({ onClick = function()
+          if props.onToggle then
+            props.onToggle(item.id, not shown)
+          end
+        end }, { element("disclosure", { open = shown }) })
+      end
+
+      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, {
+        elements.space({ width = depth * size.checkSize, grow = 0 }),
+        arrow,
+        elements.text(item.label or tostring(item.id), { color = item.color }),
+      })
+      ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
+
+      if shown then
+        add(item.children, depth + 1, index)
+      end
+    end
+  end
+
+  add(nodes or {}, 0, nil)
+
+  -- the list works with indexes, and the tree with ids
+  local listProps = {}
+
+  for key, value in pairs(props) do
+    listProps[key] = value
+  end
+
+  listProps.open, listProps.onToggle = nil, nil
+  listProps.selected = nil
+
+  for index, id in ipairs(ids) do
+    if id == props.selected then
+      listProps.selected = index
+    end
+  end
+
+  listProps.onSelect = props.onSelect and function(index)
+    props.onSelect(ids[index])
+  end
+
+  listProps.onActivate = props.onActivate and function(index)
+    props.onActivate(ids[index])
+  end
+
+  local node = elements.list(listProps, rows)
+  node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  return node
+end
+
+-- a table: a header of its columns' titles over a list of its rows, whose cells line up below the titles;
+-- a column is { id, title, width }, and a row is a table of the cells' values by column id; a column is as wide as its widest cell unless it gives a width;
+-- selected is the chosen row's number, onSelect and onActivate get a row's number, and a click on a title gives the column's id to onSort;
+-- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
+function elements.table(props, columns, rows)
+  props = props or {}
+  assert(props.id, "a table needs an id, which keeps its offset")
+  columns, rows = columns or {}, rows or {}
+  local font, textSize = fontOf(props), props.size or fontSize()
+  local widths = {}
+
+  local function title(column)
+    return tostring(column.title or column.id)
+  end
+
+  for i, column in ipairs(columns) do
+    local widest = measureText(font, title(column), textSize) + (props.sort == column.id and size.checkSize or 0)
+
+    for _, values in ipairs(rows) do
+      widest = math.max(widest, measureText(font, tostring(values[column.id] or ""), textSize))
+    end
+
+    widths[i] = column.width or widest + 2 * size.paddingX
+  end
+
+  -- a cell is a row of a column's width, with room before its text; a title cell is clicked to sort
+  local function cells(values)
+    local list = {}
+
+    for i, column in ipairs(columns) do
+      local children = {
+        elements.space({ width = size.paddingX, grow = 0 }),
+        elements.text(values and tostring(values[column.id] or "") or title(column), { grow = 1, size = props.size, font = props.font, color = not values and "textDim" or nil }),
+      }
+
+      if not values and props.sort == column.id then
+        children[3] = element("disclosure", { open = not props.ascending, up = props.ascending == true })
+      end
+
+      list[i] = elements.row({ id = not values and props.id .. ":title:" .. tostring(column.id) or nil, width = widths[i], onClick = not values and props.onSort and function()
+        props.onSort(column.id)
+      end or nil }, children)
+    end
+
+    return list
+  end
+
+  local items = {}
+
+  for i, values in ipairs(rows) do
+    items[i] = elements.row({ id = props.id .. ":" .. i, padding = 2 }, cells(values))
+  end
+
+  -- the list scrolls its rows below the header, and takes the room the table has
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
+  return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
+end
+
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
@@ -378,7 +536,7 @@ function elements.number(value, props)
   node.change = function(state, up)
     local number = settle((tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
     state.typed = show(number)
-    state.at = #state.typed + 1
+    state.at, state.anchor = #state.typed + 1, nil
     onChange(number)
   end
 
@@ -504,6 +662,8 @@ local function measure(node, state, room)
     width, height = 1, 1
   elseif node.kind == "space" then
     width, height = 0, 0
+  elseif node.kind == "disclosure" then
+    width, height = size.checkSize, line
   else
     local across, along = 0, 0
     local count = 0
@@ -635,6 +795,13 @@ local function thumb(node)
   local travel = node.total - node.shown
   local start = travel > 0 and (node.h - length) * node.offset / travel or 0
   return node.y + start, length
+end
+
+-- the first and the last byte positions of the selection of the focused field, or nil when nothing is selected; last is the position after it
+local function selection(state)
+  if state.anchor and state.anchor ~= state.at then
+    return math.min(state.anchor, state.at), math.max(state.anchor, state.at)
+  end
 end
 
 -- the part of a rectangle inside a clip rectangle, if there is one
@@ -819,12 +986,20 @@ local function paint(node, surface, state, clip)
     local textX = node.x + size.paddingX - ((focused and before > room) and before - room or 0)
     local inner = intersect({ x = node.x + 1, y = node.y + 1, w = node.w - 2, h = node.h - 2 }, clip)
     draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
+    local first, last = selection(state)
+
+    if focused and node.kind == "field" and first then
+      local left = textX + measureText(font, text:sub(1, first - 1), textSize)
+      draw.fill(surface, left, textY, textX + measureText(font, text:sub(1, last - 1), textSize) - left, line, "selected")
+    end
+
     draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
       (focused and node.kind == "key") and "textDim" or node.color or "text")
 
     if focused and node.kind == "field" then
       draw.fill(surface, textX + before, textY, 2, line, "accent")
       state.cursor = { x = textX + before, y = textY, h = line }
+      state.textX = textX
     end
 
     restoreClip(surface, clip)
@@ -834,6 +1009,17 @@ local function paint(node, surface, state, clip)
   elseif node.kind == "image" then
     if node.picture then
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
+    end
+  elseif node.kind == "disclosure" then
+    -- down when open, right when closed, and up with up
+    local half, x, y = size.checkSize / 4, node.x + node.w / 2, node.y + node.h / 2
+
+    if node.up then
+      draw.triangles(surface, string.pack("ffffff", x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
+    elseif node.open then
+      arrow(surface, x, y, half, "textDim")
+    else
+      draw.triangles(surface, string.pack("ffffff", x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
     end
   elseif node.kind == "separator" then
     if node.vertical then
@@ -925,7 +1111,7 @@ end
 
 local function blur(panel, state)
   if state.focus then
-    state.focus, state.typed, state.cursor, state.at = nil, nil, nil, nil
+    state.focus, state.typed, state.cursor, state.at, state.anchor, state.selecting = nil, nil, nil, nil, nil, nil
     panel:setTextInput(false)
     panel:redraw()
   end
@@ -1048,6 +1234,33 @@ local function activate(panel, state, node, x)
   end
 end
 
+-- puts text in place of the selection, or at the cursor
+local function replace(state, text)
+  local first, last = selection(state)
+  first, last = first or state.at, last or state.at
+  state.typed = state.typed:sub(1, first - 1) .. text .. state.typed:sub(last)
+  state.at, state.anchor = first + #text, nil
+end
+
+-- the byte position in a field's text nearest to a position across it, in layout units
+local function positionAt(node, text, textX, x)
+  local font, textSize = fontOf(node), node.size or fontSize()
+  local at, left = 1, textX
+
+  while at <= #text do
+    local after = nextCharacter(text, at)
+    local right = textX + measureText(font, text:sub(1, after - 1), textSize)
+
+    if x < (left + right) / 2 then
+      return at
+    end
+
+    at, left = after, right
+  end
+
+  return at
+end
+
 -- handles a key or text event while a field or key element has the focus
 local function typing(panel, state, event)
   local node = state.root and byId(state.root, state.focus)
@@ -1071,27 +1284,55 @@ local function typing(panel, state, event)
   end
 
   -- the cursor is a byte position before which text goes; a character may take several bytes
+  -- the selection lies between the anchor and the cursor, and what is typed replaces it
   local typed, at = state.typed, state.at
+  local first, last = selection(state)
+  local key = event.type == "keyDown" and event.key or nil
+  local moves = { Left = true, Right = true, Home = true, End = true }
 
   if event.type == "text" then
-    state.typed = typed:sub(1, at - 1) .. event.text .. typed:sub(at)
-    state.at = at + #event.text
+    replace(state, event.text)
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Backspace" and at > 1 then
-    local previous = previousCharacter(typed, at)
+  elseif (key == "Backspace" or key == "Delete") and first then
+    replace(state, "")
+    call(node.onChange, state.typed)
+  elseif key == "Backspace" and at > 1 then
+    local previous = event.ctrl and wordEdge(typed, at, false) or previousCharacter(typed, at)
     state.typed, state.at = typed:sub(1, previous - 1) .. typed:sub(at), previous
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Delete" and at <= #typed then
-    state.typed = typed:sub(1, at - 1) .. typed:sub(nextCharacter(typed, at))
+  elseif key == "Delete" and at <= #typed then
+    state.typed = typed:sub(1, at - 1) .. typed:sub(event.ctrl and wordEdge(typed, at, true) or nextCharacter(typed, at))
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Left" then
-    state.at = at > 1 and previousCharacter(typed, at) or 1
-  elseif event.type == "keyDown" and event.key == "Right" then
-    state.at = at <= #typed and nextCharacter(typed, at) or at
-  elseif event.type == "keyDown" and event.key == "Home" then
-    state.at = 1
-  elseif event.type == "keyDown" and event.key == "End" then
-    state.at = #typed + 1
+  elseif (key == "Left" or key == "Right") and first and not event.shift and not event.ctrl then
+    -- an arrow ends a selection at its side
+    state.at, state.anchor = key == "Left" and first or last, nil
+  elseif moves[key] then
+    -- Shift keeps the anchor, so the move selects; Ctrl moves by words
+    local to = key == "Home" and 1 or key == "End" and #typed + 1
+      or event.ctrl and wordEdge(typed, at, key == "Right")
+      or key == "Left" and (at > 1 and previousCharacter(typed, at) or 1)
+      or (at <= #typed and nextCharacter(typed, at) or at)
+    state.anchor = event.shift and (state.anchor or at) or nil
+    state.at = to
+  elseif key == "A" and event.ctrl then
+    state.anchor, state.at = 1, #typed + 1
+  elseif (key == "C" or key == "X") and event.ctrl then
+    if first then
+      ecs.clipboard.setText(typed:sub(first, last - 1))
+
+      if key == "X" then
+        replace(state, "")
+        call(node.onChange, state.typed)
+      end
+    end
+  elseif key == "V" and event.ctrl then
+    -- a field holds one line, so the lines of the pasted text are joined by spaces
+    local pasted = (ecs.clipboard.getText() or ""):gsub("\r?\n", " ")
+
+    if pasted ~= "" then
+      replace(state, pasted)
+      call(node.onChange, state.typed)
+    end
   elseif event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") then
     -- onSubmit gives false to keep typing, such as for a text it cannot read
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
@@ -1357,6 +1598,17 @@ local function handle(panel, event)
       return true
     end
 
+    if state.selecting then
+      local node = byId(root, state.selecting)
+
+      if node and state.focus == node.id then
+        state.at = positionAt(node, state.typed, state.textX or node.x + size.paddingX, x)
+      end
+
+      panel:redraw()
+      return true
+    end
+
     if state.sliding then
       local node = byId(root, state.sliding)
 
@@ -1411,7 +1663,15 @@ local function handle(panel, event)
     state.pressed = node
     state.target, state.ring = node and node.id, false
 
-    if node and (node.kind == "field" or node.kind == "key") then
+    if node and node.kind == "field" then
+      -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
+      local focused = state.focus == node.id
+      local textX = focused and state.textX or node.x + size.paddingX
+      activate(panel, state, node, x)
+      local to = positionAt(node, state.typed, textX, x)
+      state.anchor = (focused and event.shift) and (state.anchor or state.at) or to
+      state.at, state.selecting = to, node.id
+    elseif node and node.kind == "key" then
       activate(panel, state, node, x)
     elseif node and node.kind == "slider" then
       state.sliding = node.id
@@ -1425,7 +1685,7 @@ local function handle(panel, event)
     return node ~= nil or item ~= nil
   elseif event.type == "pointerUp" and event.button == 1 then
     local pressed = state.pressed
-    state.pressed, state.dragging, state.sliding = nil, nil, nil
+    state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
 
     -- a click is a press and a release on the same element
     local node = find(root, x, y, interactive)
@@ -1574,6 +1834,29 @@ function services.move(panel, listId, step)
   services.reveal(panel, listId, list.items[index].id)
 end
 
+-- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
+function services.expand(panel, treeId, open)
+  local state = panelState(panel)
+  local node = state.root and byId(state.root, treeId)
+  local tree = node and node.tree
+  local index = node and node.selected
+
+  if not tree or not index or not tree.ids[index] then
+    return
+  end
+
+  local folder = tree.folders[index]
+
+  if folder and (folder == "open") ~= open then
+    call(tree.onToggle, tree.ids[index], open)
+    panel:redraw()
+  elseif open and folder == "open" and tree.parents[index + 1] == index then
+    services.move(panel, treeId, 1)
+  elseif not open and tree.parents[index] then
+    services.move(panel, treeId, tree.parents[index] - index)
+  end
+end
+
 -- activates a list's chosen item, as a click on it does
 function services.activate(panel, listId)
   local state = panelState(panel)
@@ -1595,11 +1878,14 @@ assert(ecs.service.register({
   reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
   move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },
   activate = { sig = "void(handle<ecs.panel> panel, string list)", doc = "Activate a list's chosen item; onActivate gets it", fn = services.activate },
+  expand = { sig = "void(handle<ecs.panel> panel, string tree, bool open)", doc = "Open or close a tree's chosen node; onToggle gets it, opening an open node chooses its first child, and closing a closed one its parent", fn = services.expand },
   column = { sig = "value(value props, value children)", doc = "Elements below each other", fn = elements.column },
   row = { sig = "value(value props, value children)", doc = "Elements beside each other", fn = elements.row },
   scroll = { sig = "value(value props, value children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
   list = { sig = "value(value props, value children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
   group = { sig = "value(value props, value children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
+  table = { sig = "value(value props, value columns, value rows)", doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort", fn = elements.table },
+  tree = { sig = "value(value props, value nodes)", doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id", fn = elements.tree },
   separator = { sig = "value(value props)", doc = "A line across a column, or up a row", fn = elements.separator },
   text = { sig = "value(string text, value props)", doc = "A line of text", fn = elements.text },
   button = { sig = "value(string label, value props)", doc = "A button; onClick runs when it is clicked", fn = elements.button },
