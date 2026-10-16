@@ -70,9 +70,6 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
 
 #pragma region Declarations
 
-/// @brief Runs a shell command, and stops the build if it fails.
-#define RunCheck(cmd, ...) SHU_Assert(!SHU_UtilRun(cmd, ##__VA_ARGS__), "Running " SHUM_COLOR_RED("'%s'") " failed", cmd)
-
 static void SetupConfiguration(int argc, char **argv);
 static void SetBuildFlags(void);
 static void ForEachFolder(const char *path, void (*function)(const char *path, const char *name));
@@ -320,8 +317,14 @@ static void BuildNative(const char *name, const char *root, const char *output)
         }
     }
 
-    SHUI_String library;
-    SHUI_SFormat(&library, "%slib%s.so", output, name);
+    // the libraries it takes are compiled first, into static archives that its native library is linked with
+    SHUI_String archives;
+    SHUI_SFormat(&archives, ".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
+
+    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
+    {
+        BuildLibrary(needs->libraries[i], archives.data);
+    }
 
     SHU_ModuleBegin(name, root);
     SetBuildFlags();
@@ -345,37 +348,28 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleAddIncludeDirectory(folder.data);
     }
 
+    if (needs != NULL && needs->flags != NULL)
+    {
+        SHU_CompilerAddFlags(needs->flags);
+    }
+
     SHUI_String include;
     SHUI_SFormat(&include, "%s%sinclude/", up.data, CONFIG.output);
     SHU_ModuleAddSourceFile("./");
     SHU_ModuleAddIncludeDirectory(include.data);
 
-    if (needs == NULL || needs->libraries[0] == NULL)
+    // the linker takes what the plugin uses of each library, in the order they are listed
+    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
-        SHU_ModuleCompile(output, SHUModuleType_LibraryDynamic);
-        return;
+        if (i == 0)
+        {
+            SHU_ModuleAddLibraryDirectory(archives.data);
+        }
+
+        SHU_ModuleLinkLibrary(needs->libraries[i]->name);
     }
 
-    // a plugin that takes libraries is packed into an archive too, and its native library is linked from the archives: all of its own, and what it uses of theirs
-    SHU_CompilerAddFlags(" -fPIC");
-    SHU_CompilerAddFlags(needs->flags);
-    SHUI_String archives;
-    SHUI_SFormat(&archives, ".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
-    SHU_ModuleCompile(archives.data, SHUModuleType_LibraryStatic);
-
-    SHUI_String link = {0};
-
-    for (usz i = 0; needs->libraries[i] != NULL; i++)
-    {
-        BuildLibrary(needs->libraries[i], archives.data);
-        SHUI_SAppendC(&link, " ");
-        SHUI_SAppendC(&link, archives.data);
-        SHUI_SAppendC(&link, "lib");
-        SHUI_SAppendC(&link, needs->libraries[i]->name);
-        SHUI_SAppendC(&link, ".a");
-    }
-
-    RunCheck("gcc -shared -o %s -Wl,--whole-archive %slib%s.a -Wl,--no-whole-archive%s", library.data, archives.data, name, link.data);
+    SHU_ModuleCompile(output, SHUModuleType_LibraryDynamic);
 }
 
 /// @brief Copies a file or folder of a plugin's folder into the plugin's folder of bin/plugins/, if it is a Lua file, the manifest among them, its header.h or a folder.
