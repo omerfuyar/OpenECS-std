@@ -614,7 +614,7 @@ static char *DrawFontPath(const char *name)
     bool shipped = SDL_strcmp(name, "mono") == 0 && file[0] == '\0';
     char *path = nullptr;
 
-    if (SDL_asprintf(&path, "%s%s", shipped ? ECSPlugin_GetFolder(DRAW.plugin) : file[0] == '/' ? "" : SDL_GetBasePath(), shipped ? DRAW_MONO_FONT : file) < 0)
+    if (SDL_asprintf(&path, "%s%s", shipped ? ECSPlugin_GetFolder(DRAW.plugin) : ECSPath_IsAbsolute(file) ? "" : SDL_GetBasePath(), shipped ? DRAW_MONO_FONT : file) < 0)
     {
         return nullptr;
     }

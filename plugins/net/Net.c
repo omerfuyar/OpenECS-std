@@ -170,7 +170,7 @@ static void NetTLSStop(void)
 static char *NetFull(const char *path)
 {
     char *full = nullptr;
-    return SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
+    return SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
 }
 
 /// @brief Adds the certificates of a PEM file to the trusted ones, which later TLS connections check servers with.

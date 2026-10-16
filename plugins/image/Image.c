@@ -136,7 +136,7 @@ static char *ImageFullPath(const char *path, f32 scale)
 {
     char *full = nullptr;
 
-    if (scale <= 0.0f || SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    if (scale <= 0.0f || SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
     {
         ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
         return nullptr;
@@ -381,7 +381,7 @@ static bool ImageSave(void *image, const char *path)
     bool written = false;
 
     if (rgba != nullptr && SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
-        SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) >= 0)
+        SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) >= 0)
     {
         written = format == 0 ? stbi_write_png(full, width, height, 4, rgba, width * 4) != 0
                   : format == 1 ? stbi_write_jpg(full, width, height, 4, rgba, IMAGE_JPG_QUALITY) != 0

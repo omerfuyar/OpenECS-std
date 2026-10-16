@@ -106,7 +106,7 @@ static void *AudioLoad(const char *path)
     char *full = nullptr;
 
     // a relative path starts at the executable's folder
-    if (SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    if (SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
     {
         return nullptr;
     }
@@ -302,7 +302,7 @@ static void *AudioStreamFile(const char *path)
     char *full = nullptr;
 
     // a relative path starts at the executable's folder
-    if (SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    if (SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
     {
         return nullptr;
     }

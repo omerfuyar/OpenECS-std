@@ -46,7 +46,7 @@ static struct
 static char *FsFull(const char *path)
 {
     char *full = nullptr;
-    return SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
+    return SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
 }
 
 static const char *FsTypeName(SDL_PathType type)
@@ -240,12 +240,12 @@ static void FsStop(FsWatch *watch)
     FsFreeWatch(watch);
 }
 
+#ifdef __linux__
 /// @brief Reads the changes of the watched folders, and tells each watch of its folder's.
 static void FsReadChanges(void *data)
 {
     (void)data;
 
-#ifdef __linux__
     alignas(struct inotify_event) char buffer[4096];
     ssize_t length = 0;
     FS.telling = true;
@@ -282,8 +282,8 @@ static void FsReadChanges(void *data)
             FsFreeWatch(FS.watches[i - 1]);
         }
     }
-#endif
 }
+#endif
 
 static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 {
@@ -307,7 +307,7 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     usz length = SDL_strlen(folder);
 
     if (descriptor < 0 || (FS.timer == nullptr && ECSTimer_Start(FS.plugin, &FS.timer, FS_WATCH_INTERVAL, true, FsReadChanges, nullptr) != SHUResult_Ok) ||
-        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && folder[length - 1] == '/' ? "" : "/") < 0)
+        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && ECSPath_IsSeparator(folder[length - 1]) ? "" : "/") < 0)
     {
         // inotify's watch stops unless another watch shares it, and the timer stops if nothing is watched
         bool shared = false;
