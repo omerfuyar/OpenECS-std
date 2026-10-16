@@ -3,7 +3,6 @@
 // It builds each plugin into bin/plugins/, and copies the presets into bin/presets/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
-#define SHUC_NO_RUN_LOG
 #define SHUC_MAX_COMMAND_BUFFER_SIZE 65536 // a library of many files is packed with one command that names each of them
 #include "shuild/shuild.h"
 
@@ -84,9 +83,8 @@ int main(int argc, char **argv)
     ForEachFolder("plugins/", BuildPlugin);
 
     // the presets go to bin/presets/, beside OpenECS's own
-    SHUI_String folder;
-    SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
-    SHU_UtilCopyFile("presets/", folder.data);
+    char *folder = SHU_UtilFormat("%sbin/presets/", CONFIG.output);
+    SHU_UtilCopyFile("presets/", folder);
 
     return 0;
 }
@@ -151,9 +149,8 @@ static void SetupConfiguration(int argc, char **argv)
         Refuse("The output folder is missing, or does not end with /", CONFIG.output == NULL ? "" : CONFIG.output);
     }
 
-    SHUI_String cache;
-    SHUI_SFormat(&cache, ".shu/%s/", BUILD_TYPE_STRINGS[CONFIG.type]);
-    SHU_CacheConfigure(cache.data);
+    char *cache = SHU_UtilFormat(".shu/%s/", BUILD_TYPE_STRINGS[CONFIG.type]);
+    SHU_CacheConfigure(cache);
 }
 
 // the plugins get OpenECS's warnings, and in Debug its static analyzer and sanitizers, as OpenECS's own code does;
@@ -207,9 +204,8 @@ static void VisitFolder(const char *entry, SHUFileType type, void *data)
     if (type == SHUFileType_Directory)
     {
         // the entry is the folder's path, with a separator at its end; the function gets its name alone
-        SHUI_String name;
-        SHUI_SFormat(&name, "%.*s", (int)(strlen(entry) - strlen(visit->path) - 1), entry + strlen(visit->path));
-        visit->function(visit->path, name.data);
+        char *name = SHU_UtilFormat("%.*s", (int)(strlen(entry) - strlen(visit->path) - 1), entry + strlen(visit->path));
+        visit->function(visit->path, name);
     }
 }
 
@@ -288,23 +284,22 @@ static void BuildNative(const char *name, const char *root, const char *output)
     }
 
     // paths are named from the plugin's folder, which is one level deeper for each folder in root
-    SHUI_String up = {0};
+    const char *up = "";
 
     for (const char *c = root; *c != '\0'; c++)
     {
         if (*c == '/')
         {
-            SHUI_SAppendC(&up, "../");
+            up = SHU_UtilFormat("%s../", up);
         }
     }
 
     // the libraries it takes are compiled first, into static archives that its native library is linked with
-    SHUI_String archives;
-    SHUI_SFormat(&archives, ".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
+    char *archives = SHU_UtilFormat(".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
 
     for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
-        BuildLibrary(needs->libraries[i], archives.data);
+        BuildLibrary(needs->libraries[i], archives);
     }
 
     SHU_ModuleBegin(name, root);
@@ -319,14 +314,12 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     for (usz i = 0; needs != NULL && needs->includes[i] != NULL; i++)
     {
-        SHUI_String flag;
-        SHUI_SFormat(&flag, " -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->includes[i]);
-        SHU_CompilerAddFlags(flag.data);
+        char *flag = SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->includes[i]);
+        SHU_CompilerAddFlags(flag);
 
         // shuild finds the headers a file includes in the module's folders, so the plugin is rebuilt when they change
-        SHUI_String folder;
-        SHUI_SFormat(&folder, "%sdependencies/%s", up.data, needs->includes[i]);
-        SHU_ModuleAddIncludeDirectory(folder.data);
+        char *folder = SHU_UtilFormat("%sdependencies/%s", up, needs->includes[i]);
+        SHU_ModuleAddIncludeDirectory(folder);
     }
 
     if (needs != NULL && needs->flags != NULL)
@@ -334,17 +327,16 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_CompilerAddFlags(needs->flags);
     }
 
-    SHUI_String include;
-    SHUI_SFormat(&include, "%s%sinclude/", up.data, CONFIG.output);
+    char *include = SHU_UtilFormat("%s%sinclude/", up, CONFIG.output);
     SHU_ModuleAddSourceFile("./");
-    SHU_ModuleAddIncludeDirectory(include.data);
+    SHU_ModuleAddIncludeDirectory(include);
 
     // the linker takes what the plugin uses of each library, in the order they are listed
     for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
         if (i == 0)
         {
-            SHU_ModuleAddLibraryDirectory(archives.data);
+            SHU_ModuleAddLibraryDirectory(archives);
         }
 
         SHU_ModuleLinkLibrary(needs->libraries[i]->name);
@@ -368,9 +360,8 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
             name--;
         }
 
-        SHUI_String folder;
-        SHUI_SFormat(&folder, "%s%s", output, name);
-        SHU_UtilCopyFile(path, folder.data);
+        char *folder = SHU_UtilFormat("%s%s", output, name);
+        SHU_UtilCopyFile(path, folder);
     }
     else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h"))
     {
@@ -382,11 +373,9 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
 /// OpenECS --definitions reads types.lua and header.h from there (OpenECS DESIGN 10.10).
 static void BuildPlugin(const char *path, const char *name)
 {
-    SHUI_String root;
-    SHUI_String output;
-    SHUI_SFormat(&root, "%s%s/", path, name);
-    SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
-    SHU_UtilCreateDirectory(output.data);
-    SHU_UtilListDirectory(root.data, false, CopyPluginFile, (void *)output.data);
-    BuildNative(name, root.data, output.data);
+    char *root = SHU_UtilFormat("%s%s/", path, name);
+    char *output = SHU_UtilFormat("%sbin/plugins/%s/", CONFIG.output, name);
+    SHU_UtilCreateDirectory(output);
+    SHU_UtilListDirectory(root, false, CopyPluginFile, (void *)output);
+    BuildNative(name, root, output);
 }
