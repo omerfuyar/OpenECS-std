@@ -1,12 +1,13 @@
 // The gpu standard plugin: draws into the GPU surface of another plugin's panel, on the GPU (DESIGN 15).
 // A panel's Draw passes its surface to gpu's functions, as to draw's, and gpu sends what they drew to the GPU when the Draw returns. It draws shapes,
-// lines and textures as draw does, with an offscreen SDL renderer of its own on OpenECS's GPU device, and vertex buffers with a plugin's own
+// lines, textures and text as draw does, with an offscreen SDL renderer of its own on OpenECS's GPU device, and vertex buffers with a plugin's own
 // shaders, through pipelines, with SDL's GPU API.
 // It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
 
 #include "OpenECS.h"
 
 #include "SDL3/SDL.h"
+#include "SDL3_ttf/SDL_ttf.h"
 
 #pragma region Source Only
 
@@ -15,6 +16,9 @@
 
 /// @brief The most vertex attributes a pipeline takes.
 #define GPU_ATTRIBUTES 16
+
+/// @brief The width and height of each texture that the text engine keeps glyphs in.
+#define GPU_ATLAS_SIZE 1024
 
 /// @brief Drawing into one GPU surface during its Draw, until the core says the Draw returned. Shapes go through the renderer; pipelines draw in a
 /// render pass of their own.
@@ -40,6 +44,21 @@ typedef struct GpuBuffer
     bool index;
 } GpuBuffer;
 
+/// @brief A font file opened at a size in pixels, for the text engine.
+typedef struct GpuFont
+{
+    char *file;
+    i32 pixels;
+    TTF_Font *font;
+} GpuFont;
+
+/// @brief A texture of the text engine's glyphs, and the renderer's view of it.
+typedef struct GpuAtlas
+{
+    SDL_GPUTexture *glyphs;
+    SDL_Texture *texture;
+} GpuAtlas;
+
 /// @brief A graphics pipeline: shaders, how vertices are laid out, and how triangles are drawn.
 typedef struct GpuPipeline
 {
@@ -62,12 +81,50 @@ static struct
         SDL_GPUTexture *texture;
     } depths[GPU_DEPTHS]; // depth textures by size
     usz nextDepth;        // the one a new size replaces
+    bool ttfStarted;
+    TTF_TextEngine *textEngine;                // keeps the glyphs of text in textures on the device, or nullptr without a GPU renderer
+    const char *(*FontFile)(void *font);       // draw.fontFile, which gives the file of a draw.font
+    GpuFont *fonts;                            // every font file and size that text was drawn in
+    usz fontCount;
+    GpuAtlas *atlases;                         // the text engine's textures, as the renderer sees them
+    usz atlasCount;
 } GPU = {0};
 
 /// @brief Frees the renderer; the plugin's Destroy, after the handles of its frames and textures are gone.
 static void GpuFree(void *data)
 {
     (void)data;
+
+    // the renderer's views of the glyph textures go before the text engine, which owns the textures
+    for (usz i = 0; i < GPU.atlasCount; i++)
+    {
+        SDL_DestroyTexture(GPU.atlases[i].texture);
+    }
+
+    for (usz i = 0; i < GPU.fontCount; i++)
+    {
+        TTF_CloseFont(GPU.fonts[i].font);
+        SDL_free(GPU.fonts[i].file);
+    }
+
+    if (GPU.textEngine != nullptr)
+    {
+        TTF_DestroyGPUTextEngine(GPU.textEngine);
+    }
+
+    if (GPU.ttfStarted)
+    {
+        TTF_Quit();
+    }
+
+    SDL_free(GPU.atlases);
+    SDL_free(GPU.fonts);
+    GPU.atlases = nullptr;
+    GPU.atlasCount = 0;
+    GPU.fonts = nullptr;
+    GPU.fontCount = 0;
+    GPU.textEngine = nullptr;
+    GPU.ttfStarted = false;
 
     for (usz i = 0; i < GPU_DEPTHS; i++)
     {
@@ -449,6 +506,124 @@ static void GpuImage(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f3
 
     GpuImageTransformed(surface, texture, x, y, width, height, 0.0f, 0xFFFFFFFF);
 }
+
+#pragma region Text
+
+/// @brief Gets a font file at a size in pixels, opening it the first time.
+/// @return The font, or nullptr if it cannot be opened; the reason is logged.
+static TTF_Font *GpuGetFont(const char *file, f32 pixels)
+{
+    i32 size = (i32)SDL_max(1.0f, SDL_roundf(pixels));
+
+    for (usz i = 0; i < GPU.fontCount; i++)
+    {
+        if (GPU.fonts[i].pixels == size && SDL_strcmp(GPU.fonts[i].file, file) == 0)
+        {
+            return GPU.fonts[i].font;
+        }
+    }
+
+    TTF_Font *opened = TTF_OpenFont(file, (float)size);
+    char *copy = opened == nullptr ? nullptr : SDL_strdup(file);
+    GpuFont *fonts = copy == nullptr ? nullptr : SDL_realloc(GPU.fonts, (GPU.fontCount + 1) * sizeof(GpuFont));
+
+    if (fonts == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot open the font '%s' at %d pixels: %s", file, size, SDL_GetError());
+        SDL_free(copy);
+        TTF_CloseFont(opened);
+        return nullptr;
+    }
+
+    GPU.fonts = fonts;
+    GPU.fonts[GPU.fontCount++] = (GpuFont){.file = copy, .pixels = size, .font = opened};
+    return opened;
+}
+
+/// @brief Gives the renderer's view of a texture of the text engine's glyphs, made the first time; nullptr for none, which draws in one colour.
+static SDL_Texture *GpuGetAtlas(SDL_GPUTexture *glyphs)
+{
+    if (glyphs == nullptr)
+    {
+        return nullptr;
+    }
+
+    for (usz i = 0; i < GPU.atlasCount; i++)
+    {
+        if (GPU.atlases[i].glyphs == glyphs)
+        {
+            return GPU.atlases[i].texture;
+        }
+    }
+
+    // the glyphs are white ARGB, B8G8R8A8_UNORM on the GPU, with straight alpha, so the text's colour multiplies them
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_ARGB8888);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STATIC);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, GPU_ATLAS_SIZE);
+    SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, GPU_ATLAS_SIZE);
+    SDL_SetPointerProperty(props, SDL_PROP_TEXTURE_CREATE_GPU_TEXTURE_POINTER, glyphs);
+    SDL_Texture *texture = props == 0 ? nullptr : SDL_CreateTextureWithProperties(GPU.renderer, props);
+    SDL_DestroyProperties(props);
+    GpuAtlas *atlases = texture == nullptr ? nullptr : SDL_realloc(GPU.atlases, (GPU.atlasCount + 1) * sizeof(GpuAtlas));
+
+    if (atlases == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot draw from the text's glyphs: %s", SDL_GetError());
+        SDL_DestroyTexture(texture);
+        return nullptr;
+    }
+
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    GPU.atlases = atlases;
+    GPU.atlases[GPU.atlasCount++] = (GpuAtlas){.glyphs = glyphs, .texture = texture};
+    return texture;
+}
+
+/// @brief Draws text with SDL3_ttf's GPU text engine, which keeps its glyphs in textures on the device: the renderer draws their rectangles from
+/// those textures, after the shapes drawn before, so text and shapes keep their order.
+static f32 GpuText(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
+{
+    GpuFrame *frame = text[0] == '\0' || GPU.textEngine == nullptr ? nullptr : GpuFrameOf(surface);
+    TTF_Font *opened = frame == nullptr ? nullptr : GpuGetFont(GPU.FontFile(font), size * frame->scale);
+    TTF_Text *drawn = opened == nullptr ? nullptr : TTF_CreateText(GPU.textEngine, opened, text, 0);
+    int width = 0;
+
+    if (drawn != nullptr)
+    {
+        GpuTarget(frame, color);
+        const SDL_FColor fcolor = {(f32)((color >> 16) & 0xFF) / 255.0f, (f32)((color >> 8) & 0xFF) / 255.0f, (f32)(color & 0xFF) / 255.0f, (f32)((color >> 24) & 0xFF) / 255.0f};
+        f32 left = SDL_roundf(x * frame->scale);
+        f32 top = SDL_roundf(y * frame->scale);
+
+        // the engine's y goes up from the line's top, as the GPU's does, and the surface's goes down
+        for (TTF_GPUAtlasDrawSequence *sequence = TTF_GetGPUTextDrawData(drawn); sequence != nullptr; sequence = sequence->next)
+        {
+            SDL_FPoint *points = SDL_malloc((usz)sequence->num_vertices * sizeof(SDL_FPoint));
+
+            if (points == nullptr)
+            {
+                break;
+            }
+
+            for (int i = 0; i < sequence->num_vertices; i++)
+            {
+                points[i] = (SDL_FPoint){left + sequence->xy[i].x, top - sequence->xy[i].y};
+            }
+
+            SDL_RenderGeometryRaw(GPU.renderer, GpuGetAtlas(sequence->atlas_texture), &points->x, sizeof(SDL_FPoint), &fcolor, 0, &sequence->uv->x, sizeof(SDL_FPoint),
+                                  sequence->num_vertices, sequence->indices, sequence->num_indices, sizeof(int));
+            SDL_free(points);
+        }
+
+        TTF_GetTextSize(drawn, &width, nullptr);
+    }
+
+    TTF_DestroyText(drawn);
+    return frame == nullptr ? 0.0f : (f32)width / frame->scale;
+}
+
+#pragma endregion Text
 
 #pragma region Pipelines
 
@@ -919,11 +1094,25 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
             .address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         };
         GPU.sampler = SDL_CreateGPUSampler(device, &sampler);
+
+        // text keeps its glyphs in textures on the same device
+        GPU.ttfStarted = TTF_Init();
+        SDL_PropertiesID props = GPU.ttfStarted ? SDL_CreateProperties() : 0;
+        SDL_SetPointerProperty(props, TTF_PROP_GPU_TEXT_ENGINE_DEVICE_POINTER, device);
+        SDL_SetNumberProperty(props, TTF_PROP_GPU_TEXT_ENGINE_ATLAS_TEXTURE_SIZE_NUMBER, GPU_ATLAS_SIZE);
+        GPU.textEngine = props == 0 ? nullptr : TTF_CreateGPUTextEngineWithProperties(props);
+        SDL_DestroyProperties(props);
+
+        if (GPU.textEngine == nullptr)
+        {
+            ECS_LogWarn(plugin, "Cannot draw text on the GPU device: %s", SDL_GetError());
+        }
     }
 
     // a plugin whose Init fails is not destroyed, so it cleans up here
     const ECSPluginDesc desc = {.Destroy = GpuFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), GpuFree(nullptr););
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&GPU.FontFile, "draw.fontFile", "string(handle<draw.font> font)"), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "texture", GpuTextureDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "buffer", GpuBufferDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "shader", GpuShaderDestroy), GpuFree(nullptr););
@@ -954,6 +1143,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
         {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
         {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
+        {"text", (ECSFunction)GpuText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text in one of draw's fonts with its line's top left at a position, and give its width"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

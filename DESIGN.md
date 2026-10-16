@@ -82,6 +82,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `imageTransformed`                         | Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour: white leaves it as it is, and a lower alpha fades it. Its edges are smooth. |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
+  | `fontFile`                                 | Give the file a font is read from, for plugins that draw text in other ways, such as gpu (15). A setting that names another file changes it. |
   | `clip`, `unclip`                           | Limit later drawing into the surface to a rectangle, or let it reach the whole surface again.                                              |
 
 - `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font draw ships with in its `fonts/` folder, Roboto Mono, under the SIL Open Font License, which is beside it.
@@ -310,7 +311,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 15. gpu
 
-- The `gpu` plugin draws into the GPU surface of another plugin's panel, on the GPU (OpenECS DESIGN 5.4), from Lua and C alike. It is a native plugin. It draws shapes, lines and textures, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders, through pipelines. It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
+- The `gpu` plugin draws into the GPU surface of another plugin's panel, on the GPU (OpenECS DESIGN 5.4), from Lua and C alike. It is a native plugin. It draws shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders, through pipelines. It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
 - It uses OpenECS's GPU device, which `ECSGpu_GetDevice` gives (OpenECS DESIGN 9.8): shapes go through an offscreen SDL renderer of its own on the device, `SDL_CreateGPURenderer(device, nullptr)`, and pipelines through SDL's GPU API. Without a GPU device it still loads, and its functions log why they cannot draw.
 - **Surfaces.** A GPU panel's `draw` passes its surface to gpu's functions, as it would to draw's. The first call for a surface starts drawing into it, and gpu asks the core to tell it when the `draw` returns (`ECSSurface_OnDrawn`, OpenECS DESIGN 5.4): then it sends what it drew to the GPU, before the core's renderer shows the texture. The plugin that draws makes no call of its own.
 - What a `draw` draws keeps its order, shapes and pipelines mixed: draws with pipelines run in one render pass until a shape comes, and shapes go to the GPU before the next pass starts.
@@ -325,8 +326,11 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `mesh`                                                   | Fill triangles whose points each have a colour, an ARGB 32-bit number, which blends across each triangle. Later triangles cover earlier ones. |
   | `texture`, `updateTexture`, `textureSize`, `freeTexture` | Make a texture of type `gpu.texture` on the GPU from ARGB pixels with premultiplied alpha, as draw's images have; replace its pixels, give its size, and free it. |
   | `image`, `imageTransformed`                              | Draw a texture stretched to a rectangle, or also turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour. |
+  | `text`                                                   | Draw text in one of draw's fonts at `x, y`, the top left of its line, in a size and a colour, and give its width, as draw's `text` does. |
 
 - A texture keeps its pixels on the GPU, so drawing it each frame costs no upload. `gpu.texture(width, height, image:pixels())` makes one of a draw image.
+- **Text.** gpu depends on draw, and takes its fonts: `gpu.text(surface, draw.font("ui"), "Hello", 8, 8, 16, "text")`. `draw.measure` gives the size of such text. gpu opens the font's file, which `draw.fontFile` gives, at each size asked for, and keeps it.
+- SDL3_ttf's GPU text engine keeps the glyphs in textures on the device, 1024 by 1024 pixels each, and gives the rectangles of a text's glyphs in them. gpu's renderer draws those rectangles, so text keeps its order with shapes.
 - **Pipelines.** A plugin draws with shaders of its own through three kinds of handle, made once and kept:
   - `gpu.buffer(usage, bytes)` makes a buffer of type `gpu.buffer` on the GPU: `"vertex"`, vertices one after another as a pipeline's attributes lay them out, or `"index"`, 32-bit indices. `buffer:update(bytes)` replaces its bytes, `buffer:size()` gives its size, and `buffer:free()` frees it.
   - `gpu.shader(desc)` makes a shader of type `gpu.shader` from compiled code: `stage`, `"vertex"` or `"fragment"`; the code as `spirv`, `dxil` or `msl`; its `entry` function, `"main"` if missing; and how many `uniforms` blocks and `samplers` it reads. The GPU's driver takes one kind of code, SPIR-V for Vulkan, DXIL for Direct3D 12 and MSL for Metal, and gpu uses the first one given that it takes. Uniform blocks are in set 1 of a vertex shader and set 3 of a fragment shader, and samplers in set 2, as SDL's GPU API sets them.
@@ -335,4 +339,4 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The draws into a surface during one `draw` share one depth texture of its size, `D16_UNORM`, which the first of them clears, so the near primitives of every draw cover the far ones. gpu keeps one for each of the last four sizes it drew.
 - Panel textures are `B8G8R8A8_UNORM`, so a pipeline's colour target is too.
 - The types of the descriptions are in the plugin's `types.lua`, for editors (OpenECS DESIGN 10.10).
-- Compiling shaders from source at run time, and text, are not yet in gpu (OpenECS TODO).
+- Compiling shaders from source at run time is not yet in gpu (OpenECS TODO).
