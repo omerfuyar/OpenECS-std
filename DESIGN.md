@@ -40,7 +40,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Its build files are kept in `.shu/` here, and copies keep their files' times, so a second build compiles only the plugins whose files changed.
 - A plugin's C files compile into its native library with OpenECS's flags: its warnings, and in Debug its static analyzer and sanitizers. The plugin sees OpenECS's plugin interface and SDL from the build's `include/` folder.
 - `shuild.c` names, for each plugin that compiles a library in, the folders of `dependencies/` that its C files include. They are system include folders, so the library's warnings stay out of the build's. The static analyzer skips these plugins, because it takes too much memory on the libraries in them; the warnings and sanitizers stay.
-- `shuild.c` also names the libraries that a plugin takes as archives. Like OpenECS's dependencies, they are compiled without the warnings, the analyzer and the sanitizers (OpenECS DESIGN 17.3), into `.shu/`. The plugin's own files keep the warnings and the sanitizers, and the analyzer too unless they include a library's code, as net's include SDL_net's. libcurl is compiled as one file that includes all of its C files, as its own unity builds are, because shuild finds the headers a file includes without the build's definitions, and libcurl's headers need them.
+- `shuild.c` also names the libraries that a plugin takes as archives. Like OpenECS's dependencies, they are compiled without the warnings, the analyzer and the sanitizers (OpenECS DESIGN 17.3), into `.shu/`. The plugin's own files keep the warnings and the sanitizers, and the analyzer too unless they include a library's code, as net's include SDL_net's. Their C files compile one by one, in parallel, with the definitions that configure them, such as libcurl's `HAVE_CONFIG_H`.
 
 ### 1.2 Tests
 
@@ -306,8 +306,6 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 **Thumb (scrollbar).** The part of a scrollbar that shows which part of the content is in view, and that the user drags to scroll.
 
 **TLS (Transport Layer Security).** The protocol that encrypts HTTPS and other connections, and checks the server's certificate.
-
-**Unity build.** Compiling a library as one C file that includes all of its C files.
 
 ## 15. gpu
 

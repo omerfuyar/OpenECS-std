@@ -27,8 +27,6 @@ static struct
     const char *output; // OpenECS's build folder, such as ../build/Debug/
 } CONFIG = {BuildType_Debug, NULL};
 
-/// ??? too many custom types and hard coded stuff !!!
-
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes whole.
 typedef struct Library
 {
@@ -36,7 +34,6 @@ typedef struct Library
     const char *sources;     // the folder of its C files, in dependencies/
     const char *includes[6]; // the folders of dependencies/ that its files include, ending with NULL
     const char *flags;       // the definitions it is configured with
-    const char *unity;       // for a library compiled as one file that includes all of its C files: the definitions at the file's top; or NULL
 } Library;
 
 /// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ that its C files include, and the libraries it takes.
@@ -52,10 +49,9 @@ typedef struct PluginNeeds
 // mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
 #define MBEDTLS_FLAGS " '-DMBEDTLS_USER_CONFIG_FILE=<mbedtls_user_config.h>'"
 
-// curl is configured by a glue header in place of its configure script, for HTTP and HTTPS with mbedTLS;
-// it is compiled as one file, as its own unity builds are, because shuild finds the headers a file includes without the build's definitions, and curl's need HAVE_CONFIG_H
-static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, "#define HAVE_CONFIG_H\n#define BUILDING_LIBCURL\n#define CURL_STATICLIB\n"};
-static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include", "mbedtls/library", "other/mbedtls", NULL}, MBEDTLS_FLAGS, NULL};
+// curl is configured by a glue header, which HAVE_CONFIG_H names, in place of its configure script, for HTTP and HTTPS with mbedTLS
+static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB"};
+static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include", "mbedtls/library", "other/mbedtls", NULL}, MBEDTLS_FLAGS};
 
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
@@ -71,7 +67,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
 #pragma region Declarations
 
 static void SetupConfiguration(int argc, char **argv);
-static void SetBuildFlags(void);
+static void SetBuildFlags(bool ownCode);
 static void ForEachFolder(const char *path, void (*function)(const char *path, const char *name));
 static void BuildPlugin(const char *path, const char *name);
 
@@ -158,16 +154,22 @@ static void SetupConfiguration(int argc, char **argv)
     SHU_CacheConfigure(cache.data);
 }
 
-// the plugins get OpenECS's warnings, and in Debug its static analyzer and sanitizers, as OpenECS's own code does
-static void SetBuildFlags(void)
+// the plugins get OpenECS's warnings, and in Debug its static analyzer and sanitizers, as OpenECS's own code does;
+// the libraries they compile in get none of them, like OpenECS's dependencies (OpenECS DESIGN 17.3), and are C17 with GNU extensions, compiled to go into a plugin's library
+static void SetBuildFlags(bool ownCode)
 {
     SHU_CompilerClearFlags();
-    SHU_CompilerAddFlags(SHUM_FLAGS_STANDARD_C23 " -fvisibility=hidden");
+    SHU_CompilerAddFlags(ownCode ? SHUM_FLAGS_STANDARD_C23 : " -std=gnu17 -fPIC -w");
+    SHU_CompilerAddFlags(" -fvisibility=hidden");
 
     switch (CONFIG.type)
     {
     case BuildType_Debug:
-        SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID " -fanalyzer -fsanitize=address,undefined -fno-omit-frame-pointer" SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG);
+        if (ownCode)
+        {
+            SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID " -fanalyzer -fsanitize=address,undefined -fno-omit-frame-pointer");
+        }
+        SHU_CompilerAddFlags(SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG);
         SHU_CompilerAddDefinitions("DEBUG", NULL, "SDL_ASSERT_LEVEL", "2");
         break;
     case BuildType_Release:
@@ -175,7 +177,11 @@ static void SetBuildFlags(void)
         SHU_CompilerAddDefinitions("NDEBUG", NULL, "SDL_ASSERT_LEVEL", "0");
         break;
     case BuildType_RelWithDebInfo:
-        SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_LOW SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_MID);
+        if (ownCode)
+        {
+            SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_LOW);
+        }
+        SHU_CompilerAddFlags(SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_MID);
         SHU_CompilerAddDefinitions("NDEBUG", NULL, "SDL_ASSERT_LEVEL", "0");
         break;
     case BuildType_MinSizeRel:
@@ -225,49 +231,11 @@ static bool HasCode(const char *path)
     return code;
 }
 
-static void WriteInclude(const char *path, SHUFileType type, void *data)
-{
-    if (type == SHUFileType_Regular && SHU_UtilMatch(path, "*.c"))
-    {
-        fprintf((FILE *)data, "#include \"%s%s\"\n", SHU_UtilGetExecutablePath(), path);
-    }
-}
-
-/// @brief Writes an #include of each C file in a folder and in its folders, sorted by path.
-static void WriteIncludes(FILE *file, const char *folder)
-{
-    SHU_UtilListDirectory(folder, true, WriteInclude, file);
-}
-
-// todo instead of having to create a unity build, we can just add the source files we need, or add a feature to exclude files from adding to module source files. !!!
-/// @brief Writes a library's unity file. Shuild leaves the old one as is if it has the same text, so the library compiles again only when its files change.
-static void WriteUnity(const Library *library, const char *path)
-{
-    SHUI_String fresh;
-    SHUI_String sources;
-    SHUI_SFormat(&fresh, "%s.new", path);
-    SHUI_SFormat(&sources, "dependencies/%s", library->sources);
-
-    FILE *file = fopen(fresh.data, "w");
-    SHU_Assert(file != NULL, "Cannot write " SHUM_COLOR_RED("'%s'"), fresh.data);
-    fputs(library->unity, file);
-    WriteIncludes(file, sources.data);
-    fclose(file);
-
-    SHUSlice text = SHU_UtilReadFile(fresh.data);
-    SHU_UtilWriteFile(path, csv(text));
-    free(text.data);
-    SHU_UtilDeleteFile(fresh.data);
-}
-
 /// @brief Compiles a library of dependencies/ into a static archive in a folder. Like OpenECS's dependencies, it gets neither the warnings, nor the static analyzer, nor the sanitizers (OpenECS DESIGN 17.3).
 static void BuildLibrary(const Library *library, const char *folder)
 {
     SHU_ModuleBegin(library->name, "dependencies/");
-    // todo why not just use SetBuildFlags ???
-    SHU_CompilerClearFlags();
-    SHU_CompilerAddFlags(" -std=gnu17 -fPIC -fvisibility=hidden -w");
-    SHU_CompilerAddFlags(CONFIG.type == BuildType_Debug ? SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG : SHUM_FLAGS_OPTIMIZATION_HIGH " -DNDEBUG");
+    SetBuildFlags(false);
     SHU_CompilerAddFlags(library->flags);
 
     for (usz i = 0; library->includes[i] != NULL; i++)
@@ -275,20 +243,8 @@ static void BuildLibrary(const Library *library, const char *folder)
         SHU_ModuleAddIncludeDirectory(library->includes[i]);
     }
 
-    if (library->unity == NULL)
-    {
-        SHU_ModuleAddSourceFile(library->sources);
-    }
-    else
-    {
-        // the unity file is kept in other/, beside the library's glue header, and git ignores it
-        SHUI_String unity;
-        SHUI_SFormat(&unity, "dependencies/other/%s/ignore.unity.c", library->name);
-        WriteUnity(library, unity.data);
-        SHUI_SFormat(&unity, "other/%s/ignore.unity.c", library->name);
-        SHU_ModuleAddSourceFile(unity.data);
-    }
-
+    // each C file compiles alone, in parallel, and the compiler finds its headers with the library's definitions
+    SHU_ModuleAddSourceFile(library->sources);
     SHU_ModuleCompile(folder, SHUModuleType_LibraryStatic);
 }
 
@@ -329,7 +285,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
     }
 
     SHU_ModuleBegin(name, root);
-    SetBuildFlags();
+    SetBuildFlags(true);
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
     // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
