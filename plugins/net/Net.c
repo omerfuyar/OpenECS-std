@@ -6,7 +6,18 @@
 #define _DEFAULT_SOURCE
 #define SDL_DECLSPEC
 #define HAVE_GETIFADDRS
+// on Windows, SDL_net names its socket functions read and write, which MinGW's io.h declares too, so they get names of their own here;
+// io.h comes first, so its declarations keep theirs
+#ifdef _WIN32
+#include <io.h>
+#define read NetSocketRead
+#define write NetSocketWrite
+#endif
 #include "src/SDL_net.c"
+#ifdef _WIN32
+#undef read
+#undef write
+#endif
 
 #include "OpenECS.h"
 
