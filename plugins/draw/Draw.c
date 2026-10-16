@@ -712,6 +712,12 @@ static void DrawFontsChanged(void *data)
     }
 }
 
+/// @brief Gives the file a font is read from, for plugins that draw text in other ways, such as gpu. A setting that names another file changes it.
+static const char *DrawFontFile(DrawFont *font)
+{
+    return font->path;
+}
+
 static f32 DrawText(ECSSurface *surface, DrawFont *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
 {
     TTF_Font *opened = DrawCanDraw(surface) && surface->scale > 0.0f ? DrawGetSize(font, size * surface->scale) : nullptr;
@@ -872,6 +878,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"image", (ECSFunction)DrawDrawImage, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)", "Draw an image stretched to a rectangle"},
         {"imageTransformed", (ECSFunction)DrawImageTransformed, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height, float angle, color color)", "Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
         {"font", (ECSFunction)DrawGetFontByName, "handle<draw.font>(string name)", "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file"},
+        {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)", "Give the file a font is read from; a setting that names another file changes it"},
         {"text", (ECSFunction)DrawText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text with its line's top left at a position, and give its width"},
         {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)", "Give the width and the line height of a text"},
         {"clip", (ECSFunction)DrawSetClip, "void(handle<ecs.surface> surface, float x, float y, float width, float height)", "Limit later drawing into a surface to a rectangle"},
