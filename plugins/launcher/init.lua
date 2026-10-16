@@ -1,4 +1,4 @@
--- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 12).
+-- The launcher: lists the presets, then the saved sessions, and opens the one the user chooses (DESIGN 13).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
@@ -192,19 +192,36 @@ function services.down(panel)
   end
 end
 
-function services.open(panel)
+function services.start(panel)
   if findList(panel) then
     ui.activate(panel, LIST)
+  end
+end
+
+-- every tool loads the launcher, so the user can go to another tool from any of them; an open list gets the focus instead of a second one
+function services.open()
+  local open = next(lists)
+
+  if open then
+    ecs.layout.focus(open)
+    return
+  end
+
+  local panel, message = ecs.layout.open("launcher.list")
+
+  if not panel then
+    ecs.log.warn(message or "Cannot open the launcher.")
   end
 end
 
 assert(ecs.service.register({
   up = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry above", fn = services.up },
   down = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry below", fn = services.down },
-  open = { sig = "void(handle<ecs.panel>)", doc = "Open the chosen preset or session", fn = services.open },
+  start = { sig = "void(handle<ecs.panel>)", doc = "Start the chosen preset or session", fn = services.start },
+  open = { sig = "void()", doc = "Open launcher", fn = services.open },
 }))
 
 -- default keys for the list; presets and the user's settings can change them
-for service, key in pairs({ up = "Up", down = "Down", open = "Return" }) do
+for service, key in pairs({ up = "Up", down = "Down", start = "Return" }) do
   assert(ecs.input.bind("launcher.list", key, "launcher." .. service))
 end

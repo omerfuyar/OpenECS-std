@@ -1,4 +1,4 @@
-// The net standard plugin: TCP connections and servers, and UDP sockets, that never block the program (DESIGN 9).
+// The net standard plugin: TCP connections and servers, TLS connections, and UDP sockets, that never block the program (DESIGN 9).
 // SDL_net resolves names and moves data in the background; a plugin asks for the state of a connection and takes what arrived when it wants, such as from a timer.
 
 // SDL_net is compiled into this plugin (DESIGN 1); its functions stay inside it, and it finds the network interfaces with getifaddrs, as its own build does on Linux
@@ -9,6 +9,15 @@
 #include "src/SDL_net.c"
 
 #include "OpenECS.h"
+
+// TLS comes from mbedTLS, which is compiled into this plugin too
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/error.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/platform.h>
+#include <mbedtls/ssl.h>
+#include <psa/crypto.h>
 
 #pragma region Source Only
 
@@ -31,7 +40,20 @@ typedef struct NetConnection
     NET_StreamSocket *socket; // nullptr until the name resolves, and after it closes
     bool failed;
     u8 *received; // what receive gave last, kept until the next receive
+    mbedtls_ssl_context *tls; // a TLS connection's state, or nullptr for plain TCP
+    bool secured;             // the TLS handshake is done
+    struct NetServer *from;   // the TLS server that accepted it, whose configuration it uses, or nullptr
 } NetConnection;
+
+/// @brief A server that waits for TCP connections, and for TLS, its certificate, key and configuration.
+typedef struct NetServer
+{
+    NET_Server *server;      // nullptr once its handle is gone
+    mbedtls_ssl_config *tls; // nullptr for plain TCP
+    mbedtls_x509_crt certificate;
+    mbedtls_pk_context key;
+    u32 users; // its handle, and each TLS connection it accepted, as they use its configuration
+} NetServer;
 
 /// @brief A datagram waiting for its host's name to resolve.
 typedef struct NetPendingDatagram
@@ -44,7 +66,7 @@ typedef struct NetPendingDatagram
 } NetPendingDatagram;
 
 /// @brief A UDP socket: datagrams waiting to be sent, the hosts it resolved, and what it received last.
-typedef struct NetUdp
+typedef struct NetUDP
 {
     NET_DatagramSocket *socket;
     NetPendingDatagram *pending; // in the order they were sent
@@ -55,17 +77,180 @@ typedef struct NetUdp
     } hosts[NET_UDP_HOSTS]; // replaced in turn once full
     usz nextHost;
     NET_Datagram *received; // what receiveFrom gave last, kept until the next receiveFrom
-} NetUdp;
+} NetUDP;
 
 static struct
 {
     ECSPlugin plugin;
     bool started;
+
+    // what every TLS connection shares, made at the first one
+    bool tlsReady;
+    mbedtls_ssl_config tlsConfig;
+    mbedtls_x509_crt certificates; // the system's trusted certificates
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context random;
 } NET = {0};
 
-/// @brief Moves a connection on: makes its socket once its name resolves.
+/// @brief Gives the system's file of trusted certificates, which TLS checks servers with: SSL_CERT_FILE, or the file of a known distribution.
+static const char *NetFindCertificates(void)
+{
+    const char *const paths[] = {
+        SDL_getenv("SSL_CERT_FILE"),
+        "/etc/ssl/certs/ca-certificates.crt", // Debian, Ubuntu, Arch
+        "/etc/pki/tls/certs/ca-bundle.crt",   // Fedora, RHEL
+        "/etc/ssl/ca-bundle.pem",             // openSUSE
+        "/etc/ssl/cert.pem",                  // Alpine
+    };
+
+    for (usz i = 0; i < (usz)SDL_arraysize(paths); i++)
+    {
+        if (paths[i] != nullptr && SDL_GetPathInfo(paths[i], nullptr))
+        {
+            return paths[i];
+        }
+    }
+
+    return nullptr;
+}
+
+/// @brief Makes what TLS connections share, once: the random generator, the trusted certificates and the configuration of a client.
+static void NetTLSStop(void);
+
+static bool NetTLSStart(void)
+{
+    if (NET.tlsReady)
+    {
+        return true;
+    }
+
+    mbedtls_ssl_config_init(&NET.tlsConfig);
+    mbedtls_x509_crt_init(&NET.certificates);
+    mbedtls_entropy_init(&NET.entropy);
+    mbedtls_ctr_drbg_init(&NET.random);
+    NET.tlsReady = true;
+
+    const char *file = NetFindCertificates();
+
+    if (file == nullptr || mbedtls_x509_crt_parse_file(&NET.certificates, file) < 0)
+    {
+        ECS_LogWarn(NET.plugin, "No file of trusted certificates can be read, so TLS connections fail; SSL_CERT_FILE can name one");
+    }
+
+    if (psa_crypto_init() != PSA_SUCCESS ||
+        mbedtls_ctr_drbg_seed(&NET.random, mbedtls_entropy_func, &NET.entropy, (const unsigned char *)"openecs.net", 11) != 0 ||
+        mbedtls_ssl_config_defaults(&NET.tlsConfig, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+    {
+        // a later connection tries again from the start
+        ECS_LogError(NET.plugin, "Cannot start TLS");
+        NetTLSStop();
+        return false;
+    }
+
+    mbedtls_ssl_conf_authmode(&NET.tlsConfig, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&NET.tlsConfig, &NET.certificates, nullptr);
+    mbedtls_ssl_conf_rng(&NET.tlsConfig, mbedtls_ctr_drbg_random, &NET.random);
+    return true;
+}
+
+static void NetTLSStop(void)
+{
+    if (NET.tlsReady)
+    {
+        mbedtls_ssl_config_free(&NET.tlsConfig);
+        mbedtls_x509_crt_free(&NET.certificates);
+        mbedtls_ctr_drbg_free(&NET.random);
+        mbedtls_entropy_free(&NET.entropy);
+        mbedtls_psa_crypto_free();
+        NET.tlsReady = false;
+    }
+}
+
+/// @brief A full path: a relative path starts at the executable's folder, as the paths of the other standard plugins do. Free it with SDL_free.
+static char *NetFull(const char *path)
+{
+    char *full = nullptr;
+    return SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
+}
+
+/// @brief Adds the certificates of a PEM file to the trusted ones, which later TLS connections check servers with.
+static bool NetTrust(const char *path)
+{
+    char *full = NetFull(path);
+    bool trusted = full != nullptr && NetTLSStart() && mbedtls_x509_crt_parse_file(&NET.certificates, full) == 0;
+
+    if (!trusted)
+    {
+        ECS_LogWarn(NET.plugin, "Cannot read the certificates of '%s'", full != nullptr ? full : path);
+    }
+
+    SDL_free(full);
+    return trusted;
+}
+
+/// @brief Lets go of a server, and frees it once nothing uses it.
+static void NetReleaseServer(NetServer *server)
+{
+    if (--server->users > 0)
+    {
+        return;
+    }
+
+    if (server->tls != nullptr)
+    {
+        mbedtls_ssl_config_free(server->tls);
+        SDL_free(server->tls);
+    }
+
+    mbedtls_x509_crt_free(&server->certificate);
+    mbedtls_pk_free(&server->key);
+    NET_DestroyServer(server->server);
+    SDL_free(server);
+}
+
+/// @brief Gives TLS's bytes to the socket; SDL_net queues them all.
+static int NetTLSSend(void *data, const unsigned char *bytes, size_t length)
+{
+    NetConnection *connection = data;
+    return length <= (usz)SDL_MAX_SINT32 && NET_WriteToStreamSocket(connection->socket, bytes, (int)length) ? (int)length : MBEDTLS_ERR_NET_SEND_FAILED;
+}
+
+/// @brief Takes the bytes that have arrived for TLS; none yet means TLS waits.
+static int NetTLSReceive(void *data, unsigned char *bytes, size_t length)
+{
+    NetConnection *connection = data;
+    int count = NET_ReadFromStreamSocket(connection->socket, bytes, (int)SDL_min(length, (usz)SDL_MAX_SINT32));
+    return count < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : count == 0 ? MBEDTLS_ERR_SSL_WANT_READ : count;
+}
+
+/// @brief Moves a TLS connection's handshake on, once its socket is connected.
+static void NetTLSHandshake(NetConnection *connection)
+{
+    if (connection->tls == nullptr || connection->secured || connection->failed || connection->socket == nullptr || NET_GetConnectionStatus(connection->socket) != NET_SUCCESS)
+    {
+        return;
+    }
+
+    int result = mbedtls_ssl_handshake(connection->tls);
+
+    if (result == 0)
+    {
+        connection->secured = true;
+    }
+    else if (result != MBEDTLS_ERR_SSL_WANT_READ && result != MBEDTLS_ERR_SSL_WANT_WRITE)
+    {
+        char message[128];
+        mbedtls_strerror(result, message, sizeof(message));
+        ECS_LogWarn(NET.plugin, "The TLS handshake failed: %s", message);
+        connection->failed = true;
+    }
+}
+
+/// @brief Moves a connection on: makes its socket once its name resolves, then, for TLS, moves its handshake on.
 static void NetAdvance(NetConnection *connection)
 {
+    NetTLSHandshake(connection);
+
     if (connection->socket != nullptr || connection->failed || connection->address == nullptr)
     {
         return;
@@ -99,6 +284,35 @@ static NetConnection *NetConnect(const char *host, i32 port)
     return connection;
 }
 
+// a TLS connection checks the server's certificate against the name it was asked for
+static NetConnection *NetConnectTLS(const char *host, i32 port)
+{
+    NetConnection *connection = NetTLSStart() ? NetConnect(host, port) : nullptr;
+    mbedtls_ssl_context *tls = connection == nullptr ? nullptr : SDL_malloc(sizeof(mbedtls_ssl_context));
+
+    if (tls == nullptr)
+    {
+        if (connection != nullptr)
+        {
+            NET_UnrefAddress(connection->address);
+            SDL_free(connection);
+        }
+
+        return nullptr;
+    }
+
+    mbedtls_ssl_init(tls);
+    connection->tls = tls;
+
+    if (mbedtls_ssl_setup(tls, &NET.tlsConfig) != 0 || mbedtls_ssl_set_hostname(tls, host) != 0)
+    {
+        connection->failed = true;
+    }
+
+    mbedtls_ssl_set_bio(tls, connection, NetTLSSend, NetTLSReceive, nullptr);
+    return connection;
+}
+
 static i32 NetStatus(NetConnection *connection)
 {
     NetAdvance(connection);
@@ -116,7 +330,8 @@ static i32 NetStatus(NetConnection *connection)
     switch (NET_GetConnectionStatus(connection->socket))
     {
     case NET_SUCCESS:
-        return NetState_Connected;
+        // a TLS connection waits for its handshake
+        return connection->tls == nullptr || connection->secured ? NetState_Connected : NetState_Waiting;
     case NET_WAITING:
         return NetState_Waiting;
     default:
@@ -127,7 +342,21 @@ static i32 NetStatus(NetConnection *connection)
 static bool NetSend(NetConnection *connection, SHUSlice data)
 {
     NetAdvance(connection);
-    return connection->socket != nullptr && data.size <= (usz)SDL_MAX_SINT32 && NET_WriteToStreamSocket(connection->socket, data.data, (int)data.size);
+
+    if (connection->tls == nullptr)
+    {
+        return connection->socket != nullptr && data.size <= (usz)SDL_MAX_SINT32 && NET_WriteToStreamSocket(connection->socket, data.data, (int)data.size);
+    }
+
+    // TLS encrypts the data into records, which the socket queues; nothing goes before the handshake is done
+    for (usz sent = 0; connection->secured && !connection->failed && sent < data.size;)
+    {
+        int result = mbedtls_ssl_write(connection->tls, (const u8 *)data.data + sent, data.size - sent);
+        connection->failed = result < 0;
+        sent += result > 0 ? (usz)result : 0;
+    }
+
+    return connection->secured && !connection->failed;
 }
 
 static SHUSlice NetReceive(NetConnection *connection, i32 most)
@@ -136,8 +365,20 @@ static SHUSlice NetReceive(NetConnection *connection, i32 most)
     SDL_free(connection->received);
     connection->received = nullptr;
 
-    u8 *buffer = connection->socket == nullptr || most <= 0 ? nullptr : SDL_malloc((usz)most);
-    int count = buffer == nullptr ? 0 : NET_ReadFromStreamSocket(connection->socket, buffer, most);
+    bool ready = connection->socket != nullptr && (connection->tls == nullptr || (connection->secured && !connection->failed));
+    u8 *buffer = !ready || most <= 0 ? nullptr : SDL_malloc((usz)most);
+    int count = 0;
+
+    if (buffer != nullptr && connection->tls == nullptr)
+    {
+        count = NET_ReadFromStreamSocket(connection->socket, buffer, most);
+    }
+    else if (buffer != nullptr)
+    {
+        // TLS gives what it decrypted; nothing yet is not an error, and the other side's close is
+        count = mbedtls_ssl_read(connection->tls, buffer, (usz)most);
+        count = count == MBEDTLS_ERR_SSL_WANT_READ || count == MBEDTLS_ERR_SSL_WANT_WRITE ? 0 : count == 0 ? -1 : count;
+    }
 
     // a connection that the other side closed gives -1, and is failed from then on
     if (count < 0)
@@ -160,13 +401,27 @@ static void NetClose(NetConnection *connection)
 static void NetDestroyConnection(void *object)
 {
     NetConnection *connection = object;
+
+    if (connection->tls != nullptr)
+    {
+        mbedtls_ssl_free(connection->tls);
+        SDL_free(connection->tls);
+    }
+
     NET_DestroyStreamSocket(connection->socket);
     NET_UnrefAddress(connection->address);
     SDL_free(connection->received);
+
+    if (connection->from != nullptr)
+    {
+        NetReleaseServer(connection->from);
+    }
+
     SDL_free(connection);
 }
 
-static NET_Server *NetListen(i32 port)
+/// @brief Waits for TCP connections on a port of every address, with SDL_net.
+static NET_Server *NetCreateServer(i32 port)
 {
     u16 number = (u16)SDL_clamp(port, 0, 65535);
     NET_Server *server = NET_CreateServer(nullptr, number, 0);
@@ -192,35 +447,110 @@ static NET_Server *NetListen(i32 port)
     return server;
 }
 
-static NetConnection *NetAccept(NET_Server *server)
+static NetServer *NetListen(i32 port)
+{
+    NetServer *server = SDL_calloc(1, sizeof(NetServer));
+
+    if (server == nullptr)
+    {
+        return nullptr;
+    }
+
+    mbedtls_x509_crt_init(&server->certificate);
+    mbedtls_pk_init(&server->key);
+    server->users = 1;
+    server->server = NetCreateServer(port);
+
+    if (server->server == nullptr)
+    {
+        NetReleaseServer(server);
+        return nullptr;
+    }
+
+    return server;
+}
+
+// a TLS server shows its certificate to the clients, and proves it with the certificate's key
+static NetServer *NetListenTLS(i32 port, const char *certificate, const char *key)
+{
+    char *certificatePath = NetFull(certificate);
+    char *keyPath = NetFull(key);
+    NetServer *server = certificatePath != nullptr && keyPath != nullptr && NetTLSStart() ? NetListen(port) : nullptr;
+    mbedtls_ssl_config *tls = server == nullptr ? nullptr : SDL_malloc(sizeof(mbedtls_ssl_config));
+
+    if (tls != nullptr)
+    {
+        mbedtls_ssl_config_init(tls);
+        server->tls = tls;
+    }
+
+    if (server != nullptr &&
+        (tls == nullptr || mbedtls_x509_crt_parse_file(&server->certificate, certificatePath) != 0 ||
+         mbedtls_pk_parse_keyfile(&server->key, keyPath, nullptr, mbedtls_ctr_drbg_random, &NET.random) != 0 ||
+         mbedtls_ssl_config_defaults(tls, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0 ||
+         mbedtls_ssl_conf_own_cert(tls, &server->certificate, &server->key) != 0))
+    {
+        ECS_LogWarn(NET.plugin, "Cannot serve TLS with the certificate '%s' and the key '%s'", certificatePath, keyPath);
+        NetReleaseServer(server);
+        server = nullptr;
+    }
+    else if (server != nullptr)
+    {
+        mbedtls_ssl_conf_rng(tls, mbedtls_ctr_drbg_random, &NET.random);
+    }
+
+    SDL_free(certificatePath);
+    SDL_free(keyPath);
+    return server;
+}
+
+// a TLS server's connection does its handshake as the client's does, and keeps the server's configuration while it lives
+static NetConnection *NetAccept(NetServer *server)
 {
     NET_StreamSocket *socket = nullptr;
 
-    if (!NET_AcceptClient(server, &socket) || socket == nullptr)
+    if (server->server == nullptr || !NET_AcceptClient(server->server, &socket) || socket == nullptr)
     {
         return nullptr;
     }
 
     NetConnection *connection = SDL_calloc(1, sizeof(NetConnection));
+    mbedtls_ssl_context *tls = connection == nullptr || server->tls == nullptr ? nullptr : SDL_malloc(sizeof(mbedtls_ssl_context));
 
-    if (connection == nullptr)
+    if (connection == nullptr || (server->tls != nullptr && tls == nullptr))
     {
         NET_DestroyStreamSocket(socket);
+        SDL_free(connection);
         return nullptr;
     }
 
     connection->socket = socket;
+
+    if (tls != nullptr)
+    {
+        mbedtls_ssl_init(tls);
+        connection->tls = tls;
+        connection->from = server;
+        server->users++;
+        connection->failed = mbedtls_ssl_setup(tls, server->tls) != 0;
+        mbedtls_ssl_set_bio(tls, connection, NetTLSSend, NetTLSReceive, nullptr);
+    }
+
     return connection;
 }
 
+/// @brief The Destroy function of the handle type net.server: it stops listening, and the server is freed once its TLS connections are.
 static void NetDestroyServer(void *object)
 {
-    NET_DestroyServer(object);
+    NetServer *server = object;
+    NET_DestroyServer(server->server);
+    server->server = nullptr;
+    NetReleaseServer(server);
 }
 
-static NetUdp *NetUdpOpen(i32 port)
+static NetUDP *NetUDPOpen(i32 port)
 {
-    NetUdp *udp = SDL_calloc(1, sizeof(NetUdp));
+    NetUDP *udp = SDL_calloc(1, sizeof(NetUDP));
 
     if (udp == nullptr)
     {
@@ -254,7 +584,7 @@ static NetUdp *NetUdpOpen(i32 port)
 }
 
 /// @brief Sends the waiting datagrams whose hosts resolved, in order; one whose host cannot be resolved is dropped.
-static void NetUdpFlush(NetUdp *udp)
+static void NetUDPFlush(NetUDP *udp)
 {
     while (udp->pending != nullptr)
     {
@@ -280,7 +610,7 @@ static void NetUdpFlush(NetUdp *udp)
 
 /// @brief Gives a host's address, resolving it once per socket.
 /// @return A reference the caller owns, or nullptr if the name cannot be resolved.
-static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
+static NET_Address *NetUDPAddress(NetUDP *udp, const char *host)
 {
     for (usz i = 0; i < NET_UDP_HOSTS; i++)
     {
@@ -306,12 +636,12 @@ static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
     return address;
 }
 
-static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
+static bool NetUDPSendTo(NetUDP *udp, const char *host, i32 port, SHUSlice data)
 {
     NetPendingDatagram *datagram = data.size <= (usz)SDL_MAX_SINT32 ? SDL_calloc(1, sizeof(NetPendingDatagram)) : nullptr;
     datagram = datagram == nullptr ? nullptr : (datagram->data = SDL_malloc(SDL_max(data.size, 1)), datagram);
 
-    if (datagram == nullptr || datagram->data == nullptr || (datagram->address = NetUdpAddress(udp, host)) == nullptr)
+    if (datagram == nullptr || datagram->data == nullptr || (datagram->address = NetUDPAddress(udp, host)) == nullptr)
     {
         SDL_free(datagram == nullptr ? nullptr : datagram->data);
         SDL_free(datagram);
@@ -331,13 +661,13 @@ static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
     }
 
     *last = datagram;
-    NetUdpFlush(udp);
+    NetUDPFlush(udp);
     return true;
 }
 
-static SHUSlice NetUdpReceiveFrom(NetUdp *udp, const char **retHost, i32 *retPort)
+static SHUSlice NetUDPReceiveFrom(NetUDP *udp, const char **retHost, i32 *retPort)
 {
-    NetUdpFlush(udp);
+    NetUDPFlush(udp);
     NET_DestroyDatagram(udp->received);
     udp->received = nullptr;
     *retHost = nullptr;
@@ -353,9 +683,9 @@ static SHUSlice NetUdpReceiveFrom(NetUdp *udp, const char **retHost, i32 *retPor
     return (SHUSlice){.data = udp->received->buf, .size = (usz)udp->received->buflen};
 }
 
-static void NetDestroyUdp(void *object)
+static void NetDestroyUDP(void *object)
 {
-    NetUdp *udp = object;
+    NetUDP *udp = object;
 
     while (udp->pending != nullptr)
     {
@@ -381,6 +711,8 @@ static void NetFree(void *data)
 {
     (void)data;
 
+    NetTLSStop();
+
     if (NET.started)
     {
         NET_Quit();
@@ -394,6 +726,9 @@ static void NetFree(void *data)
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     NET.plugin = plugin;
+
+    // mbedTLS takes memory from SDL's allocator, as the core does
+    mbedtls_platform_set_calloc_free(SDL_calloc, SDL_free);
     NET.started = NET_Init();
 
     if (!NET.started)
@@ -404,7 +739,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "connection", NetDestroyConnection), NetFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "server", NetDestroyServer), NetFree(nullptr););
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "udp", NetDestroyUdp), NetFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "udp", NetDestroyUDP), NetFree(nullptr););
 
     const struct
     {
@@ -414,15 +749,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *description;
     } functions[] = {
         {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port)", "Start a TCP connection to a host and port"},
-        {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)", "Give a connection's state: 1 connected, 0 waiting, -1 failed or closed"},
+        {"connectTLS", (ECSFunction)NetConnectTLS, "handle<net.connection>(string host, int port)", "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones"},
+        {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)", "Give a connection's state: 1 connected, and for TLS secured, 0 waiting, -1 failed or closed"},
         {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data)", "Send data; it goes out in the background"},
         {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int most)", "Take what has arrived, at most a number of bytes; nothing if nothing has"},
         {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)", "Close a connection"},
         {"listen", (ECSFunction)NetListen, "handle<net.server>(int port)", "Wait for TCP connections on a port of every address of this computer"},
+        {"listenTLS", (ECSFunction)NetListenTLS, "handle<net.server>(int port, string certificate, string key)", "Wait for TLS connections on a port, with a certificate and its key from PEM files"},
+        {"trust", (ECSFunction)NetTrust, "bool(string path)", "Trust the certificates of a PEM file too, beside the system's, for later TLS connections"},
         {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server)", "Take a connection that a server has, if any"},
-        {"udp", (ECSFunction)NetUdpOpen, "handle<net.udp>(int port)", "Open a UDP socket on a port of every address of this computer; port 0 picks a free one"},
-        {"sendTo", (ECSFunction)NetUdpSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)", "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way"},
-        {"receiveFrom", (ECSFunction)NetUdpReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)", "Take a datagram that has arrived, with the address and port it came from; nothing if none has"},
+        {"udp", (ECSFunction)NetUDPOpen, "handle<net.udp>(int port)", "Open a UDP socket on a port of every address of this computer; port 0 picks a free one"},
+        {"sendTo", (ECSFunction)NetUDPSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)", "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way"},
+        {"receiveFrom", (ECSFunction)NetUDPReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)", "Take a datagram that has arrived, with the address and port it came from; nothing if none has"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here
@@ -432,6 +770,27 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     for (usz i = 0; i < SDL_arraysize(functions); i++)
     {
         SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), NetFree(nullptr););
+    }
+
+    // Lua calls these on a handle, such as handle:status(...); C calls the functions themselves (OpenECS DESIGN 10.6)
+    const struct
+    {
+        const char *type;
+        const char *method;
+        const char *function;
+    } methods[] = {
+        {"connection", "status", "status"},
+        {"connection", "send", "send"},
+        {"connection", "receive", "receive"},
+        {"connection", "close", "close"},
+        {"server", "accept", "accept"},
+        {"udp", "sendTo", "sendTo"},
+        {"udp", "receiveFrom", "receiveFrom"},
+    };
+
+    for (usz i = 0; i < SDL_arraysize(methods); i++)
+    {
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), NetFree(nullptr););
     }
 
     return SHUResult_Ok;

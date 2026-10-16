@@ -38,6 +38,10 @@ readSizes()
 -- the colour of a field whose text is not valid
 local INVALID = "#E0505A"
 
+-- how long, in seconds, the pointer rests on an element before its tooltip shows, and how long the tooltip stays;
+-- a panel hears nothing when the pointer leaves it, so a tooltip goes by itself too
+local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
+
 -- the elements that take the pointer
 local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true }
 
@@ -48,7 +52,7 @@ local function panelState(panel)
   local state = panels[panel]
 
   if not state then
-    state = { scroll = {}, scale = 1 }
+    state = { scroll = {}, scale = 1, taken = {} }
     panels[panel] = state
   end
 
@@ -84,6 +88,78 @@ local function lineHeight(font, textSize)
   return line
 end
 
+-- whether a byte continues a UTF-8 character
+local function continues(text, at)
+  local byte = text:byte(at)
+  return byte ~= nil and byte >= 0x80 and byte < 0xC0
+end
+
+-- the byte position of the character after the one at a position; unlike utf8.offset, a text that is not valid UTF-8 raises no error
+local function nextCharacter(text, at)
+  at = at + 1
+
+  while continues(text, at) do
+    at = at + 1
+  end
+
+  return at
+end
+
+-- the byte position of the character before a position
+local function previousCharacter(text, at)
+  at = at - 1
+
+  while at > 1 and continues(text, at) do
+    at = at - 1
+  end
+
+  return at
+end
+
+-- the byte position of the start of the word before a position, or of the end of the word after it; words are what lies between spaces
+local function wordEdge(text, at, forward)
+  local function space(position)
+    return text:sub(position, position):match("%s") ~= nil
+  end
+
+  if forward then
+    while at <= #text and space(at) do
+      at = at + 1
+    end
+
+    while at <= #text and not space(at) do
+      at = at + 1
+    end
+
+    return at
+  end
+
+  while at > 1 and space(at - 1) do
+    at = at - 1
+  end
+
+  while at > 1 and not space(at - 1) do
+    at = at - 1
+  end
+
+  return at
+end
+
+-- the first characters of a text
+local function prefix(text, count)
+  local at = 1
+
+  for _ = 1, count do
+    if at > #text then
+      break
+    end
+
+    at = nextCharacter(text, at)
+  end
+
+  return text:sub(1, at - 1)
+end
+
 -- the text that fits a width, ended with an ellipsis when it is cut
 local function fit(font, text, textSize, width)
   if measureText(font, text, textSize) <= width then
@@ -94,7 +170,7 @@ local function fit(font, text, textSize, width)
 
   while low < high do
     local middle = (low + high + 1) // 2
-    local cut = text:sub(1, (utf8.offset(text, middle + 1) or #text + 1) - 1) .. "…"
+    local cut = prefix(text, middle) .. "…"
 
     if measureText(font, cut, textSize) <= width then
       low = middle
@@ -103,7 +179,31 @@ local function fit(font, text, textSize, width)
     end
   end
 
-  return text:sub(1, (utf8.offset(text, low + 1) or #text + 1) - 1) .. "…"
+  return prefix(text, low) .. "…"
+end
+
+-- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own
+local function wrap(font, text, textSize, width)
+  local lines = {}
+
+  for paragraph in (text .. "\n"):gmatch("(.-)\n") do
+    local current = nil
+
+    for word in paragraph:gmatch("%S+") do
+      local joined = current and current .. " " .. word or word
+
+      if current and measureText(font, joined, textSize) > width then
+        lines[#lines + 1] = current
+        current = word
+      else
+        current = joined
+      end
+    end
+
+    lines[#lines + 1] = current or ""
+  end
+
+  return lines
 end
 
 -- images read once for each path and scale, so that they are drawn sharp
@@ -188,6 +288,135 @@ function elements.list(props, children)
   return node
 end
 
+-- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
+-- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
+-- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
+function elements.tree(props, nodes)
+  props = props or {}
+  assert(props.id, "a tree needs an id, which keeps its offset")
+  local open, rows = props.open or {}, {}
+  local ids, parents, folders = {}, {}, {}
+
+  local function add(list, depth, parent)
+    for _, item in ipairs(list) do
+      local folder = item.children ~= nil
+      local shown = folder and open[item.id] == true
+      local index = #rows + 1
+
+      -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
+      local arrow = elements.space({ width = size.checkSize, grow = 0 })
+
+      if folder then
+        arrow = elements.row({ onClick = function()
+          if props.onToggle then
+            props.onToggle(item.id, not shown)
+          end
+        end }, { element("disclosure", { open = shown }) })
+      end
+
+      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, {
+        elements.space({ width = depth * size.checkSize, grow = 0 }),
+        arrow,
+        elements.text(item.label or tostring(item.id), { color = item.color }),
+      })
+      ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
+
+      if shown then
+        add(item.children, depth + 1, index)
+      end
+    end
+  end
+
+  add(nodes or {}, 0, nil)
+
+  -- the list works with indexes, and the tree with ids
+  local listProps = {}
+
+  for key, value in pairs(props) do
+    listProps[key] = value
+  end
+
+  listProps.open, listProps.onToggle = nil, nil
+  listProps.selected = nil
+
+  for index, id in ipairs(ids) do
+    if id == props.selected then
+      listProps.selected = index
+    end
+  end
+
+  listProps.onSelect = props.onSelect and function(index)
+    props.onSelect(ids[index])
+  end
+
+  listProps.onActivate = props.onActivate and function(index)
+    props.onActivate(ids[index])
+  end
+
+  local node = elements.list(listProps, rows)
+  node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  return node
+end
+
+-- a table: a header of its columns' titles over a list of its rows, whose cells line up below the titles;
+-- a column is { id, title, width }, and a row is a table of the cells' values by column id; a column is as wide as its widest cell unless it gives a width;
+-- selected is the chosen row's number, onSelect and onActivate get a row's number, and a click on a title gives the column's id to onSort;
+-- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
+function elements.table(props, columns, rows)
+  props = props or {}
+  assert(props.id, "a table needs an id, which keeps its offset")
+  columns, rows = columns or {}, rows or {}
+  local font, textSize = fontOf(props), props.size or fontSize()
+  local widths = {}
+
+  local function title(column)
+    return tostring(column.title or column.id)
+  end
+
+  for i, column in ipairs(columns) do
+    local widest = measureText(font, title(column), textSize) + (props.sort == column.id and size.checkSize or 0)
+
+    for _, values in ipairs(rows) do
+      widest = math.max(widest, measureText(font, tostring(values[column.id] or ""), textSize))
+    end
+
+    widths[i] = column.width or widest + 2 * size.paddingX
+  end
+
+  -- a cell is a row of a column's width, with room before its text; a title cell is clicked to sort
+  local function cells(values)
+    local list = {}
+
+    for i, column in ipairs(columns) do
+      local children = {
+        elements.space({ width = size.paddingX, grow = 0 }),
+        elements.text(values and tostring(values[column.id] or "") or title(column), { grow = 1, size = props.size, font = props.font, color = not values and "textDim" or nil }),
+      }
+
+      if not values and props.sort == column.id then
+        children[3] = element("disclosure", { open = not props.ascending, up = props.ascending == true })
+      end
+
+      list[i] = elements.row({ id = not values and props.id .. ":title:" .. tostring(column.id) or nil, width = widths[i], onClick = not values and props.onSort and function()
+        props.onSort(column.id)
+      end or nil }, children)
+    end
+
+    return list
+  end
+
+  local items = {}
+
+  for i, values in ipairs(rows) do
+    items[i] = elements.row({ id = props.id .. ":" .. i, padding = 2 }, cells(values))
+  end
+
+  -- the list scrolls its rows below the header, and takes the room the table has
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
+  return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
+end
+
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
@@ -244,6 +473,14 @@ function elements.selector(value, choices, props)
   return node
 end
 
+-- tabs: a selector whose choices are headers of their natural widths from the left, with a line under the chosen one;
+-- the panel shows below them what the chosen tab holds
+function elements.tabs(value, choices, props)
+  local node = elements.selector(value, choices, props)
+  node.look = "tabs"
+  return node
+end
+
 -- one of a list of choices, which a click opens in a popup
 function elements.dropdown(value, choices, props)
   local node = element("dropdown", props)
@@ -255,6 +492,54 @@ function elements.field(text, props)
   local node = element("field", props)
   node.text = tostring(text or "")
   assert(node.id, "a field needs an id, which keeps what is typed")
+  return node
+end
+
+-- a number that the user types, kept from min to max if they are given and rounded to step if it is given;
+-- Return gives the typed number to onChange, and Up and Down change it by step, or by 1
+function elements.number(value, props)
+  local node = elements.field("", props)
+  local onChange = node.onChange or function(_) end
+  node.value = tonumber(value) or 0
+  node.onChange, node.onSubmit = nil, nil
+
+  -- a number from min to max, rounded to step from min, or from 0
+  local function settle(number)
+    if node.step and node.step > 0 then
+      local from = node.min or 0
+      number = from + math.floor((number - from) / node.step + 0.5) * node.step
+    end
+
+    return math.min(math.max(number, node.min or -math.huge), node.max or math.huge)
+  end
+
+  local function show(number)
+    -- 14 digits keep what a user types, such as 0.1, and leave out the float's last digits
+    return math.type(number) == "integer" and tostring(number) or ("%.14g"):format(number)
+  end
+
+  node.value = settle(node.value)
+  node.text = show(node.value)
+
+  -- a text that is not a number keeps the field typing
+  node.onSubmit = function(text)
+    local number = tonumber(text)
+
+    if number == nil then
+      return false
+    end
+
+    onChange(settle(number))
+  end
+
+  -- Up and Down change the typed number, or the value if what is typed is not a number, and give the new one at once
+  node.change = function(state, up)
+    local number = settle((tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
+    state.typed = show(number)
+    state.at, state.anchor = #state.typed + 1, nil
+    onChange(number)
+  end
+
   return node
 end
 
@@ -319,14 +604,23 @@ local function segments(node, font, textSize)
 end
 
 -- the size an element needs, without growing; containers measure their children first
-local function measure(node, state)
+-- room is the width a column gives its children, which text that wraps breaks at; nil in a row
+local function measure(node, state, room)
   local textSize = node.size or fontSize()
   local font = fontOf(node)
   local line = lineHeight(font, textSize)
   local boxed = line + 2 * size.paddingY
   local width, height
 
-  if node.kind == "text" then
+  if node.kind == "text" and node.wrap and (node.width or room) then
+    node.lines = wrap(font, node.text, textSize, node.width or room)
+    width, height = 0, #node.lines * line
+
+    for _, text in ipairs(node.lines) do
+      width = math.max(width, measureText(font, text, textSize))
+    end
+  elseif node.kind == "text" then
+    node.lines = nil
     width, height = measureText(font, node.text, textSize), line
   elseif node.kind == "button" then
     width, height = measureText(font, node.label, textSize) + 2 * size.paddingX, boxed
@@ -368,12 +662,21 @@ local function measure(node, state)
     width, height = 1, 1
   elseif node.kind == "space" then
     width, height = 0, 0
+  elseif node.kind == "disclosure" then
+    width, height = size.checkSize, line
   else
     local across, along = 0, 0
     local count = 0
 
+    -- a column's children may take its width less its padding, and a scroll element's less its scroll bar too; a row's take what they need
+    local inner = nil
+
+    if not horizontal(node) and (node.width or room) then
+      inner = (node.width or room) - 2 * padding(node) - (node.kind == "scroll" and size.scrollbarWidth + 4 or 0)
+    end
+
     for _, child in ipairs(node.children) do
-      local childWidth, childHeight = measure(child, state)
+      local childWidth, childHeight = measure(child, state, inner)
       local childAlong, childAcross = childHeight, childWidth
 
       if horizontal(node) then
@@ -494,6 +797,13 @@ local function thumb(node)
   return node.y + start, length
 end
 
+-- the first and the last byte positions of the selection of the focused field, or nil when nothing is selected; last is the position after it
+local function selection(state)
+  if state.anchor and state.anchor ~= state.at then
+    return math.min(state.anchor, state.at), math.max(state.anchor, state.at)
+  end
+end
+
 -- the part of a rectangle inside a clip rectangle, if there is one
 local function intersect(rect, clip)
   if not clip then
@@ -525,7 +835,7 @@ local function segmentRects(node)
   local rects, x = {}, node.x
 
   for i, width in ipairs(widths) do
-    local shared = total > 0 and width * node.w / total or 0
+    local shared = node.look == "tabs" and width or total > 0 and width * node.w / total or 0
     rects[i] = { x = x, w = shared }
     x = x + shared
   end
@@ -574,7 +884,16 @@ local function paint(node, surface, state, clip)
     draw.outline(surface, node.x, node.y, node.w, node.h, 1, node.border)
   end
 
-  if node.kind == "text" then
+  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline
+  if state.ring and state.target == node.id and node.kind ~= "field" and node.kind ~= "key" then
+    draw.outline(surface, node.x - 2, node.y - 2, node.w + 4, node.h + 4, 2, "accent")
+  end
+
+  if node.kind == "text" and node.lines then
+    for i, text in ipairs(node.lines) do
+      draw.text(surface, font, fit(font, text, textSize, node.w), node.x, node.y + (i - 1) * line, textSize, node.color or "text")
+    end
+  elseif node.kind == "text" then
     draw.text(surface, font, fit(font, node.text, textSize, node.w), node.x, textY, textSize, node.color or "text")
   elseif node.kind == "button" then
     draw.fill(surface, node.x, node.y, node.w, node.h, pressed and "accent" or hover and "tabShown" or "tab")
@@ -586,6 +905,29 @@ local function paint(node, surface, state, clip)
     local room = node.w - 3 * size.paddingX - line / 2
     draw.text(surface, font, fit(font, tostring(node.value or ""), textSize, room), node.x + size.paddingX, textY, textSize, node.color or "text")
     arrow(surface, node.x + node.w - size.paddingX - line / 4, node.y + node.h / 2, line / 4, "textDim")
+  elseif node.kind == "selector" and node.look == "tabs" then
+    -- a line under the whole row, and a thicker one in the accent colour under the chosen tab; tabs past the element's width are cut at its edge
+    local inner = intersect({ x = node.x, y = node.y, w = node.w, h = node.h }, clip)
+    draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
+    draw.fill(surface, node.x, node.y + node.h - 1, node.w, 1, "tabShown")
+
+    for i, rect in ipairs(segmentRects(node)) do
+      local choice = node.choices[i]
+      local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.w
+
+      if over and choice ~= node.value then
+        draw.fill(surface, rect.x, node.y, rect.w, node.h - 1, "tab")
+      end
+
+      if choice == node.value then
+        draw.fill(surface, rect.x, node.y + node.h - 3, rect.w, 3, "accent")
+      end
+
+      local shown = fit(font, tostring(choice), textSize, rect.w - 2 * size.paddingX)
+      draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
+    end
+
+    restoreClip(surface, clip)
   elseif node.kind == "selector" then
     for i, rect in ipairs(segmentRects(node)) do
       local choice = node.choices[i]
@@ -638,24 +980,46 @@ local function paint(node, surface, state, clip)
     draw.fill(surface, node.x, node.y, node.w, node.h, "tabRow")
     local width = measureText(font, text, textSize)
     local room = node.w - 2 * size.paddingX
+    local before = (focused and node.kind == "field") and measureText(font, text:sub(1, state.at - 1), textSize) or width
 
-    -- the text moves left when it is longer than the field, so its end and the cursor stay in view
-    local textX = node.x + size.paddingX - ((focused and width > room) and width - room or 0)
+    -- the text moves left when the cursor would leave the field, so the cursor stays in view
+    local textX = node.x + size.paddingX - ((focused and before > room) and before - room or 0)
     local inner = intersect({ x = node.x + 1, y = node.y + 1, w = node.w - 2, h = node.h - 2 }, clip)
     draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
+    local first, last = selection(state)
+
+    if focused and node.kind == "field" and first then
+      local left = textX + measureText(font, text:sub(1, first - 1), textSize)
+      draw.fill(surface, left, textY, textX + measureText(font, text:sub(1, last - 1), textSize) - left, line, "selected")
+    end
+
     draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
       (focused and node.kind == "key") and "textDim" or node.color or "text")
 
     if focused and node.kind == "field" then
-      draw.fill(surface, textX + width + 1, textY, 2, line, "accent")
-      state.cursor = { x = textX + width, y = textY, h = line }
+      draw.fill(surface, textX + before, textY, 2, line, "accent")
+      state.cursor = { x = textX + before, y = textY, h = line }
+      state.textX = textX
     end
 
     restoreClip(surface, clip)
-    draw.outline(surface, node.x, node.y, node.w, node.h, 1, node.valid == false and INVALID or focused and "accent" or "tabShown")
+    -- a number element marks a typed text that is not a number
+    local valid = node.valid ~= false and not (focused and node.change and tonumber(state.typed) == nil)
+    draw.outline(surface, node.x, node.y, node.w, node.h, 1, not valid and INVALID or focused and "accent" or "tabShown")
   elseif node.kind == "image" then
     if node.picture then
       draw.image(surface, node.picture, node.x, node.y, node.w, node.h)
+    end
+  elseif node.kind == "disclosure" then
+    -- down when open, right when closed, and up with up
+    local half, x, y = size.checkSize / 4, node.x + node.w / 2, node.y + node.h / 2
+
+    if node.up then
+      draw.triangles(surface, string.pack("ffffff", x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
+    elseif node.open then
+      arrow(surface, x, y, half, "textDim")
+    else
+      draw.triangles(surface, string.pack("ffffff", x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
     end
   elseif node.kind == "separator" then
     if node.vertical then
@@ -722,13 +1086,13 @@ local function listItem(node)
   return node.item ~= nil
 end
 
-local function byId(node, id)
+local function byID(node, id)
   if node.id == id then
     return node
   end
 
   for _, child in ipairs(node.children or {}) do
-    local found = byId(child, id)
+    local found = byID(child, id)
 
     if found then
       return found
@@ -747,7 +1111,7 @@ end
 
 local function blur(panel, state)
   if state.focus then
-    state.focus, state.typed, state.cursor = nil, nil, nil
+    state.focus, state.typed, state.cursor, state.at, state.anchor, state.selecting = nil, nil, nil, nil, nil, nil
     panel:setTextInput(false)
     panel:redraw()
   end
@@ -864,15 +1228,42 @@ local function activate(panel, state, node, x)
   elseif node.kind == "field" or node.kind == "key" then
     if state.focus ~= node.id then
       blur(panel, state)
-      state.focus, state.typed = node.id, node.text
+      state.focus, state.typed, state.at = node.id, node.text, #node.text + 1
       panel:setTextInput(node.kind == "field")
     end
   end
 end
 
+-- puts text in place of the selection, or at the cursor
+local function replace(state, text)
+  local first, last = selection(state)
+  first, last = first or state.at, last or state.at
+  state.typed = state.typed:sub(1, first - 1) .. text .. state.typed:sub(last)
+  state.at, state.anchor = first + #text, nil
+end
+
+-- the byte position in a field's text nearest to a position across it, in layout units
+local function positionAt(node, text, textX, x)
+  local font, textSize = fontOf(node), node.size or fontSize()
+  local at, left = 1, textX
+
+  while at <= #text do
+    local after = nextCharacter(text, at)
+    local right = textX + measureText(font, text:sub(1, after - 1), textSize)
+
+    if x < (left + right) / 2 then
+      return at
+    end
+
+    at, left = after, right
+  end
+
+  return at
+end
+
 -- handles a key or text event while a field or key element has the focus
 local function typing(panel, state, event)
-  local node = state.root and byId(state.root, state.focus)
+  local node = state.root and byID(state.root, state.focus)
 
   if not node then
     blur(panel, state)
@@ -892,14 +1283,56 @@ local function typing(panel, state, event)
     return true
   end
 
+  -- the cursor is a byte position before which text goes; a character may take several bytes
+  -- the selection lies between the anchor and the cursor, and what is typed replaces it
+  local typed, at = state.typed, state.at
+  local first, last = selection(state)
+  local key = event.type == "keyDown" and event.key or nil
+  local moves = { Left = true, Right = true, Home = true, End = true }
+
   if event.type == "text" then
-    state.typed = state.typed .. event.text
+    replace(state, event.text)
     call(node.onChange, state.typed)
-  elseif event.type == "keyDown" and event.key == "Backspace" then
-    -- the last character, which may take several bytes
-    local last = utf8.offset(state.typed, -1)
-    state.typed = last and state.typed:sub(1, last - 1) or ""
+  elseif (key == "Backspace" or key == "Delete") and first then
+    replace(state, "")
     call(node.onChange, state.typed)
+  elseif key == "Backspace" and at > 1 then
+    local previous = event.ctrl and wordEdge(typed, at, false) or previousCharacter(typed, at)
+    state.typed, state.at = typed:sub(1, previous - 1) .. typed:sub(at), previous
+    call(node.onChange, state.typed)
+  elseif key == "Delete" and at <= #typed then
+    state.typed = typed:sub(1, at - 1) .. typed:sub(event.ctrl and wordEdge(typed, at, true) or nextCharacter(typed, at))
+    call(node.onChange, state.typed)
+  elseif (key == "Left" or key == "Right") and first and not event.shift and not event.ctrl then
+    -- an arrow ends a selection at its side
+    state.at, state.anchor = key == "Left" and first or last, nil
+  elseif moves[key] then
+    -- Shift keeps the anchor, so the move selects; Ctrl moves by words
+    local to = key == "Home" and 1 or key == "End" and #typed + 1
+      or event.ctrl and wordEdge(typed, at, key == "Right")
+      or key == "Left" and (at > 1 and previousCharacter(typed, at) or 1)
+      or (at <= #typed and nextCharacter(typed, at) or at)
+    state.anchor = event.shift and (state.anchor or at) or nil
+    state.at = to
+  elseif key == "A" and event.ctrl then
+    state.anchor, state.at = 1, #typed + 1
+  elseif (key == "C" or key == "X") and event.ctrl then
+    if first then
+      ecs.clipboard.setText(typed:sub(first, last - 1))
+
+      if key == "X" then
+        replace(state, "")
+        call(node.onChange, state.typed)
+      end
+    end
+  elseif key == "V" and event.ctrl then
+    -- a field holds one line, so the lines of the pasted text are joined by spaces
+    local pasted = (ecs.clipboard.getText() or ""):gsub("\r?\n", " ")
+
+    if pasted ~= "" then
+      replace(state, pasted)
+      call(node.onChange, state.typed)
+    end
   elseif event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") then
     -- onSubmit gives false to keep typing, such as for a text it cannot read
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
@@ -907,7 +1340,130 @@ local function typing(panel, state, event)
     end
   elseif event.type == "keyDown" and event.key == "Escape" then
     blur(panel, state)
+  elseif event.type == "keyDown" and node.change and (event.key == "Up" or event.key == "Down") then
+    node.change(state, event.key == "Up")
   elseif event.type ~= "keyUp" and event.type ~= "keyDown" then
+    return false
+  end
+
+  panel:redraw()
+  return true
+end
+
+-- the interactive elements in the order of the tree, which Tab goes through
+local function order(node, list)
+  if interactive(node) then
+    list[#list + 1] = node
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    order(child, list)
+  end
+
+  return list
+end
+
+-- the innermost scroll element that holds an element, or nil
+local function scrollOf(node, id, found)
+  if node.id == id then
+    return found
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    local inner = scrollOf(child, id, node.kind == "scroll" and node or found)
+
+    if inner ~= nil then
+      return inner
+    end
+  end
+end
+
+-- gives the keys to the next interactive element, or to the one before; a field or key element takes typing then
+local function step(panel, state, back)
+  local list = order(state.root, {})
+
+  if #list == 0 then
+    return false
+  end
+
+  local index = 0
+
+  for i, node in ipairs(list) do
+    index = node.id == state.target and i or index
+  end
+
+  if back then
+    index = index <= 1 and #list or index - 1
+  else
+    index = index % #list + 1
+  end
+
+  local node = list[index]
+  blur(panel, state)
+  state.target, state.ring = node.id, true
+
+  if node.kind == "field" or node.kind == "key" then
+    activate(panel, state, node, node.x)
+  end
+
+  local scroll = scrollOf(state.root, node.id, nil)
+
+  if scroll and scroll.id ~= node.id then
+    local top = node.y - scroll.y + scroll.offset
+    local offset = state.scroll[scroll.id] or 0
+    state.scroll[scroll.id] = math.min(math.max(offset, top + node.h - scroll.h), top)
+  end
+
+  panel:redraw()
+  return true
+end
+
+-- the next choice of a selector, or the next value of a slider, one way along it
+local function nudge(node, forward)
+  if node.kind == "selector" then
+    local index = 0
+
+    for i, choice in ipairs(node.choices) do
+      index = choice == node.value and i or index
+    end
+
+    local choice = node.choices[math.min(math.max(index + (forward and 1 or -1), 1), #node.choices)]
+
+    if choice ~= nil and choice ~= node.value then
+      call(node.onChange, choice)
+    end
+  else
+    local amount = (node.step and node.step > 0) and node.step or (node.max - node.min) / 20
+    local value = math.min(math.max(node.value + (forward and amount or -amount), node.min), node.max)
+
+    if value ~= node.value then
+      call(node.onChange, value)
+    end
+  end
+end
+
+-- handles a key press for the element that has the keys, when no field types: Tab moves them, Return or Space activates the element,
+-- Left and Right change a selector or a slider, and Escape takes the keys away
+local function press(panel, state, event)
+  if event.key == "Tab" then
+    return step(panel, state, event.shift)
+  end
+
+  local node = state.target and byID(state.root, state.target)
+
+  if not node then
+    return false
+  end
+
+  local enter = event.key == "Return" or event.key == "Keypad Enter" or event.key == "Space"
+
+  if event.key == "Escape" then
+    state.target, state.ring = nil, false
+  elseif (node.kind == "selector" or node.kind == "slider") and (event.key == "Left" or event.key == "Right") then
+    nudge(node, event.key == "Right")
+  elseif enter and node.kind ~= "selector" and node.kind ~= "slider" then
+    activate(panel, state, node, node.x)
+  else
     return false
   end
 
@@ -925,6 +1481,80 @@ local function slide(node, x)
   end
 end
 
+-- hides a tooltip, shown or waiting
+local function hideTip(panel, state)
+  if state.tipTimer then
+    state.tipTimer:stop()
+  end
+
+  if state.tipShown then
+    panel:redraw()
+  end
+
+  state.tip, state.tipTimer, state.tipShown = nil, nil, false
+end
+
+-- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
+-- the pointer rests before a tooltip shows, so each move starts the wait again
+local function followTip(panel, state, x, y)
+  local node = find(state.root, x, y, function(candidate)
+    return candidate.tooltip ~= nil
+  end)
+
+  if node and node.id == state.tip and state.tipShown then
+    return
+  end
+
+  hideTip(panel, state)
+
+  if node then
+    state.tip = node.id
+    state.tipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
+      state.tipShown = true
+      panel:redraw()
+
+      state.tipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
+        state.tipTimer = nil
+        hideTip(panel, state)
+      end)
+    end)
+  end
+end
+
+-- draws the shown tooltip below and right of the pointer, inside the surface
+local function paintTip(surface, state, width, height)
+  local node = state.tipShown and byID(state.root, state.tip)
+
+  if not node then
+    return
+  end
+
+  local font, textSize = draw.font("ui"), size.noteSize
+  local line = lineHeight(font, textSize)
+  local lines = wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX))
+  local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
+
+  for _, text in ipairs(lines) do
+    boxWidth = math.max(boxWidth, measureText(font, text, textSize))
+  end
+
+  boxWidth = boxWidth + 2 * size.paddingX
+  local x = math.max(0, math.min((state.pointerX or 0) + 12, width - boxWidth))
+  local y = (state.pointerY or 0) + 18
+
+  -- a tooltip that does not fit below the pointer goes above it
+  if y + boxHeight > height then
+    y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
+  end
+
+  draw.fill(surface, x, y, boxWidth, boxHeight, "tabRow")
+  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "tabShown")
+
+  for i, text in ipairs(lines) do
+    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")
+  end
+end
+
 local function handle(panel, event)
   local state = panelState(panel)
   local root = state.root
@@ -933,8 +1563,20 @@ local function handle(panel, event)
     return false
   end
 
-  if state.focus and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") then
+  -- a tooltip goes when anything but a move happens, and follows the pointer onto other elements
+  if event.type == "pointerMove" then
+    followTip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
+  else
+    hideTip(panel, state)
+  end
+
+  -- Tab leaves a field too
+  if state.focus and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") and not (event.type == "keyDown" and event.key == "Tab") then
     return typing(panel, state, event)
+  end
+
+  if event.type == "keyDown" then
+    return press(panel, state, event)
   end
 
   -- pointer positions come in surface pixels, and the layout is in layout units
@@ -944,7 +1586,7 @@ local function handle(panel, event)
     state.pointerX, state.pointerY = x, y
 
     if state.dragging then
-      local node = byId(root, state.dragging)
+      local node = byID(root, state.dragging)
       local _, length = thumb(node)
       local travel = node.h - length
 
@@ -956,8 +1598,19 @@ local function handle(panel, event)
       return true
     end
 
+    if state.selecting then
+      local node = byID(root, state.selecting)
+
+      if node and state.focus == node.id then
+        state.at = positionAt(node, state.typed, state.textX or node.x + size.paddingX, x)
+      end
+
+      panel:redraw()
+      return true
+    end
+
     if state.sliding then
-      local node = byId(root, state.sliding)
+      local node = byID(root, state.sliding)
 
       if node then
         slide(node, x)
@@ -1006,9 +1659,19 @@ local function handle(panel, event)
       blur(panel, state)
     end
 
+    -- the pressed element gets the keys, without a ring, so Tab goes on from it
     state.pressed = node
+    state.target, state.ring = node and node.id, false
 
-    if node and (node.kind == "field" or node.kind == "key") then
+    if node and node.kind == "field" then
+      -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
+      local focused = state.focus == node.id
+      local textX = focused and state.textX or node.x + size.paddingX
+      activate(panel, state, node, x)
+      local to = positionAt(node, state.typed, textX, x)
+      state.anchor = (focused and event.shift) and (state.anchor or state.at) or to
+      state.at, state.selecting = to, node.id
+    elseif node and node.kind == "key" then
       activate(panel, state, node, x)
     elseif node and node.kind == "slider" then
       state.sliding = node.id
@@ -1022,7 +1685,7 @@ local function handle(panel, event)
     return node ~= nil or item ~= nil
   elseif event.type == "pointerUp" and event.button == 1 then
     local pressed = state.pressed
-    state.pressed, state.dragging, state.sliding = nil, nil, nil
+    state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
 
     -- a click is a press and a release on the same element
     local node = find(root, x, y, interactive)
@@ -1071,18 +1734,19 @@ function services.show(panel, surface, root)
   end
 
   name(root, "root")
-  measure(root, state)
+  measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
 
   -- the element under the pointer and the pressed element are found again in the new layout
   state.hover = state.hover and state.pointerX and find(root, state.pointerX, state.pointerY, interactive) or nil
-  state.pressed = state.pressed and byId(root, state.pressed.id) or nil
+  state.pressed = state.pressed and byID(root, state.pressed.id) or nil
   state.root = root
 
   draw.unclip(surface)
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state, nil)
   draw.unclip(surface)
+  paintTip(surface, state, width, height)
 
   if state.focus and state.cursor then
     local scale = surface.scale
@@ -1097,19 +1761,24 @@ end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
+  -- a closing panel is not drawn again, so its tooltip's timer only stops
+  if panels[panel] and panels[panel].tipTimer then
+    panels[panel].tipTimer:stop()
+  end
+
   panels[panel] = nil
 end
 
 -- the rectangle of an element in the last layout, in layout units
 function services.rect(panel, id)
   local root = panelState(panel).root
-  local node = root and byId(root, id)
+  local node = root and byID(root, id)
 
   if not node then
-    return false, 0, 0, 0, 0
+    return nil
   end
 
-  return true, node.x, node.y, node.w, node.h
+  return { x = node.x, y = node.y, width = node.w, height = node.h }
 end
 
 -- the id of the field or key element that has the focus, or nil
@@ -1117,35 +1786,43 @@ function services.focus(panel)
   return panelState(panel).focus
 end
 
+-- the id of the element whose tooltip shows, or nil
+function services.tip(panel)
+  local state = panelState(panel)
+  return state.tipShown and state.tip or nil
+end
+
 -- gives a field or key element the focus, as a click on it does
 function services.edit(panel, id)
   local state = panelState(panel)
-  local node = state.root and byId(state.root, id)
+  local node = state.root and byID(state.root, id)
 
+  -- the keyboard's target follows, without its ring, as after a click
   if node and (node.kind == "field" or node.kind == "key") then
+    state.target, state.ring = node.id, false
     activate(panel, state, node, 0)
     panel:redraw()
   end
 end
 
 -- scrolls a scroll element so that one of its children shows
-function services.reveal(panel, scrollId, childId)
+function services.reveal(panel, scrollID, childID)
   local state = panelState(panel)
-  local scroll = state.root and byId(state.root, scrollId)
-  local child = scroll and byId(scroll, childId)
+  local scroll = state.root and byID(state.root, scrollID)
+  local child = scroll and byID(scroll, childID)
 
   if child then
     local top = child.y - scroll.y + scroll.offset
-    local offset = state.scroll[scrollId] or 0
-    state.scroll[scrollId] = math.min(math.max(offset, top + child.h - scroll.h), top)
+    local offset = state.scroll[scrollID] or 0
+    state.scroll[scrollID] = math.min(math.max(offset, top + child.h - scroll.h), top)
     panel:redraw()
   end
 end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
-function services.move(panel, listId, step)
+function services.move(panel, listID, step)
   local state = panelState(panel)
-  local list = state.root and byId(state.root, listId)
+  local list = state.root and byID(state.root, listID)
 
   if not list or not list.items or #list.items == 0 then
     return
@@ -1154,43 +1831,165 @@ function services.move(panel, listId, step)
   local index = list.selected and list.selected + step or (step > 0 and 1 or #list.items)
   index = math.min(math.max(index, 1), #list.items)
   call(list.onSelect, index)
-  services.reveal(panel, listId, list.items[index].id)
+  services.reveal(panel, listID, list.items[index].id)
+end
+
+-- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
+function services.expand(panel, treeID, open)
+  local state = panelState(panel)
+  local node = state.root and byID(state.root, treeID)
+  local tree = node and node.tree
+  local index = node and node.selected
+
+  if not tree or not index or not tree.ids[index] then
+    return
+  end
+
+  local folder = tree.folders[index]
+
+  if folder and (folder == "open") ~= open then
+    call(tree.onToggle, tree.ids[index], open)
+    panel:redraw()
+  elseif open and folder == "open" and tree.parents[index + 1] == index then
+    services.move(panel, treeID, 1)
+  elseif not open and tree.parents[index] then
+    services.move(panel, treeID, tree.parents[index] - index)
+  end
 end
 
 -- activates a list's chosen item, as a click on it does
-function services.activate(panel, listId)
+function services.activate(panel, listID)
   local state = panelState(panel)
-  local list = state.root and byId(state.root, listId)
+  local list = state.root and byID(state.root, listID)
 
   if list and list.selected and list.items and list.items[list.selected] then
     call(list.onActivate, list.selected)
   end
 end
 
+-- descriptions, for plugins in C -------------------------------------------
+
+-- the callbacks of each kind of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+local CALLBACKS = {
+  button = { "onClick" },
+  toggle = { "onChange" },
+  slider = { "onChange" },
+  selector = { "onChange" },
+  tabs = { "onChange" },
+  dropdown = { "onChange" },
+  number = { "onChange" },
+  key = { "onChange" },
+  field = { "onChange", "onSubmit" },
+  list = { "onSelect", "onActivate" },
+  table = { "onSelect", "onActivate", "onSort" },
+  tree = { "onSelect", "onActivate", "onToggle" },
+}
+
+-- what each kind's element function takes besides its props: its children, a value, choices, columns and rows, or nodes; the others take a value
+local TAKES = {
+  column = "children", row = "children", scroll = "children", list = "children", group = "children",
+  selector = "choices", tabs = "choices", dropdown = "choices",
+  table = "table", tree = "tree", separator = "none", space = "none",
+}
+
+-- an element from a description, built with the element functions, as Lua code builds it
+local function build(panel, description)
+  local props = {}
+
+  for key, value in pairs(description.props or {}) do
+    props[key] = value
+  end
+
+  -- a column or row with clickable = true is clicked like a button
+  local kind = description.kind
+  local callbacks = CALLBACKS[kind] or (props.clickable and { "onClick" }) or {}
+  props.clickable = nil
+
+  for _, callback in ipairs(callbacks) do
+    local id = props.id
+
+    if id then
+      props[callback] = function(value, open)
+        local taken = panelState(panel).taken
+        taken[id .. "\0" .. callback] = { value = value, open = open }
+        panel:redraw()
+      end
+    end
+  end
+
+  local takes = TAKES[kind]
+  local make = elements[kind]
+  assert(make, ("no element of kind '%s'"):format(tostring(kind)))
+
+  if takes == "children" then
+    local children = {}
+
+    for i, child in ipairs(description.children or {}) do
+      children[i] = build(panel, child)
+    end
+
+    return make(props, children)
+  elseif takes == "choices" then
+    return make(description.value, description.choices, props)
+  elseif takes == "table" then
+    return make(props, description.columns, description.rows)
+  elseif takes == "tree" then
+    return make(props, description.nodes)
+  elseif takes == "none" then
+    return make(props)
+  end
+
+  return make(description.value, props)
+end
+
+-- builds the elements of a description and shows them; what the callbacks got and no one took is forgotten, so each draw takes only what came since the last
+function services.showDescription(panel, surface, description)
+  local root = build(panel, description)
+  panelState(panel).taken = {}
+  services.show(panel, surface, root)
+end
+
+-- takes what a callback of a described element got since the last draw, or nil if it did not run
+function services.take(panel, id, callback)
+  local taken = panelState(panel).taken
+  local key = id .. "\0" .. callback
+  local got = taken[key]
+  taken[key] = nil
+  return got
+end
+
 assert(ecs.service.register({
-  show = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value root)", doc = "Lay out elements in a panel and draw them", fn = services.show },
-  event = { sig = "bool(handle<ecs.panel> panel, value event)", doc = "Handle a panel's event, and call the callbacks of the elements it reaches", fn = services.event },
+  show = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)", doc = "Lay out elements in a panel and draw them", fn = services.show },
+  event = { sig = "bool(handle<ecs.panel> panel, value<ecs.PanelEvent> event)", doc = "Handle a panel's event, and call the callbacks of the elements it reaches", fn = services.event },
   forget = { sig = "void(handle<ecs.panel> panel)", doc = "Forget a panel's state", fn = services.forget },
-  rect = { sig = "bool(handle<ecs.panel> panel, string id, out float x, out float y, out float width, out float height)", doc = "Give an element's rectangle in the last layout", fn = services.rect },
+  rect = { sig = "value<ui.Rect?>(handle<ecs.panel> panel, string id)", doc = "Give an element's rectangle in the last layout, a table of x, y, width and height, or nil if no element has the id", fn = services.rect },
   focus = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the focused field", fn = services.focus },
+  tip = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the element whose tooltip shows", fn = services.tip },
   edit = { sig = "void(handle<ecs.panel> panel, string id)", doc = "Give a field the focus", fn = services.edit },
   reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
   move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },
   activate = { sig = "void(handle<ecs.panel> panel, string list)", doc = "Activate a list's chosen item; onActivate gets it", fn = services.activate },
-  column = { sig = "value(value props, value children)", doc = "Elements below each other", fn = elements.column },
-  row = { sig = "value(value props, value children)", doc = "Elements beside each other", fn = elements.row },
-  scroll = { sig = "value(value props, value children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
-  list = { sig = "value(value props, value children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
-  group = { sig = "value(value props, value children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
-  separator = { sig = "value(value props)", doc = "A line across a column, or up a row", fn = elements.separator },
-  text = { sig = "value(string text, value props)", doc = "A line of text", fn = elements.text },
-  button = { sig = "value(string label, value props)", doc = "A button; onClick runs when it is clicked", fn = elements.button },
-  toggle = { sig = "value(bool on, value props)", doc = "On or off: a check box, or a switch with look = \"switch\"; onChange gets the new state", fn = elements.toggle },
-  slider = { sig = "value(double value, value props)", doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it", fn = elements.slider },
-  selector = { sig = "value(string value, value choices, value props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
-  dropdown = { sig = "value(string value, value choices, value props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
-  field = { sig = "value(string text, value props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
-  key = { sig = "value(string combination, value props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
-  image = { sig = "value(string path, value props)", doc = "An image file", fn = elements.image },
-  space = { sig = "value(value props)", doc = "Empty room, which grows by default", fn = elements.space },
+  expand = { sig = "void(handle<ecs.panel> panel, string tree, bool open)", doc = "Open or close a tree's chosen node; onToggle gets it, opening an open node chooses its first child, and closing a closed one its parent", fn = services.expand },
+  column = { sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other", fn = elements.column },
+  row = { sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)", doc = "Elements beside each other", fn = elements.row },
+  scroll = { sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
+  list = { sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
+  group = { sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
+  table = { sig = "value<ui.Element>(value<ui.TableProps?> props, value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows)", doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort", fn = elements.table },
+  tree = { sig = "value<ui.Element>(value<ui.TreeProps?> props, value<ui.TreeNode[]?> nodes)", doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id", fn = elements.tree },
+  separator = { sig = "value<ui.Element>(value<ui.SeparatorProps?> props)", doc = "A line across a column, or up a row", fn = elements.separator },
+  text = { sig = "value<ui.Element>(string text, value<ui.TextProps?> props)", doc = "A line of text", fn = elements.text },
+  button = { sig = "value<ui.Element>(string label, value<ui.ButtonProps?> props)", doc = "A button; onClick runs when it is clicked", fn = elements.button },
+  toggle = { sig = "value<ui.Element>(bool on, value<ui.ToggleProps?> props)", doc = "On or off: a check box, or a switch with look = \"switch\"; onChange gets the new state", fn = elements.toggle },
+  slider = { sig = "value<ui.Element>(double value, value<ui.SliderProps?> props)", doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it", fn = elements.slider },
+  selector = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
+  tabs = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one", fn = elements.tabs },
+  dropdown = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
+  field = { sig = "value<ui.Element>(string text, value<ui.FieldProps?> props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
+  number = { sig = "value<ui.Element>(double value, value<ui.NumberProps?> props)", doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange", fn = elements.number },
+  key = { sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
+  image = { sig = "value<ui.Element>(string path, value<ui.Props?> props)", doc = "An image file", fn = elements.image },
+  space = { sig = "value<ui.Element>(value<ui.Props?> props)", doc = "Empty room, which grows by default", fn = elements.space },
+  showDescription = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Description> root)", doc = "Build the elements of a description, as C plugins give them, and show them; a described element with an id keeps what its callbacks get, for take", fn = services.showDescription },
+  take = { sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)", doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run", fn = services.take },
 }))

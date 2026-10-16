@@ -1,4 +1,4 @@
--- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 11).
+-- The settings window: lists every setting with its value, and changes it in the user's settings file (DESIGN 12).
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
@@ -364,14 +364,14 @@ function services.edit(panel)
   local window = findWindow(panel)
 
   if window and ui.focus(panel) then
-    ui.event(panel, { type = "keyDown", key = "Return" })
+    ui.event(panel, { type = "keyDown", key = "Return", shift = false, ctrl = false, alt = false, super = false })
   elseif window and #window.settings > 0 then
     edit(window)
   end
 end
 
 assert(ecs.service.register({
-  open = { sig = "void()", doc = "Open the settings window", fn = services.open },
+  open = { sig = "void()", doc = "Open settings", fn = services.open },
   up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting above", fn = services.up },
   down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting below", fn = services.down },
   previous = { sig = "void(handle<ecs.panel> panel)", doc = "Change the chosen setting one step back", fn = services.previous },

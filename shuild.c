@@ -4,9 +4,8 @@
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
 #define SHUC_NO_RUN_LOG
+#define SHUC_MAX_COMMAND_BUFFER_SIZE 65536 // a library of many files is packed with one command that names each of them
 #include "shuild/shuild.h"
-
-#include <dirent.h>
 
 #pragma region Setup
 
@@ -28,27 +27,48 @@ static struct
     const char *output; // OpenECS's build folder, such as ../build/Debug/
 } CONFIG = {BuildType_Debug, NULL};
 
-/// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ that its C files include.
+/// ??? too many custom types and hard coded stuff !!!
+
+/// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes whole.
+typedef struct Library
+{
+    const char *name;
+    const char *sources;     // the folder of its C files, in dependencies/
+    const char *includes[6]; // the folders of dependencies/ that its files include, ending with NULL
+    const char *flags;       // the definitions it is configured with
+    const char *unity;       // for a library compiled as one file that includes all of its C files: the definitions at the file's top; or NULL
+} Library;
+
+/// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ that its C files include, and the libraries it takes.
 typedef struct PluginNeeds
 {
     const char *name;
-    const char *includes[4]; // ending with NULL
+    const char *includes[5];     // ending with NULL
+    const char *flags;           // definitions for its C files, or NULL
+    const Library *libraries[3]; // ending with NULL
+    bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
 } PluginNeeds;
+
+// mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
+#define MBEDTLS_FLAGS " '-DMBEDTLS_USER_CONFIG_FILE=<mbedtls_user_config.h>'"
+
+// curl is configured by a glue header in place of its configure script, for HTTP and HTTPS with mbedTLS;
+// it is compiled as one file, as its own unity builds are, because shuild finds the headers a file includes without the build's definitions, and curl's need HAVE_CONFIG_H
+static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, "#define HAVE_CONFIG_H\n#define BUILDING_LIBCURL\n#define CURL_STATICLIB\n"};
+static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include", "mbedtls/library", "other/mbedtls", NULL}, MBEDTLS_FLAGS, NULL};
 
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
-    {"image", {"stb", "nanosvg/src", NULL}},
-    {"audio", {"dr_libs", "stb", NULL}},
-    {"net", {"SDL_net", "SDL_net/include", NULL}},
-    {"gltf", {"cgltf", NULL}},
+    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, false},
+    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, false},
+    {"net", {"SDL_net", "SDL_net/include", "mbedtls/include", "other/mbedtls"}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, false},
+    {"gltf", {"cgltf", NULL}, NULL, {NULL}, false},
+    {"web", {"curl/include", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}, true},
 };
 
 #pragma endregion Setup
 
 #pragma region Declarations
-
-/// @brief Runs a shell command, and stops the build if it fails.
-#define RunCheck(cmd, ...) SHU_Assert(!SHU_UtilRun(cmd, ##__VA_ARGS__), "Running " SHUM_COLOR_RED("'%s'") " failed", cmd)
 
 static void SetupConfiguration(int argc, char **argv);
 static void SetBuildFlags(void);
@@ -68,8 +88,7 @@ int main(int argc, char **argv)
     // the presets go to bin/presets/, beside OpenECS's own
     SHUI_String folder;
     SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
-    SHU_UtilCreateDirectory(folder.data);
-    RunCheck("cp -rp presets/. %s", folder.data);
+    SHU_UtilCopyFile("presets/", folder.data);
 
     return 0;
 }
@@ -166,51 +185,111 @@ static void SetBuildFlags(void)
     }
 }
 
-static bool EndsWith(const char *name, const char *suffix)
+/// @brief A folder that ForEachFolder lists, and the function it calls.
+typedef struct FolderVisit
 {
-    size_t nameLength = strlen(name);
-    size_t suffixLength = strlen(suffix);
-    return nameLength >= suffixLength && strcmp(name + nameLength - suffixLength, suffix) == 0;
+    const char *path;
+    void (*function)(const char *path, const char *name);
+} FolderVisit;
+
+static void VisitFolder(const char *entry, SHUFileType type, void *data)
+{
+    const FolderVisit *visit = (const FolderVisit *)data;
+
+    if (type == SHUFileType_Directory)
+    {
+        // the entry is the folder's path, with a separator at its end; the function gets its name alone
+        SHUI_String name;
+        SHUI_SFormat(&name, "%.*s", (int)(strlen(entry) - strlen(visit->path) - 1), entry + strlen(visit->path));
+        visit->function(visit->path, name.data);
+    }
 }
 
-/// @brief Calls a function for each folder in a folder, in no order; names starting with a dot are left out.
+/// @brief Calls a function for each folder in a folder, sorted by name; names starting with a dot are left out.
 static void ForEachFolder(const char *path, void (*function)(const char *path, const char *name))
 {
-    DIR *folder = opendir(path);
-    struct dirent *entry = NULL;
+    FolderVisit visit = {path, function};
+    SHU_UtilListDirectory(path, false, VisitFolder, &visit);
+}
 
-    while (folder != NULL && (entry = readdir(folder)) != NULL)
-    {
-        if (entry->d_type == DT_DIR && entry->d_name[0] != '.')
-        {
-            function(path, entry->d_name);
-        }
-    }
-
-    if (folder != NULL)
-    {
-        closedir(folder);
-    }
+static void FindCode(const char *path, SHUFileType type, void *data)
+{
+    *(bool *)data = *(bool *)data || (type == SHUFileType_Regular && SHU_UtilMatch(path, "*.c"));
 }
 
 /// @brief Tells whether a folder holds a C file.
 static bool HasCode(const char *path)
 {
     bool code = false;
-    DIR *folder = opendir(path);
-    struct dirent *entry = NULL;
-
-    while (folder != NULL && (entry = readdir(folder)) != NULL)
-    {
-        code = code || EndsWith(entry->d_name, ".c");
-    }
-
-    if (folder != NULL)
-    {
-        closedir(folder);
-    }
-
+    SHU_UtilListDirectory(path, false, FindCode, &code);
     return code;
+}
+
+static void WriteInclude(const char *path, SHUFileType type, void *data)
+{
+    if (type == SHUFileType_Regular && SHU_UtilMatch(path, "*.c"))
+    {
+        fprintf((FILE *)data, "#include \"%s%s\"\n", SHU_UtilGetExecutablePath(), path);
+    }
+}
+
+/// @brief Writes an #include of each C file in a folder and in its folders, sorted by path.
+static void WriteIncludes(FILE *file, const char *folder)
+{
+    SHU_UtilListDirectory(folder, true, WriteInclude, file);
+}
+
+// todo instead of having to create a unity build, we can just add the source files we need, or add a feature to exclude files from adding to module source files. !!!
+/// @brief Writes a library's unity file. Shuild leaves the old one as is if it has the same text, so the library compiles again only when its files change.
+static void WriteUnity(const Library *library, const char *path)
+{
+    SHUI_String fresh;
+    SHUI_String sources;
+    SHUI_SFormat(&fresh, "%s.new", path);
+    SHUI_SFormat(&sources, "dependencies/%s", library->sources);
+
+    FILE *file = fopen(fresh.data, "w");
+    SHU_Assert(file != NULL, "Cannot write " SHUM_COLOR_RED("'%s'"), fresh.data);
+    fputs(library->unity, file);
+    WriteIncludes(file, sources.data);
+    fclose(file);
+
+    SHUSlice text = SHU_UtilReadFile(fresh.data);
+    SHU_UtilWriteFile(path, csv(text));
+    free(text.data);
+    SHU_UtilDeleteFile(fresh.data);
+}
+
+/// @brief Compiles a library of dependencies/ into a static archive in a folder. Like OpenECS's dependencies, it gets neither the warnings, nor the static analyzer, nor the sanitizers (OpenECS DESIGN 17.3).
+static void BuildLibrary(const Library *library, const char *folder)
+{
+    SHU_ModuleBegin(library->name, "dependencies/");
+    // todo why not just use SetBuildFlags ???
+    SHU_CompilerClearFlags();
+    SHU_CompilerAddFlags(" -std=gnu17 -fPIC -fvisibility=hidden -w");
+    SHU_CompilerAddFlags(CONFIG.type == BuildType_Debug ? SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG : SHUM_FLAGS_OPTIMIZATION_HIGH " -DNDEBUG");
+    SHU_CompilerAddFlags(library->flags);
+
+    for (usz i = 0; library->includes[i] != NULL; i++)
+    {
+        SHU_ModuleAddIncludeDirectory(library->includes[i]);
+    }
+
+    if (library->unity == NULL)
+    {
+        SHU_ModuleAddSourceFile(library->sources);
+    }
+    else
+    {
+        // the unity file is kept in other/, beside the library's glue header, and git ignores it
+        SHUI_String unity;
+        SHUI_SFormat(&unity, "dependencies/other/%s/ignore.unity.c", library->name);
+        WriteUnity(library, unity.data);
+        SHUI_SFormat(&unity, "other/%s/ignore.unity.c", library->name);
+        SHU_ModuleAddSourceFile(unity.data);
+    }
+
+    SHU_ModuleCompile(folder, SHUModuleType_LibraryStatic);
 }
 
 /// @brief Compiles the C files of a plugin's folder, root, into the plugin's native library in output. Does nothing if the folder has no C file.
@@ -240,20 +319,21 @@ static void BuildNative(const char *name, const char *root, const char *output)
         }
     }
 
-    // shuild compiles only the files that changed, so a library that is missing is built from all of them
-    SHUI_String library;
-    SHUI_SFormat(&library, "%slib%s.so", output, name);
+    // the libraries it takes are compiled first, into static archives that its native library is linked with
+    SHUI_String archives;
+    SHUI_SFormat(&archives, ".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
 
-    if (SHU_UtilFileExists(library.data) != SHUFileType_Regular)
+    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
-        SHU_CacheClearModule(name);
+        BuildLibrary(needs->libraries[i], archives.data);
     }
 
     SHU_ModuleBegin(name, root);
     SetBuildFlags();
 
-    // the static analyzer takes too much memory on the libraries compiled into a plugin; the warnings and the sanitizers stay
-    if (needs != NULL)
+    // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
+    // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
+    if (needs != NULL && !needs->analyze)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }
@@ -270,14 +350,57 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleAddIncludeDirectory(folder.data);
     }
 
+    if (needs != NULL && needs->flags != NULL)
+    {
+        SHU_CompilerAddFlags(needs->flags);
+    }
+
     SHUI_String include;
     SHUI_SFormat(&include, "%s%sinclude/", up.data, CONFIG.output);
     SHU_ModuleAddSourceFile("./");
     SHU_ModuleAddIncludeDirectory(include.data);
+
+    // the linker takes what the plugin uses of each library, in the order they are listed
+    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
+    {
+        if (i == 0)
+        {
+            SHU_ModuleAddLibraryDirectory(archives.data);
+        }
+
+        SHU_ModuleLinkLibrary(needs->libraries[i]->name);
+    }
+
     SHU_ModuleCompile(output, SHUModuleType_LibraryDynamic);
 }
 
-/// @brief Builds a standard plugin into bin/plugins/: its C files make its native library, and its Lua files, the manifest among them, and its folders are copied.
+/// @brief Copies a file or folder of a plugin's folder into the plugin's folder of bin/plugins/, if it is a Lua file, the manifest among them, its header.h or a folder.
+static void CopyPluginFile(const char *path, SHUFileType type, void *data)
+{
+    const char *output = (const char *)data;
+
+    if (type == SHUFileType_Directory)
+    {
+        // the entry is the folder's path, with a separator at its end; its copy keeps its name
+        const char *name = path + strlen(path) - 1;
+
+        while (name > path && name[-1] != '/')
+        {
+            name--;
+        }
+
+        SHUI_String folder;
+        SHUI_SFormat(&folder, "%s%s", output, name);
+        SHU_UtilCopyFile(path, folder.data);
+    }
+    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h"))
+    {
+        SHU_UtilCopyFile(path, output);
+    }
+}
+
+/// @brief Builds a standard plugin into bin/plugins/: its C files make its native library, and its Lua files, the manifest among them, its header.h and its folders are copied.
+/// OpenECS --definitions reads types.lua and header.h from there (OpenECS DESIGN 10.10).
 static void BuildPlugin(const char *path, const char *name)
 {
     SHUI_String root;
@@ -285,6 +408,6 @@ static void BuildPlugin(const char *path, const char *name)
     SHUI_SFormat(&root, "%s%s/", path, name);
     SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilCreateDirectory(output.data);
-    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -type d \\) -exec cp -rp {} %s \\;", root.data, output.data);
+    SHU_UtilListDirectory(root.data, false, CopyPluginFile, (void *)output.data);
     BuildNative(name, root.data, output.data);
 }
