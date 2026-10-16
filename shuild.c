@@ -27,20 +27,22 @@ static struct
     const char *output; // OpenECS's build folder, such as ../build/Debug/
 } CONFIG = {BuildType_Debug, NULL};
 
-/// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes whole.
+/// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
 typedef struct Library
 {
     const char *name;
-    const char *sources;     // the folder of its C files, in dependencies/
-    const char *includes[6]; // the folders of dependencies/ that its files include, ending with NULL
-    const char *flags;       // the definitions it is configured with
+    const char *sources;             // the folder of its C files, in dependencies/
+    const char *includes[3];         // the folders of dependencies/ that only its own files include, ending with NULL
+    const char *headers[3];          // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
+    const char *flags;               // the definitions it is configured with
+    const struct Library *links[2];  // the libraries it uses, whose headers it gets by linking them, ending with NULL
 } Library;
 
-/// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ that its C files include, and the libraries it takes.
+/// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ of the headers and sources its C files include, and the libraries it takes, whose headers it gets by linking them.
 typedef struct PluginNeeds
 {
     const char *name;
-    const char *includes[5];     // ending with NULL
+    const char *includes[3];     // ending with NULL
     const char *flags;           // definitions for its C files, or NULL
     const Library *libraries[3]; // ending with NULL
     bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
@@ -50,16 +52,16 @@ typedef struct PluginNeeds
 #define MBEDTLS_FLAGS " '-DMBEDTLS_USER_CONFIG_FILE=<mbedtls_user_config.h>'"
 
 // curl is configured by a glue header, which HAVE_CONFIG_H names, in place of its configure script, for HTTP and HTTPS with mbedTLS
-static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB"};
-static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include", "mbedtls/library", "other/mbedtls", NULL}, MBEDTLS_FLAGS};
+static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}};
+static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/lib", NULL}, {"curl/include", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB", {&MBEDTLS, NULL}};
 
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
     {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, false},
     {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, false},
-    {"net", {"SDL_net", "SDL_net/include", "mbedtls/include", "other/mbedtls"}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, false},
+    {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, false},
     {"gltf", {"cgltf", NULL}, NULL, {NULL}, false},
-    {"web", {"curl/include", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}, true},
+    {"web", {NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}, true},
 };
 
 #pragma endregion Setup
@@ -234,6 +236,12 @@ static bool HasCode(const char *path)
 /// @brief Compiles a library of dependencies/ into a static archive in a folder. Like OpenECS's dependencies, it gets neither the warnings, nor the static analyzer, nor the sanitizers (OpenECS DESIGN 17.3).
 static void BuildLibrary(const Library *library, const char *folder)
 {
+    // the libraries it uses are built first, so it gets their headers, and the modules that link it get them as libraries too
+    for (usz i = 0; library->links[i] != NULL; i++)
+    {
+        BuildLibrary(library->links[i], folder);
+    }
+
     SHU_ModuleBegin(library->name, "dependencies/");
     SetBuildFlags(false);
     SHU_CompilerAddFlags(library->flags);
@@ -241,6 +249,21 @@ static void BuildLibrary(const Library *library, const char *folder)
     for (usz i = 0; library->includes[i] != NULL; i++)
     {
         SHU_ModuleAddIncludeDirectory(library->includes[i]);
+    }
+
+    for (usz i = 0; library->headers[i] != NULL; i++)
+    {
+        SHU_ModuleAddPublicIncludeDirectory(library->headers[i]);
+    }
+
+    for (usz i = 0; library->links[i] != NULL; i++)
+    {
+        if (i == 0)
+        {
+            SHU_ModuleAddLibraryDirectory(folder);
+        }
+
+        SHU_ModuleLinkLibrary(library->links[i]->name);
     }
 
     // each C file compiles alone, in parallel, and the compiler finds its headers with the library's definitions
