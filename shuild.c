@@ -7,7 +7,6 @@
 #define SHUC_MAX_COMMAND_BUFFER_SIZE 65536 // a library of many files is packed with one command that names each of them
 #include "shuild/shuild.h"
 
-
 #pragma region Setup
 
 typedef enum BuildType
@@ -27,6 +26,8 @@ static struct
     BuildType type;
     const char *output; // OpenECS's build folder, such as ../build/Debug/
 } CONFIG = {BuildType_Debug, NULL};
+
+/// ??? too many custom types and hard coded stuff !!!
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes whole.
 typedef struct Library
@@ -53,8 +54,7 @@ typedef struct PluginNeeds
 
 // curl is configured by a glue header in place of its configure script, for HTTP and HTTPS with mbedTLS;
 // it is compiled as one file, as its own unity builds are, because shuild finds the headers a file includes without the build's definitions, and curl's need HAVE_CONFIG_H
-static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS,
-                             "#define HAVE_CONFIG_H\n#define BUILDING_LIBCURL\n#define CURL_STATICLIB\n"};
+static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/include", "curl/lib", "mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, "#define HAVE_CONFIG_H\n#define BUILDING_LIBCURL\n#define CURL_STATICLIB\n"};
 static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/include", "mbedtls/library", "other/mbedtls", NULL}, MBEDTLS_FLAGS, NULL};
 
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
@@ -239,6 +239,7 @@ static void WriteIncludes(FILE *file, const char *folder)
     SHU_UtilListDirectory(folder, true, WriteInclude, file);
 }
 
+// todo instead of having to create a unity build, we can just add the source files we need, or add a feature to exclude files from adding to module source files. !!!
 /// @brief Writes a library's unity file. Shuild leaves the old one as is if it has the same text, so the library compiles again only when its files change.
 static void WriteUnity(const Library *library, const char *path)
 {
@@ -263,6 +264,7 @@ static void WriteUnity(const Library *library, const char *path)
 static void BuildLibrary(const Library *library, const char *folder)
 {
     SHU_ModuleBegin(library->name, "dependencies/");
+    // todo why not just use SetBuildFlags ???
     SHU_CompilerClearFlags();
     SHU_CompilerAddFlags(" -std=gnu17 -fPIC -fvisibility=hidden -w");
     SHU_CompilerAddFlags(CONFIG.type == BuildType_Debug ? SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG : SHUM_FLAGS_OPTIMIZATION_HIGH " -DNDEBUG");
