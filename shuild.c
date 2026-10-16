@@ -416,10 +416,10 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
 
     if (type == SHUFileType_Directory)
     {
-        // the entry is the folder's path, with a separator at its end; its copy keeps its name
+        // the entry is the folder's path, with a separator at its end, a backslash on Windows; its copy keeps its name
         const char *name = path + strlen(path) - 1;
 
-        while (name > path && name[-1] != '/')
+        while (name > path && name[-1] != '/' && name[-1] != SHUM_PATH_SEPARATOR)
         {
             name--;
         }
@@ -427,7 +427,7 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
         char *folder = SHU_UtilFormat("%s%s", output, name);
         SHU_UtilCopyFile(path, folder);
     }
-    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h"))
+    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h") || SHU_UtilMatch(path, "*" SHUM_PATH_SEPARATOR_STR "header.h"))
     {
         SHU_UtilCopyFile(path, output);
     }
