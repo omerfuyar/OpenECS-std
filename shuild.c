@@ -91,8 +91,7 @@ int main(int argc, char **argv)
     // the presets go to bin/presets/, beside OpenECS's own
     SHUI_String folder;
     SHUI_SFormat(&folder, "%sbin/presets/", CONFIG.output);
-    SHU_UtilCreateDirectory(folder.data);
-    RunCheck("cp -rp presets/. %s", folder.data);
+    SHU_UtilCopyFile("presets/", folder.data);
 
     return 0;
 }
@@ -243,7 +242,7 @@ static void WriteIncludes(FILE *file, const char *folder)
     SHU_UtilListDirectory(folder, true, WriteInclude, file);
 }
 
-/// @brief Writes a library's unity file, and replaces the old one only if it changed, so the library compiles again only when its files change.
+/// @brief Writes a library's unity file. Shuild leaves the old one as is if it has the same text, so the library compiles again only when its files change.
 static void WriteUnity(const Library *library, const char *path)
 {
     SHUI_String fresh;
@@ -256,7 +255,11 @@ static void WriteUnity(const Library *library, const char *path)
     fputs(library->unity, file);
     WriteIncludes(file, sources.data);
     fclose(file);
-    RunCheck("cmp -s %s %s && rm %s || mv %s %s", fresh.data, path, fresh.data, fresh.data, path);
+
+    SHUSlice text = SHU_UtilReadFile(fresh.data);
+    SHU_UtilWriteFile(path, csv(text));
+    free(text.data);
+    SHU_UtilDeleteFile(fresh.data);
 }
 
 /// @brief Compiles a library of dependencies/ into a static archive in a folder. Like OpenECS's dependencies, it gets neither the warnings, nor the static analyzer, nor the sanitizers (OpenECS DESIGN 17.3).
@@ -375,6 +378,31 @@ static void BuildNative(const char *name, const char *root, const char *output)
     RunCheck("gcc -shared -o %s -Wl,--whole-archive %slib%s.a -Wl,--no-whole-archive%s", library.data, archives.data, name, link.data);
 }
 
+/// @brief Copies a file or folder of a plugin's folder into the plugin's folder of bin/plugins/, if it is a Lua file, the manifest among them, its header.h or a folder.
+static void CopyPluginFile(const char *path, SHUFileType type, void *data)
+{
+    const char *output = (const char *)data;
+
+    if (type == SHUFileType_Directory)
+    {
+        // the entry is the folder's path, with a separator at its end; its copy keeps its name
+        const char *name = path + strlen(path) - 1;
+
+        while (name > path && name[-1] != '/')
+        {
+            name--;
+        }
+
+        SHUI_String folder;
+        SHUI_SFormat(&folder, "%s%s", output, name);
+        SHU_UtilCopyFile(path, folder.data);
+    }
+    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h"))
+    {
+        SHU_UtilCopyFile(path, output);
+    }
+}
+
 /// @brief Builds a standard plugin into bin/plugins/: its C files make its native library, and its Lua files, the manifest among them, its header.h and its folders are copied.
 /// OpenECS --definitions reads types.lua and header.h from there (OpenECS DESIGN 10.10).
 static void BuildPlugin(const char *path, const char *name)
@@ -384,6 +412,6 @@ static void BuildPlugin(const char *path, const char *name)
     SHUI_SFormat(&root, "%s%s/", path, name);
     SHUI_SFormat(&output, "%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilCreateDirectory(output.data);
-    RunCheck("find %s -mindepth 1 -maxdepth 1 \\( -name '*.lua' -o -name header.h -o -type d \\) -exec cp -rp {} %s \\;", root.data, output.data);
+    SHU_UtilListDirectory(root.data, false, CopyPluginFile, (void *)output.data);
     BuildNative(name, root.data, output.data);
 }
