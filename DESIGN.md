@@ -247,7 +247,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `socket:receive()` takes the oldest message that arrived, a buffer, and its kind, `"text"` or `"binary"`. It gives nothing as the kind if no message waits. A message that the server sent in many frames comes as one. The buffer is kept until the next receive on the connection.
 - libcurl answers the server's pings. A close from the server, or the end of its connection, closes the connection.
 - `socket:close()` closes a connection and frees it now. Lua's garbage collector, or the plugin that made it, frees it otherwise.
-- HTTPS checks a server's certificate against the system's trusted certificates: the file that `SSL_CERT_FILE` names, or the one where Debian, Ubuntu, Arch, Fedora, openSUSE or Alpine keep it. The proxies that `http_proxy`, `https_proxy` and `no_proxy` name are used.
+- HTTPS checks a server's certificate against the system's trusted certificates: the file that `SSL_CERT_FILE` names, or the one where Debian, Ubuntu, Arch, Fedora, openSUSE or Alpine keep it. Windows has no such file, so there they come from its store of trusted root certificates, which crypt32 reads; net reads them the same way. The proxies that `http_proxy`, `https_proxy` and `no_proxy` name are used.
 - The plugin gives libcurl and mbedTLS SDL's allocator.
 
 ## 12. The settings window
