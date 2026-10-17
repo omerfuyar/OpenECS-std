@@ -623,6 +623,111 @@ static f32 GpuText(ECSSurface *surface, void *font, const char *text, f32 x, f32
     return frame == nullptr ? 0.0f : (f32)width / frame->scale;
 }
 
+/// @brief Fills a part of a glyphs value: the number of a texture of the text engine, and the vertices and indices of the text's glyphs in it.
+static SHUResult GpuFillGlyphPart(ECSValue *part, usz atlas, const TTF_GPUAtlasDrawSequence *sequence)
+{
+    // a vertex is x, y, u and v, four floats; the engine's y goes up from the line's top, and the vertices' y goes down, as the surface's does
+    usz vertexBytes = (usz)sequence->num_vertices * 4 * sizeof(f32);
+    usz indexBytes = (usz)sequence->num_indices * sizeof(u32);
+    f32 *vertices = SDL_malloc(vertexBytes);
+    u32 *indices = SDL_malloc(indexBytes);
+    ECSValue *field = nullptr;
+    SHUResult result = vertices == nullptr || indices == nullptr ? SHUResult_ErrAllocation : SHUResult_Ok;
+
+    for (int i = 0; result == SHUResult_Ok && i < sequence->num_vertices; i++)
+    {
+        vertices[i * 4 + 0] = sequence->xy[i].x;
+        vertices[i * 4 + 1] = -sequence->xy[i].y;
+        vertices[i * 4 + 2] = sequence->uv[i].x;
+        vertices[i * 4 + 3] = sequence->uv[i].y;
+    }
+
+    for (int i = 0; result == SHUResult_Ok && i < sequence->num_indices; i++)
+    {
+        indices[i] = (u32)sequence->indices[i];
+    }
+
+    if (result == SHUResult_Ok)
+    {
+        ECSValue_SetTable(part);
+        result = ECSValue_TableSetField(part, "atlas", &field);
+    }
+
+    if (result == SHUResult_Ok)
+    {
+        ECSValue_SetInteger(field, (i64)atlas);
+        result = ECSValue_TableSetField(part, "count", &field);
+    }
+
+    if (result == SHUResult_Ok)
+    {
+        ECSValue_SetInteger(field, sequence->num_indices);
+        result = ECSValue_TableSetField(part, "vertices", &field);
+    }
+
+    result = result ? result : ECSValue_SetBuffer(field, (SHUSliceView){vertices, vertexBytes});
+    result = result ? result : ECSValue_TableSetField(part, "indices", &field);
+    result = result ? result : ECSValue_SetBuffer(field, (SHUSliceView){indices, indexBytes});
+    SDL_free(vertices);
+    SDL_free(indices);
+    return result;
+}
+
+/// @brief Fills a glyphs value: the text's size, and a part for each texture of the text engine that holds some of its glyphs.
+static SHUResult GpuFillGlyphs(TTF_Text *drawn, ECSValue *retGlyphs)
+{
+    int width = 0;
+    int height = 0;
+    ECSValue *field = nullptr;
+    ECSValue *parts = nullptr;
+    TTF_GetTextSize(drawn, &width, &height);
+    ECSValue_SetTable(retGlyphs);
+    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "width", &field));
+    ECSValue_SetNumber(field, width);
+    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "height", &field));
+    ECSValue_SetNumber(field, height);
+    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "parts", &parts));
+    ECSValue_SetTable(parts);
+
+    for (TTF_GPUAtlasDrawSequence *sequence = TTF_GetGPUTextDrawData(drawn); sequence != nullptr; sequence = sequence->next)
+    {
+        // the engine's textures are numbered from 1 in the order gpu first meets them, and keep their numbers
+        usz atlas = 0;
+        GpuGetAtlas(sequence->atlas_texture);
+
+        while (atlas < GPU.atlasCount && GPU.atlases[atlas].glyphs != sequence->atlas_texture)
+        {
+            atlas++;
+        }
+
+        ECSValue *part = nullptr;
+
+        if (atlas == GPU.atlasCount)
+        {
+            return SHUResult_ErrInternal;
+        }
+
+        SHU_ReturnResult(ECSValue_ListAddItem(parts, &part));
+        SHU_ReturnResult(GpuFillGlyphPart(part, atlas + 1, sequence));
+    }
+
+    return SHUResult_Ok;
+}
+
+/// @brief Gives the glyphs of a text for a plugin's own pipeline: the rectangles of its glyphs in the text engine's textures, which a draw samples by number.
+static void GpuGlyphs(void *font, const char *text, f32 size, ECSValue *retGlyphs)
+{
+    TTF_Font *opened = text[0] == '\0' || GPU.textEngine == nullptr ? nullptr : GpuGetFont(GPU.FontFile(font), size);
+    TTF_Text *drawn = opened == nullptr ? nullptr : TTF_CreateText(GPU.textEngine, opened, text, 0);
+
+    if (drawn == nullptr || GpuFillGlyphs(drawn, retGlyphs) != SHUResult_Ok)
+    {
+        ECSValue_SetNil(retGlyphs);
+    }
+
+    TTF_DestroyText(drawn);
+}
+
 #pragma endregion Text
 
 #pragma region Pipelines
@@ -1000,6 +1105,13 @@ static void GpuDraw(ECSSurface *surface, GpuPipeline *pipeline, const ECSValue *
     GpuBuffer *vertices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "vertices"), "gpu.buffer");
     GpuBuffer *indices = ECSValue_GetHandle(ECSValue_GetTableField(draw, "indices"), "gpu.buffer");
     SDL_Texture *texture = ECSValue_GetHandle(ECSValue_GetTableField(draw, "texture"), "gpu.texture");
+    i64 atlas = ECSValue_GetInteger(ECSValue_GetTableField(draw, "atlas"), 0);
+
+    // a texture of the text engine's glyphs, by the number that gpu.glyphs gave, in place of a texture
+    if (texture == nullptr && atlas > 0 && atlas <= (i64)GPU.atlasCount)
+    {
+        texture = GPU.atlases[atlas - 1].texture;
+    }
 
     if (vertices == nullptr || vertices->index || (indices != nullptr && !indices->index))
     {
@@ -1144,6 +1256,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
         {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
         {"text", (ECSFunction)GpuText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text in one of draw's fonts with its line's top left at a position, and give its width"},
+        {"glyphs", (ECSFunction)GpuGlyphs, "void(handle<draw.font> font, string text, float size, out value<gpu.Glyphs?> glyphs)", "Give the glyphs of a text in one of draw's fonts at a size in pixels, for a pipeline of a plugin's own: for each texture of the glyphs, its number, which a draw's atlas samples, and the glyphs' rectangles as vertices and indices; nothing without a GPU renderer"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

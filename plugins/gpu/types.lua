@@ -36,3 +36,17 @@
 ---@field vertexUniforms? string The vertex shader's first uniform block, as std140 lays it out, such as from string.pack.
 ---@field fragmentUniforms? string The fragment shader's first uniform block.
 ---@field texture? gpu.texture The fragment shader's first sampler.
+---@field atlas? integer A texture of the text's glyphs as the fragment shader's first sampler, by the number gpu.glyphs gave, if there is no texture.
+
+---The glyphs of a text, which a plugin draws with a pipeline of its own.
+---@class gpu.Glyphs
+---@field width number The text's width in pixels.
+---@field height number The height of its line in pixels.
+---@field parts gpu.GlyphPart[] One for each texture that holds some of its glyphs.
+
+---The glyphs of a text that are in one texture of the text engine. The texture is white, with each glyph's coverage as its alpha, not premultiplied.
+---@class gpu.GlyphPart
+---@field atlas integer The texture's number, which a draw's atlas takes.
+---@field vertices string Four floats for each vertex: x and y in pixels from the line's top left, y going down, then u and v in the texture.
+---@field indices string 32-bit indices, three for each triangle, two triangles for each glyph.
+---@field count integer How many indices it has.
