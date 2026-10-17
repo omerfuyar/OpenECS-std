@@ -95,6 +95,65 @@ jobs:
       - name: Build
         run: .github/scripts/build.sh R
 
+  windows:
+    name: Windows
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: omerfuyar/OpenECS
+          ref: dev
+          submodules: recursive
+
+      # the plugins compile the libraries of this repository's own submodules in
+      - uses: actions/checkout@v4
+        with:
+          path: std
+          submodules: recursive
+
+      # LLVM-MinGW with the UCRT runtime, which OpenECS is built with, and CMake and Ninja for SDL
+      - name: Install the build tools
+        shell: pwsh
+        run: .github/scripts/install-windows.ps1
+
+      # SDL's DLLs are installed into bin/, beside the executable, and lib/ has their import libraries
+      - name: Name the dependencies' versions
+        id: dependencies
+        run: echo "key=$( (git submodule status --recursive dependencies; sha256sum shuild.c dependencies/other/*/*) | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/Debug/lib
+            build/Debug/include
+            build/Debug/bin/*.dll
+            build/Release/lib
+            build/Release/include
+            build/Release/bin/*.dll
+          key: windows-${{ steps.dependencies.outputs.key }}
+
+      - name: Build Debug with LLVM-MinGW
+        run: .github/scripts/build.sh D
+
+      - name: Run the examples' tests
+        run: .github/scripts/test.sh build/Debug/bin/OpenECS.exe
+
+      - name: Build Release with LLVM-MinGW
+        run: .github/scripts/build.sh R
+
+      - name: Keep the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: build/*.log
+
   lua:
     name: Lua (LuaLS)
     runs-on: ubuntu-24.04
