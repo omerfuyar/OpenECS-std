@@ -30,6 +30,12 @@
 #include <mbedtls/ssl.h>
 #include <psa/crypto.h>
 
+// Windows keeps its trusted certificates in a store of its own, which crypt32 reads
+#if defined(SDL_PLATFORM_WINDOWS)
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 #pragma region Source Only
 
 /// @brief The most hosts a UDP socket keeps resolved, so that sending to them again does not resolve them again.
@@ -125,6 +131,33 @@ static const char *NetFindCertificates(void)
     return nullptr;
 }
 
+#if defined(SDL_PLATFORM_WINDOWS)
+/// @brief Adds the certificates of Windows' store of trusted root certificates to the trusted ones. Gives how many it added.
+static usz NetReadWindowsCertificates(void)
+{
+    HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
+    usz count = 0;
+
+    if (store == nullptr)
+    {
+        return 0;
+    }
+
+    // each call frees the certificate it is given, and the last one gives nullptr
+    for (PCCERT_CONTEXT certificate = CertEnumCertificatesInStore(store, nullptr); certificate != nullptr; certificate = CertEnumCertificatesInStore(store, certificate))
+    {
+        if ((certificate->dwCertEncodingType & X509_ASN_ENCODING) != 0 &&
+            mbedtls_x509_crt_parse_der(&NET.certificates, certificate->pbCertEncoded, certificate->cbCertEncoded) == 0)
+        {
+            count++;
+        }
+    }
+
+    CertCloseStore(store, 0);
+    return count;
+}
+#endif
+
 /// @brief Makes what TLS connections share, once: the random generator, the trusted certificates and the configuration of a client.
 static void NetTLSStop(void);
 
@@ -141,11 +174,17 @@ static bool NetTLSStart(void)
     mbedtls_ctr_drbg_init(&NET.random);
     NET.tlsReady = true;
 
+    // a file of trusted certificates comes first; Windows has none, so its store is read when SSL_CERT_FILE names none
     const char *file = NetFindCertificates();
+    bool trusted = file != nullptr && mbedtls_x509_crt_parse_file(&NET.certificates, file) >= 0;
 
-    if (file == nullptr || mbedtls_x509_crt_parse_file(&NET.certificates, file) < 0)
+#if defined(SDL_PLATFORM_WINDOWS)
+    trusted = trusted || NetReadWindowsCertificates() > 0;
+#endif
+
+    if (!trusted)
     {
-        ECS_LogWarn(NET.plugin, "No file of trusted certificates can be read, so TLS connections fail; SSL_CERT_FILE can name one");
+        ECS_LogWarn(NET.plugin, "No trusted certificates can be read, so TLS connections fail; SSL_CERT_FILE can name a file of them");
     }
 
     if (psa_crypto_init() != PSA_SUCCESS ||
