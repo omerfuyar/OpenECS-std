@@ -3,7 +3,6 @@
 // It builds each plugin into bin/plugins/, and copies the presets into bin/presets/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
-#define SHUC_MAX_COMMAND_BUFFER_SIZE 65536 // a library of many files is packed with one command that names each of them
 #include "shuild/shuild.h"
 
 #pragma region Setup
@@ -23,8 +22,11 @@ static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDeb
 static struct
 {
     BuildType type;
-    const char *output; // OpenECS's build folder, such as ../build/Debug/
-} CONFIG = {BuildType_Debug, NULL};
+    const char *output;   // OpenECS's build folder, such as ../build/Debug/
+    const char *compiler; // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
+    bool windows;         // the compiler compiles for Windows
+    char *cache;          // shuild's cache, such as .shu/Debug/
+} CONFIG = {BuildType_Debug, NULL, "gcc", false, NULL};
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
 typedef struct Library
@@ -35,6 +37,7 @@ typedef struct Library
     const char *headers[3];          // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
     const char *flags;               // the definitions it is configured with
     const struct Library *links[2];  // the libraries it uses, whose headers it gets by linking them, ending with NULL
+    const char *windowsLinks[5];     // the Windows libraries it uses, ending with NULL
 } Library;
 
 /// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ of the headers and sources its C files include, and the libraries it takes, whose headers it gets by linking them.
@@ -44,6 +47,7 @@ typedef struct PluginNeeds
     const char *includes[3];     // ending with NULL
     const char *flags;           // definitions for its C files, or NULL
     const Library *libraries[3]; // ending with NULL
+    const char *windowsLinks[4]; // the Windows libraries it uses, ending with NULL
     bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
 } PluginNeeds;
 
@@ -51,16 +55,16 @@ typedef struct PluginNeeds
 #define MBEDTLS_FLAGS " '-DMBEDTLS_USER_CONFIG_FILE=<mbedtls_user_config.h>'"
 
 // curl is configured by a glue header, which HAVE_CONFIG_H names, in place of its configure script, for HTTP and HTTPS with mbedTLS
-static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}};
-static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/lib", NULL}, {"curl/include", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB", {&MBEDTLS, NULL}};
+static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}, {"bcrypt", NULL}};
+static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/lib", NULL}, {"curl/include", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB", {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", "bcrypt"}};
 
-// every standard plugin links nothing but OpenECS and the SDL libraries beside it; the code of its other libraries is compiled into it
+// every standard plugin links nothing but OpenECS and the SDL libraries beside it, and on Windows the system's libraries it uses; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
-    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, false},
-    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, false},
-    {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, false},
-    {"gltf", {"cgltf", NULL}, NULL, {NULL}, false},
-    {"web", {NULL}, MBEDTLS_FLAGS, {&CURL, &MBEDTLS, NULL}, true},
+    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
+    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, {NULL}, false},
+    {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", NULL}, false},
+    {"gltf", {"cgltf", NULL}, NULL, {NULL}, {NULL}, false},
+    {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {NULL}, true},
 };
 
 #pragma endregion Setup
@@ -74,9 +78,25 @@ static void BuildPlugin(const char *path, const char *name);
 
 #pragma endregion Declarations
 
+/// @brief The compiler that the flags name, or gcc.
+static const char *CompilerArgument(int argc, char **argv)
+{
+    for (int i = 1; i + 1 < argc; i++)
+    {
+        if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--compiler"))
+        {
+            return argv[i + 1];
+        }
+    }
+
+    return CONFIG.compiler;
+}
+
 int main(int argc, char **argv)
 {
-    SHU_CompilerTryConfigure("gcc");
+    CONFIG.compiler = CompilerArgument(argc, argv);
+    SHU_CompilerTryConfigure(CONFIG.compiler);
+    CONFIG.windows = SHU_CompilerGetTarget() == SHUM_PLATFORM_WINDOWS;
     SetupConfiguration(argc, argv);
 
     // each folder of plugins/ is a standard plugin
@@ -96,6 +116,7 @@ static void PrintUsageAndExit(int status)
            "Flags:\n"
            "  -o, --output FOLDER  OpenECS's build folder, named from this folder, such as ../build/Debug/\n"
            "  -b, --build TYPE     Build type: debug (the default), release, relwithdebinfo or minsizerel\n"
+           "  -c, --compiler CC    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n"
            "  -h, --help           Show this help\n");
     exit(status);
 }
@@ -134,6 +155,11 @@ static void SetupConfiguration(int argc, char **argv)
         {
             CONFIG.output = i + 1 < argc ? argv[++i] : NULL;
         }
+        else if (!strcmp(flag, "-c") || !strcmp(flag, "--compiler"))
+        {
+            // main configured the compiler already
+            i++;
+        }
         else if (!strcmp(flag, "-h") || !strcmp(flag, "--help"))
         {
             PrintUsageAndExit(0);
@@ -149,24 +175,42 @@ static void SetupConfiguration(int argc, char **argv)
         Refuse("The output folder is missing, or does not end with /", CONFIG.output == NULL ? "" : CONFIG.output);
     }
 
-    char *cache = SHU_UtilFormat(".shu/%s/", BUILD_TYPE_STRINGS[CONFIG.type]);
-    SHU_CacheConfigure(cache);
+    // a build for another system has a cache of its own, as OpenECS's build has a folder of its own
+    u8 target = SHU_CompilerGetTarget();
+    CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPE_STRINGS[CONFIG.type], SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUM_PLATFORM_GET_STRING(target));
+    SHU_CacheConfigure(CONFIG.cache);
 }
 
-// the plugins get OpenECS's warnings, and in Debug its static analyzer and sanitizers, as OpenECS's own code does;
+// the plugins get OpenECS's warnings, and in Debug gcc's static analyzer and the sanitizers, as OpenECS's own code does, except where MinGW has no sanitizers;
 // the libraries they compile in get none of them, like OpenECS's dependencies (OpenECS DESIGN 17.3), and are C17 with GNU extensions, compiled to go into a plugin's library
 static void SetBuildFlags(bool ownCode)
 {
     SHU_CompilerClearFlags();
-    SHU_CompilerAddFlags(ownCode ? SHUM_FLAGS_STANDARD_C23 : " -std=gnu17 -fPIC -w");
+    SHU_CompilerAddFlags(ownCode ? SHUM_FLAGS_STANDARD_C23 : " -std=gnu17 -w");
     SHU_CompilerAddFlags(" -fvisibility=hidden");
+
+    // code for a DLL is always position independent
+    if (!ownCode && !CONFIG.windows)
+    {
+        SHU_CompilerAddFlags(" -fPIC");
+    }
 
     switch (CONFIG.type)
     {
     case BuildType_Debug:
         if (ownCode)
         {
-            SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID " -fanalyzer -fsanitize=address,undefined -fno-omit-frame-pointer");
+            SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID);
+
+            if (SHU_CompilerGetIdentifier() == SHUM_COMPILER_GCC)
+            {
+                SHU_CompilerAddFlags(" -fanalyzer");
+            }
+
+            if (!CONFIG.windows)
+            {
+                SHU_CompilerAddFlags(" -fsanitize=address,undefined -fno-omit-frame-pointer");
+            }
         }
         SHU_CompilerAddFlags(SHUM_FLAGS_DEBUG SHUM_FLAGS_OPTIMIZATION_DEBUG);
         SHU_CompilerAddDefinitions("DEBUG", NULL, "SDL_ASSERT_LEVEL", "2");
@@ -262,6 +306,12 @@ static void BuildLibrary(const Library *library, const char *folder)
         SHU_ModuleLinkLibrary(library->links[i]->name);
     }
 
+    // the system's libraries go to the plugin that links this one
+    for (usz i = 0; CONFIG.windows && library->windowsLinks[i] != NULL; i++)
+    {
+        SHU_ModuleLinkLibrary(library->windowsLinks[i]);
+    }
+
     // each C file compiles alone, in parallel, and the compiler finds its headers with the library's definitions
     SHU_ModuleAddSourceFile(library->sources);
     SHU_ModuleCompile(folder, SHUModuleType_LibraryStatic);
@@ -295,7 +345,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
     }
 
     // the libraries it takes are compiled first, into static archives that its native library is linked with
-    char *archives = SHU_UtilFormat(".shu/%s/archives/", BUILD_TYPE_STRINGS[CONFIG.type]);
+    char *archives = SHU_UtilFormat("%sarchives/", CONFIG.cache);
 
     for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
@@ -307,7 +357,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
     // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
-    if (needs != NULL && !needs->analyze)
+    if (needs != NULL && !needs->analyze && SHU_CompilerGetIdentifier() == SHUM_COMPILER_GCC)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }
@@ -342,6 +392,20 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleLinkLibrary(needs->libraries[i]->name);
     }
 
+    // a DLL calls OpenECS and SDL through their import libraries, in OpenECS's lib/ (OpenECS DESIGN 17.2); elsewhere the calls are resolved when it is loaded
+    if (CONFIG.windows)
+    {
+        SHU_ModuleAddLibraryDirectory(SHU_UtilFormat("%slib/", CONFIG.output));
+        SHU_ModuleLinkLibrary("OpenECS");
+        SHU_ModuleLinkLibrary("SDL3_ttf");
+        SHU_ModuleLinkLibrary("SDL3");
+
+        for (usz i = 0; needs != NULL && needs->windowsLinks[i] != NULL; i++)
+        {
+            SHU_ModuleLinkLibrary(needs->windowsLinks[i]);
+        }
+    }
+
     SHU_ModuleCompile(output, SHUModuleType_LibraryDynamic);
 }
 
@@ -352,10 +416,10 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
 
     if (type == SHUFileType_Directory)
     {
-        // the entry is the folder's path, with a separator at its end; its copy keeps its name
+        // the entry is the folder's path, with a separator at its end, a backslash on Windows; its copy keeps its name
         const char *name = path + strlen(path) - 1;
 
-        while (name > path && name[-1] != '/')
+        while (name > path && name[-1] != '/' && name[-1] != SHUM_PATH_SEPARATOR)
         {
             name--;
         }
@@ -363,7 +427,7 @@ static void CopyPluginFile(const char *path, SHUFileType type, void *data)
         char *folder = SHU_UtilFormat("%s%s", output, name);
         SHU_UtilCopyFile(path, folder);
     }
-    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h"))
+    else if (SHU_UtilMatch(path, "*.lua") || SHU_UtilMatch(path, "*/header.h") || SHU_UtilMatch(path, "*" SHUM_PATH_SEPARATOR_STR "header.h"))
     {
         SHU_UtilCopyFile(path, output);
     }

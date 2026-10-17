@@ -6,7 +6,18 @@
 #define _DEFAULT_SOURCE
 #define SDL_DECLSPEC
 #define HAVE_GETIFADDRS
+// on Windows, SDL_net names its socket functions read and write, which MinGW's io.h declares too, so they get names of their own here;
+// io.h comes first, so its declarations keep theirs
+#ifdef _WIN32
+#include <io.h>
+#define read NetSocketRead
+#define write NetSocketWrite
+#endif
 #include "src/SDL_net.c"
+#ifdef _WIN32
+#undef read
+#undef write
+#endif
 
 #include "OpenECS.h"
 
@@ -170,7 +181,7 @@ static void NetTLSStop(void)
 static char *NetFull(const char *path)
 {
     char *full = nullptr;
-    return SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
+    return SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
 }
 
 /// @brief Adds the certificates of a PEM file to the trusted ones, which later TLS connections check servers with.
