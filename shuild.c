@@ -124,7 +124,7 @@ static void PrintUsageAndExit(int status)
 /// @brief Stops the build with what is wrong, the argument, and the usage.
 static void Refuse(const char *what, const char *argument)
 {
-    SHU_LogError(0, "%s: " SHUM_COLOR_RED("'%s'"), what, argument);
+    SHU_UtilFail(0, "%s: " SHUM_LOG_VALUE("%s"), what, argument);
     PrintUsageAndExit(1);
 }
 
