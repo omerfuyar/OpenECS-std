@@ -1,6 +1,6 @@
 // The build of OpenECS's standard plugins. It runs inside a checkout of OpenECS, in its std/ folder: OpenECS's shuild.c compiles this file with shu and shuild
 // from OpenECS's dependencies/ into shuild.ignore here, and runs it with the build type and OpenECS's build folder (DESIGN 1).
-// It builds each plugin into bin/plugins/, and copies the presets into bin/presets/.
+// It builds each plugin into bin/plugins/, copies the presets into bin/presets/, and cglm's headers into include/cglm/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
 #include "shuild/shuild.h"
@@ -64,6 +64,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, {NULL}, false},
     {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", NULL}, false},
     {"gltf", {"cgltf", NULL}, NULL, {NULL}, {NULL}, false},
+    {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {"crypt32", NULL}, true},
 };
 
@@ -98,6 +99,9 @@ int main(int argc, char **argv)
     SHU_CompilerTryConfigure(CONFIG.compiler);
     CONFIG.windows = SHU_CompilerGetTarget() == SHUM_PLATFORM_WINDOWS;
     SetupConfiguration(argc, argv);
+
+    // cglm's headers go to OpenECS's include/, beside SDL's, so C plugins get cglm through the cglm plugin's header (DESIGN 16)
+    SHU_UtilCopyFile("dependencies/cglm/include/cglm/", SHU_UtilFormat("%sinclude/cglm/", CONFIG.output));
 
     // each folder of plugins/ is a standard plugin
     ForEachFolder("plugins/", BuildPlugin);
