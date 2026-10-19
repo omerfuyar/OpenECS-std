@@ -28,7 +28,10 @@ git clone --recursive https://github.com/omerfuyar/OpenECS.git
 cd OpenECS
 .github/scripts/build.sh D
 .github/scripts/test.sh build/Debug/bin/OpenECS
+.github/scripts/test-wayland.sh build/Debug/bin/OpenECS
 ```
+
+`test-wayland.sh` runs the tests on Wayland, in a headless sway, as OpenECS's README.md says.
 
 OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `test.sh` runs each example's test, and each plugin has an example.
 
