@@ -40,3 +40,5 @@ Each plugin needs nothing but OpenECS: the libraries it uses are compiled into i
 ## Releases
 
 This repository is released with OpenECS, at the same time and with the same version. Each release has a description in `.github/release-notes/`.
+
+Each release also has these plugins built for Linux and Windows, with OpenECS of the same version: `plugins/`, `presets/` and the plugins' definition files in `include/`. Unpack it into an OpenECS folder of that version.
