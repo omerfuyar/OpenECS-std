@@ -19,6 +19,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 13. The launcher
 14. The panel list
 15. gpu
+16. linear
 
 ## 1. Rules
 
@@ -339,3 +340,25 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Panel textures are `B8G8R8A8_UNORM`, so a pipeline's colour target is too.
 - The types of the descriptions are in the plugin's `types.lua`, for editors (OpenECS DESIGN 10.10).
 - Compiling shaders from source at run time is not yet in gpu (OpenECS TODO).
+
+## 16. linear
+
+- The `linear` plugin does the math of 3D scenes and shaders: vectors, 4 by 4 matrices and quaternions of 32-bit floats. It is a native plugin, so the math runs in C, from Lua and C alike.
+- Each is a buffer of floats in native byte order, a string in Lua: a vector has 2, 3 or 4, a quaternion 4, x, y, z and w as glTF has them, and a matrix 16, column by column, as shaders read them and as gltf's `pose` gives them. So a matrix goes into gpu's uniforms as it is, and uniforms are matrices and vectors joined: `vertexUniforms = model .. viewProjection`.
+- Its name is not `math`, which `require` would give as Lua's own library.
+- Its functions give a new buffer each:
+
+  | Function                                                    | Does                                                                                                                         |
+  | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+  | `vec2`, `vec3`, `vec4`, `components`                        | Make a vector of floats, and give its floats back, 0 for those it lacks.                                                     |
+  | `add`, `subtract`, `scale`, `lerp`                          | Add and subtract vectors, or matrices, of as many floats, multiply one by a number, and give the point between two.          |
+  | `dot`, `length`, `normalize`, `cross`                       | The dot product, a vector's length, the vector of length 1 in its direction, and the cross product of two vectors of 3 floats. |
+  | `identity`, `multiply`, `transform`, `transpose`, `inverse` | The matrix that changes nothing; multiply two matrices, a matrix and a vector, swap a matrix's rows and columns, and undo it. |
+  | `translation`, `scaling`, `rotation`                        | The matrices that move, scale, and turn by an angle in radians around an axis.                                               |
+  | `perspective`, `orthographic`, `lookAt`                     | The projections, with and without perspective, and a camera's matrix.                                                        |
+  | `quaternion`, `quaternionMultiply`, `slerp`, `quaternionMatrix`, `compose` | A quaternion of an axis and an angle, two turns in one, the turn between two, its matrix, and a glTF node's matrix of its translation, rotation and scale. |
+
+- `multiply(a, b)` does b, then a, as shaders multiply. `transform` takes a vector of 4 floats as it is, and one of 3 as a point: its w is 1, and the result is divided by its own w, as a perspective needs.
+- The projections see down -z, with the depth from 0, near, to 1, far, as SDL's GPU API takes it, and y up. A turn is counterclockwise as its axis points at the viewer.
+- A buffer of the wrong size is reported, and the function gives an empty buffer; so does `inverse` for a matrix that has none.
+- The math is in the plugin's `header.h`, as inline functions on arrays of floats, such as `Linear_Multiply(out, a, b)`, whose result may be one of their inputs. `linear.h` ends with it (OpenECS DESIGN 10.10), so a C plugin calls them with no call to linear. It needs only C's `math.h` and `string.h`, as `include/` has no SDL headers. The plugin's functions for Lua call the same functions, and keep each result until the next call, as Lua copies it.
