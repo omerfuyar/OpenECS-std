@@ -19,6 +19,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 13. The launcher
 14. The panel list
 15. gpu
+16. cglm
 
 ## 1. Rules
 
@@ -27,7 +28,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, SDL_net, libcurl and mbedTLS. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, SDL_net, libcurl and mbedTLS. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too.
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
 - Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts.
@@ -339,3 +340,26 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Panel textures are `B8G8R8A8_UNORM`, so a pipeline's colour target is too.
 - The types of the descriptions are in the plugin's `types.lua`, for editors (OpenECS DESIGN 10.10).
 - Compiling shaders from source at run time is not yet in gpu (OpenECS TODO).
+
+## 16. cglm
+
+- The `cglm` plugin is the binding of [cglm](https://github.com/recp/cglm), a C library of the math of 3D scenes and shaders: vectors, matrices, quaternions, cameras and noise. It gives cglm to Lua, and C plugins call cglm itself.
+- Each vector, quaternion and matrix is a buffer of 32-bit floats in native byte order, a string in Lua: a vector has 2, 3 or 4, a quaternion 4, x, y, z and w, and a 4 by 4 matrix 16, column by column, as cglm and shaders keep them and as gltf's `pose` gives them. So a matrix goes into gpu's uniforms as it is, and uniforms are matrices and vectors joined: `vertexUniforms = model .. viewProjection`.
+- A function is named as cglm's, without `glm_` and in camelCase, and takes its parameters in cglm's order; it gives what cglm writes into `dest`. So `glm_mat4_mul(m1, m2, dest)` is `cglm.mat4Mul(m1, m2)`, and cglm's documentation tells what each does:
+
+  | Functions                                                                          | Do                                                                                                   |
+  | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+  | `vec2`, `vec3`, `vec4`, `components`                                                | Make a vector of floats, and give its floats back, 0 for those it lacks. These are the plugin's own. |
+  | `vec2Add`, `vec2Sub`, `vec2Scale`, `vec2Dot`, `vec2Norm`, `vec2Distance`, `vec2Normalize`, `vec2Lerp`, and the same for `vec3` and `vec4` | cglm's functions of vectors; `vecNNormalize` is cglm's `normalize_to`.                               |
+  | `vec3Cross`                                                                         | The cross product.                                                                                   |
+  | `mat4Identity`, `mat4Mul`, `mat4Mulv`, `mat4Mulv3`, `mat4Transpose`, `mat4Det`, `mat4Inv` | cglm's functions of matrices; `mat4Transpose` is `transpose_to`.                                     |
+  | `translateMake`, `scaleMake`, `rotateMake`, `translate`, `rotate`, `scale`         | The matrices that move, scale and turn; the last three give the matrix they change.                  |
+  | `perspective`, `ortho`, `lookat`, `project`                                        | Projections, a camera, and where a point is in a viewport.                                           |
+  | `quatIdentity`, `quat`, `quatv`, `quatMul`, `quatNormalize`, `quatSlerp`, `quatMat4`, `quatRotatev` | Quaternions; `quatNormalize` is `normalize_to`.                                                       |
+  | `perlinVec2`, `perlinVec3`, `perlinVec4`                                           | Perlin noise at a point.                                                                             |
+
+- The projections give a depth from 0, near, to 1, far, as SDL's GPU API takes it: the plugin and its header define `CGLM_FORCE_DEPTH_ZERO_TO_ONE` before cglm's header. They see down -z, as cglm's do.
+- A buffer of the wrong size is reported, and the function gives an empty buffer; so does `mat4Inv` for a matrix whose determinant is 0, which cglm would invert anyway.
+- cglm is a submodule in `dependencies/`, at a release tag. Its functions are inline, in its headers, so the plugin compiles the ones it uses into itself.
+- The build copies cglm's headers into OpenECS's `include/cglm/`, beside SDL's, and the plugin's `header.h` includes them, so `cglm.h` (OpenECS DESIGN 10.10) ends with all of cglm. A C plugin includes `cglm.h` and calls cglm's functions, such as `glm_mat4_mul`, with no call to the plugin. OpenECS's release has the headers in its `include/` too.
+- The plugin's functions for Lua keep each result until the next call, as Lua copies it.

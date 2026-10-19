@@ -19,3 +19,6 @@
 [submodule "dependencies/mbedtls"]
 	path = dependencies/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "dependencies/cglm"]
+	path = dependencies/cglm
+	url = https://github.com/recp/cglm.git
