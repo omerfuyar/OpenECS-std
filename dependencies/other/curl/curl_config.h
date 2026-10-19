@@ -1,13 +1,7 @@
 // The configuration of libcurl for the web plugin, in place of the one curl's configure script or CMake would write.
-// It is for Linux with glibc, on x86_64 and aarch64: HTTP, HTTPS and WebSockets only, TLS from mbedTLS, and names resolved on a thread of their own.
+// It is for Linux with glibc, on x86_64 and aarch64, and for Windows on x86_64 with MinGW: HTTP, HTTPS and WebSockets only, TLS from mbedTLS,
+// and names resolved on a thread of their own.
 #pragma once
-
-// glibc's POSIX and GNU functions, which strict C leaves out
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
-#define CURL_OS "Linux"
 
 // protocols and features the web plugin does not use
 #define CURL_DISABLE_ALTSVC 1
@@ -34,6 +28,70 @@
 #define USE_IPV6 1
 #define USE_MBEDTLS 1
 #define USE_RESOLV_THREADED 1
+
+#if defined(_WIN32)
+
+#define CURL_OS "Windows"
+#define USE_THREADS_WIN32 1
+
+// what MinGW's runtime and Winsock have
+#define HAVE_ADDRESS_FAMILY 1
+#define HAVE_ATOMIC 1
+#define HAVE_BOOL_T 1
+#define HAVE_DIRENT_H 1
+#define HAVE_FCNTL_H 1
+#define HAVE_FREEADDRINFO 1
+#define HAVE_FTRUNCATE 1
+#define HAVE_GETADDRINFO 1
+#define HAVE_GETADDRINFO_THREADSAFE 1
+#define HAVE_GETHOSTNAME 1
+#define HAVE_GETPEERNAME 1
+#define HAVE_GETSOCKNAME 1
+#define HAVE_GETTIMEOFDAY 1
+#define HAVE_IF_NAMETOINDEX 1
+#define HAVE_IOCTLSOCKET 1
+#define HAVE_IOCTLSOCKET_FIONBIO 1
+#define HAVE_LIBGEN_H 1
+#define HAVE_LOCALE_H 1
+#define HAVE_OPENDIR 1
+#define HAVE_RECV 1
+#define HAVE_SELECT 1
+#define HAVE_SEND 1
+#define HAVE_SETLOCALE 1
+#define HAVE_SIGNAL 1
+#define HAVE_SNPRINTF 1
+#define HAVE_SOCKADDR_IN6_SIN6_SCOPE_ID 1
+#define HAVE_SOCKET 1
+#define HAVE_STDATOMIC_H 1
+#define HAVE_STDBOOL_H 1
+#define HAVE_STRCASECMP 1
+#define HAVE_STRINGS_H 1
+#define HAVE_STRUCT_SOCKADDR_STORAGE 1
+#define HAVE_STRUCT_TIMEVAL 1
+#define HAVE_SYS_PARAM_H 1
+#define HAVE_SYS_TYPES_H 1
+#define HAVE_SYS_UTIME_H 1
+#define HAVE_UNISTD_H 1
+#define HAVE_UTIME 1
+
+// the sizes of types on 64-bit Windows, where a long is 4 bytes and a socket 8
+#define SIZEOF_CURL_OFF_T 8
+#define SIZEOF_CURL_SOCKET_T 8
+#define SIZEOF_INT 4
+#define SIZEOF_LONG 4
+#define SIZEOF_OFF_T 8
+#define SIZEOF_SIZE_T 8
+#define SIZEOF_TIME_T 8
+#define _FILE_OFFSET_BITS 64
+
+#else
+
+// glibc's POSIX and GNU functions, which strict C leaves out
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#define CURL_OS "Linux"
 #define HAVE_THREADS_POSIX 1
 
 // what glibc has
@@ -143,3 +201,5 @@
 #define SIZEOF_SIZE_T 8
 #define SIZEOF_TIME_T 8
 #define _FILE_OFFSET_BITS 64
+
+#endif

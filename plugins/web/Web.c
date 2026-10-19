@@ -10,6 +10,12 @@
 #include <curl/curl.h>
 #include <mbedtls/platform.h>
 
+// Windows keeps its trusted certificates in a store of its own, which crypt32 reads
+#if defined(SDL_PLATFORM_WINDOWS)
+#include <windows.h>
+#include <wincrypt.h>
+#endif
+
 #pragma region Source Only
 
 /// @brief The most redirects a request follows.
@@ -78,6 +84,8 @@ static struct
     WebRequest *wake;      // connections with messages to send
     bool quit;
     const char *certificates; // the system's file of trusted certificates, or nullptr
+    char *storeCertificates;  // on Windows without such a file, the certificates of its store as PEM text that ends with a zero, or nullptr
+    usz storeLength;          // of storeCertificates, with its zero
     WebRequest *all;          // main thread: every request that is not freed
     ECSTimer timer;           // main thread: calls the functions of the requests that are done, while some wait
 } WEB = {0};
@@ -461,8 +469,73 @@ static const char *WebFindCertificates(void)
         }
     }
 
-    ECS_LogWarn(WEB.plugin, "No file of trusted certificates is found, so HTTPS requests fail; SSL_CERT_FILE can name one");
     return nullptr;
+}
+
+#if defined(SDL_PLATFORM_WINDOWS)
+/// @brief Gives the certificates of Windows' store of trusted root certificates as PEM text that ends with a zero, which libcurl takes as a blob, or nullptr. Free it with SDL_free.
+static char *WebReadWindowsCertificates(usz *retLength)
+{
+    HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
+    char *text = nullptr;
+    usz length = 0;
+
+    if (store == nullptr)
+    {
+        return nullptr;
+    }
+
+    // each call frees the certificate it is given, and the last one gives nullptr
+    PCCERT_CONTEXT certificate = nullptr;
+
+    while ((certificate = CertEnumCertificatesInStore(store, certificate)) != nullptr)
+    {
+        // the first call gives the size with the zero; the second writes the text, between BEGIN and END CERTIFICATE lines, and gives its size without it
+        DWORD size = 0;
+
+        if (CryptBinaryToStringA(certificate->pbCertEncoded, certificate->cbCertEncoded, CRYPT_STRING_BASE64HEADER, nullptr, &size))
+        {
+            char *more = SDL_realloc(text, length + size + 1);
+
+            if (more == nullptr)
+            {
+                CertFreeCertificateContext(certificate);
+                break;
+            }
+
+            text = more;
+
+            if (CryptBinaryToStringA(certificate->pbCertEncoded, certificate->cbCertEncoded, CRYPT_STRING_BASE64HEADER, text + length, &size))
+            {
+                length += size;
+            }
+        }
+    }
+
+    CertCloseStore(store, 0);
+
+    if (text == nullptr || length == 0)
+    {
+        SDL_free(text);
+        return nullptr;
+    }
+
+    text[length] = '\0';
+    *retLength = length + 1;
+    return text;
+}
+#endif
+
+/// @brief Sets the trusted certificates that a request checks its server with.
+static bool WebSetCertificates(CURL *easy)
+{
+    if (WEB.storeCertificates != nullptr)
+    {
+        struct curl_blob blob = {.data = WEB.storeCertificates, .len = WEB.storeLength, .flags = CURL_BLOB_NOCOPY};
+        return curl_easy_setopt(easy, CURLOPT_CAINFO_BLOB, &blob) == CURLE_OK;
+    }
+
+    return WEB.certificates == nullptr || curl_easy_setopt(easy, CURLOPT_CAINFO, WEB.certificates) == CURLE_OK;
 }
 
 /// @brief Sets a request's method and body: a body makes it a POST, unless the method names another.
@@ -566,7 +639,7 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
               curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, (long)(SDL_max(timeout, 0.0) * 1000.0)) == CURLE_OK &&
-              (WEB.certificates == nullptr || curl_easy_setopt(easy, CURLOPT_CAINFO, WEB.certificates) == CURLE_OK) &&
+              WebSetCertificates(easy) &&
               WebSetMethod(easy, method, body);
 
     ok = ok && curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
@@ -683,7 +756,7 @@ static WebRequest *WebSocketOpen(const char *url, const ECSValue *headers)
               curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, (long)(SDL_max(timeout, 0.0) * 1000.0)) == CURLE_OK &&
-              (WEB.certificates == nullptr || curl_easy_setopt(easy, CURLOPT_CAINFO, WEB.certificates) == CURLE_OK) &&
+              WebSetCertificates(easy) &&
               curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
 
     if (!ok)
@@ -809,6 +882,7 @@ static void WebQuit(void *data)
     }
 
     SDL_DestroyMutex(WEB.lock);
+    SDL_free(WEB.storeCertificates);
     SDL_zero(WEB);
 }
 
@@ -831,7 +905,17 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         return SHUResult_ErrInternal;
     }
 
+    // a file of trusted certificates comes first; Windows has none, so its store is read when SSL_CERT_FILE names none
     WEB.certificates = WebFindCertificates();
+
+#if defined(SDL_PLATFORM_WINDOWS)
+    WEB.storeCertificates = WEB.certificates == nullptr ? WebReadWindowsCertificates(&WEB.storeLength) : nullptr;
+#endif
+
+    if (WEB.certificates == nullptr && WEB.storeCertificates == nullptr)
+    {
+        ECS_LogWarn(plugin, "No trusted certificates are found, so HTTPS requests fail; SSL_CERT_FILE can name a file of them");
+    }
 
     const ECSSettingDesc timeout = {
         .name = "timeout",

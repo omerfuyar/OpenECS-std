@@ -1,6 +1,6 @@
 // The fs standard plugin: what Lua's io and os libraries cannot do with files and folders (DESIGN 10).
 // It lists folders, tells what a path is, makes folders, copies files and finds the user's folders, with SDL's filesystem functions.
-// It watches folders for changes with the system's own way, inotify on Linux, which SDL does not offer.
+// It watches folders for changes with inotify on Linux, which SDL does not offer, and elsewhere by reading the folders again and again.
 // Lua's os.rename and os.remove move and remove files and folders, so fs does not.
 
 #include "OpenECS.h"
@@ -20,16 +20,30 @@
 /// @brief How many reads of changes one call makes at most; the rest waits for the next call.
 #define FS_WATCH_READS 8
 
+/// @brief How often, in seconds, a watched folder is read again where there is no inotify.
+#define FS_POLL_INTERVAL 0.5
+
 /// @brief The function that hears a change in a watched folder: void(string folder, string name, string change). It is a kept callback (OpenECS DESIGN 10.4).
 typedef void (*FsChangedFunction)(const char *folder, const char *name, const char *change);
+
+/// @brief An entry of a watched folder as it was last read, where there is no inotify: a change of its size or time is a change of the file.
+typedef struct FsEntry
+{
+    char *name;
+    SDL_Time modified;
+    Uint64 size;
+} FsEntry;
 
 /// @brief A watched folder. Its handle is fs.watch.
 typedef struct FsWatch
 {
     char *folder;  // as it was given, ending with a separator
-    int descriptor; // inotify's watch, which watches of the same folder share
+    int descriptor; // inotify's watch, which watches of the same folder share, or -1
     FsChangedFunction Changed;
     bool stopped; // stopped while changes were being told; freed after them
+    char *full;   // the folder's full path, which is read again where there is no inotify
+    FsEntry *entries; // its entries as they were last read, sorted by name, where there is no inotify
+    usz entryCount;
 } FsWatch;
 
 static struct
@@ -46,7 +60,7 @@ static struct
 static char *FsFull(const char *path)
 {
     char *full = nullptr;
-    return SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
+    return SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : full;
 }
 
 static const char *FsTypeName(SDL_PathType type)
@@ -219,6 +233,14 @@ static void FsFreeWatch(FsWatch *watch)
     }
 
     ECSService_ReleaseCallback((ECSFunction)watch->Changed);
+
+    for (usz i = 0; i < watch->entryCount; i++)
+    {
+        SDL_free(watch->entries[i].name);
+    }
+
+    SDL_free(watch->entries);
+    SDL_free(watch->full);
     SDL_free(watch->folder);
     SDL_free(watch);
 
@@ -240,12 +262,12 @@ static void FsStop(FsWatch *watch)
     FsFreeWatch(watch);
 }
 
+#ifdef __linux__
 /// @brief Reads the changes of the watched folders, and tells each watch of its folder's.
 static void FsReadChanges(void *data)
 {
     (void)data;
 
-#ifdef __linux__
     alignas(struct inotify_event) char buffer[4096];
     ssize_t length = 0;
     FS.telling = true;
@@ -282,8 +304,136 @@ static void FsReadChanges(void *data)
             FsFreeWatch(FS.watches[i - 1]);
         }
     }
-#endif
 }
+
+#else
+/// @brief What FsReadFolder gathers.
+typedef struct FsEntries
+{
+    const char *folder;
+    FsEntry *entries;
+    usz count;
+    bool failed;
+} FsEntries;
+
+static SDL_EnumerationResult SDLCALL FsAddEntry(void *data, const char *folder, const char *name)
+{
+    (void)folder;
+    FsEntries *read = data;
+    char *path = nullptr;
+    SDL_PathInfo info = {0};
+    FsEntry *entries = SDL_realloc(read->entries, (read->count + 1) * sizeof(FsEntry));
+
+    if (entries == nullptr || SDL_asprintf(&path, "%s%s", read->folder, name) < 0)
+    {
+        read->entries = entries != nullptr ? entries : read->entries;
+        read->failed = true;
+        return SDL_ENUM_FAILURE;
+    }
+
+    read->entries = entries;
+    bool found = SDL_GetPathInfo(path, &info);
+    SDL_free(path);
+
+    // an entry removed while the folder is read is left out
+    if (found && (entries[read->count].name = SDL_strdup(name)) != nullptr)
+    {
+        entries[read->count].modified = info.modify_time;
+        entries[read->count].size = info.size;
+        read->count++;
+    }
+
+    return SDL_ENUM_CONTINUE;
+}
+
+static int SDLCALL FsCompareEntries(const void *a, const void *b)
+{
+    return SDL_strcmp(((const FsEntry *)a)->name, ((const FsEntry *)b)->name);
+}
+
+/// @brief Reads a folder's entries, sorted by name.
+/// @return Whether it could be read; if not, the entries are left empty.
+static bool FsReadFolder(const char *full, FsEntry **retEntries, usz *retCount)
+{
+    FsEntries read = {full, nullptr, 0, false};
+
+    if (!SDL_EnumerateDirectory(full, FsAddEntry, &read) || read.failed)
+    {
+        for (usz i = 0; i < read.count; i++)
+        {
+            SDL_free(read.entries[i].name);
+        }
+
+        SDL_free(read.entries);
+        *retEntries = nullptr;
+        *retCount = 0;
+        return false;
+    }
+
+    SDL_qsort(read.entries, read.count, sizeof(FsEntry), FsCompareEntries);
+    *retEntries = read.entries;
+    *retCount = read.count;
+    return true;
+}
+
+/// @brief Reads each watched folder again, and tells its watch of the entries added, removed and changed since the last read.
+static void FsReadChanges(void *data)
+{
+    (void)data;
+    FS.telling = true;
+
+    // the watches may change while they are told, so they are counted again each time
+    for (usz i = 0; i < FS.watchCount; i++)
+    {
+        FsWatch *watch = FS.watches[i];
+        FsEntry *entries = nullptr;
+        usz count = 0;
+
+        if (watch->stopped || !FsReadFolder(watch->full, &entries, &count))
+        {
+            continue;
+        }
+
+        // both lists are sorted by name, so they are walked together
+        FsEntry *old = watch->entries;
+        usz oldCount = watch->entryCount;
+        watch->entries = entries;
+        watch->entryCount = count;
+
+        for (usz a = 0, b = 0; a < oldCount || b < count;)
+        {
+            int order = a == oldCount ? 1 : b == count ? -1 : SDL_strcmp(old[a].name, entries[b].name);
+            const char *name = order < 0 ? old[a].name : entries[b].name;
+            const char *change = order < 0 ? "removed" : order > 0 ? "added" : old[a].modified != entries[b].modified || old[a].size != entries[b].size ? "changed" : nullptr;
+
+            if (change != nullptr && !watch->stopped)
+            {
+                watch->Changed(watch->folder, name, change);
+            }
+
+            a += order <= 0 ? 1 : 0;
+            b += order >= 0 ? 1 : 0;
+        }
+
+        for (usz j = 0; j < oldCount; j++)
+        {
+            SDL_free(old[j].name);
+        }
+
+        SDL_free(old);
+    }
+
+    FS.telling = false;
+
+    for (usz i = FS.watchCount; i > 0; i--)
+    {
+        if (i <= FS.watchCount && FS.watches[i - 1]->stopped)
+        {
+            FsFreeWatch(FS.watches[i - 1]);
+        }
+    }
+}
+#endif
 
 static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 {
@@ -307,7 +457,7 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     usz length = SDL_strlen(folder);
 
     if (descriptor < 0 || (FS.timer == nullptr && ECSTimer_Start(FS.plugin, &FS.timer, FS_WATCH_INTERVAL, true, FsReadChanges, nullptr) != SHUResult_Ok) ||
-        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && folder[length - 1] == '/' ? "" : "/") < 0)
+        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && ECSPath_IsSeparator(folder[length - 1]) ? "" : "/") < 0)
     {
         // inotify's watch stops unless another watch shares it, and the timer stops if nothing is watched
         bool shared = false;
@@ -340,9 +490,50 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     FS.watches[FS.watchCount++] = watch;
     return watch;
 #else
-    ECS_LogWarn(FS.plugin, "Watching folders works on Linux only, so '%s' is not watched", folder);
-    ECSService_ReleaseCallback((ECSFunction)Changed);
-    return nullptr;
+    // the folder is read now, so the next read finds what changed after the watch began
+    char *full = FsFull(folder);
+    usz length = SDL_strlen(folder);
+    FsWatch *watch = full == nullptr || Changed == nullptr ? nullptr : SDL_calloc(1, sizeof(FsWatch));
+    FsWatch **watches = watch == nullptr ? nullptr : SDL_realloc(FS.watches, (FS.watchCount + 1) * sizeof(FsWatch *));
+    FS.watches = watches != nullptr ? watches : FS.watches;
+    SDL_PathInfo info = {0};
+
+    if (watches == nullptr || !SDL_GetPathInfo(full, &info) || info.type != SDL_PATHTYPE_DIRECTORY ||
+        SDL_asprintf(&watch->full, "%s%s", full, ECSPath_IsSeparator(full[SDL_strlen(full) - 1]) ? "" : "/") < 0 ||
+        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && ECSPath_IsSeparator(folder[length - 1]) ? "" : "/") < 0 ||
+        !FsReadFolder(watch->full, &watch->entries, &watch->entryCount) ||
+        (FS.timer == nullptr && ECSTimer_Start(FS.plugin, &FS.timer, FS_POLL_INTERVAL, true, FsReadChanges, nullptr) != SHUResult_Ok))
+    {
+        if (FS.watchCount == 0 && FS.timer != nullptr)
+        {
+            ECSTimer_Stop(&FS.timer);
+        }
+
+        ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s'", folder);
+
+        if (watch != nullptr)
+        {
+            for (usz i = 0; i < watch->entryCount; i++)
+            {
+                SDL_free(watch->entries[i].name);
+            }
+
+            SDL_free(watch->entries);
+            SDL_free(watch->full);
+            SDL_free(watch->folder);
+        }
+
+        SDL_free(watch);
+        SDL_free(full);
+        ECSService_ReleaseCallback((ECSFunction)Changed);
+        return nullptr;
+    }
+
+    SDL_free(full);
+    watch->descriptor = -1;
+    watch->Changed = Changed;
+    FS.watches[FS.watchCount++] = watch;
+    return watch;
 #endif
 }
 

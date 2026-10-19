@@ -63,7 +63,7 @@ static GltfModel *GltfLoad(const char *path)
     char *full = nullptr;
 
     // a relative path starts at the executable's folder
-    if (SDL_asprintf(&full, "%s%s", path[0] == '/' ? "" : SDL_GetBasePath(), path) < 0)
+    if (SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
     {
         return nullptr;
     }
@@ -833,7 +833,7 @@ static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz
     }
 
     // a file's URI is relative to the model's folder, and may escape characters, such as %20 for a space
-    const char *slash = SDL_strrchr(model->path, '/');
+    const char *slash = ECSPath_LastSeparator(model->path);
     char *path = nullptr;
 
     if (SDL_asprintf(&path, "%.*s%s", slash == nullptr ? 0 : (int)(slash - model->path + 1), model->path, uri) < 0)
