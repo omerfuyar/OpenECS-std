@@ -1,6 +1,6 @@
 // The fs standard plugin: what Lua's io and os libraries cannot do with files and folders (DESIGN 10).
 // It lists folders, tells what a path is, makes folders, copies files and finds the user's folders, with SDL's filesystem functions.
-// It watches folders for changes with inotify on Linux, which SDL does not offer, and elsewhere by reading the folders again and again.
+// It watches folders for changes with inotify on Linux and ReadDirectoryChangesW on Windows, which SDL does not offer, and elsewhere by reading the folders again and again.
 // Lua's os.rename and os.remove move and remove files and folders, so fs does not.
 
 #include "OpenECS.h"
@@ -10,6 +10,9 @@
 #ifdef __linux__
 #include <sys/inotify.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 #pragma region Source Only
@@ -19,6 +22,9 @@
 
 /// @brief How many reads of changes one call makes at most; the rest waits for the next call.
 #define FS_WATCH_READS 8
+
+/// @brief The bytes of changes that one read of a watched folder gives at most on Windows; more are lost, as when it overflows.
+#define FS_WATCH_BUFFER 65536
 
 /// @brief How often, in seconds, a watched folder is read again where there is no inotify.
 #define FS_POLL_INTERVAL 0.5
@@ -44,6 +50,12 @@ typedef struct FsWatch
     char *full;   // the folder's full path, which is read again where there is no inotify
     FsEntry *entries; // its entries as they were last read, sorted by name, where there is no inotify
     usz entryCount;
+#ifdef _WIN32
+    HANDLE directory;       // the folder, opened for ReadDirectoryChangesW, or nullptr
+    OVERLAPPED overlapped;  // the read of changes that waits for the folder to change
+    DWORD *buffer;          // what the read gives: FILE_NOTIFY_INFORMATION records, which start on DWORDs
+    bool reading;           // a read waits; false after a read failed
+#endif
 } FsWatch;
 
 static struct
@@ -221,6 +233,21 @@ static void FsFreeWatch(FsWatch *watch)
     {
         inotify_rm_watch(FS.inotify, watch->descriptor);
     }
+#elif defined(_WIN32)
+    // the read that waits is cancelled, and ends, before its buffer is freed
+    if (watch->directory != nullptr && watch->directory != INVALID_HANDLE_VALUE)
+    {
+        DWORD length = 0;
+
+        if (watch->reading && CancelIoEx(watch->directory, &watch->overlapped))
+        {
+            GetOverlappedResult(watch->directory, &watch->overlapped, &length, TRUE);
+        }
+
+        CloseHandle(watch->directory);
+    }
+
+    SDL_free(watch->buffer);
 #endif
 
     for (usz i = 0; i < FS.watchCount; i++)
@@ -292,6 +319,102 @@ static void FsReadChanges(void *data)
             }
 
             at += sizeof(struct inotify_event) + event->len;
+        }
+    }
+
+    FS.telling = false;
+
+    for (usz i = FS.watchCount; i > 0; i--)
+    {
+        if (i <= FS.watchCount && FS.watches[i - 1]->stopped)
+        {
+            FsFreeWatch(FS.watches[i - 1]);
+        }
+    }
+}
+
+#elif defined(_WIN32)
+/// @brief Starts a watch's next read of changes, which ends when its folder changes.
+static bool FsStartRead(FsWatch *watch)
+{
+    const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_ATTRIBUTES;
+    watch->reading = ReadDirectoryChangesW(watch->directory, watch->buffer, FS_WATCH_BUFFER, FALSE, filter, nullptr, &watch->overlapped, nullptr) != 0;
+    return watch->reading;
+}
+
+/// @brief Tells a watch the changes that its ended read gave.
+static void FsTellChanges(FsWatch *watch, DWORD length)
+{
+    for (const char *at = (const char *)watch->buffer; length > 0 && !watch->stopped;)
+    {
+        const FILE_NOTIFY_INFORMATION *info = (const FILE_NOTIFY_INFORMATION *)(const void *)at;
+        DWORD action = info->Action;
+        const char *change = action == FILE_ACTION_ADDED || action == FILE_ACTION_RENAMED_NEW_NAME     ? "added"
+                             : action == FILE_ACTION_REMOVED || action == FILE_ACTION_RENAMED_OLD_NAME ? "removed"
+                             : action == FILE_ACTION_MODIFIED                                          ? "changed"
+                                                                                                       : nullptr;
+
+        // the name is UTF-16, without a zero at its end
+        char name[MAX_PATH * 4];
+        int size = WideCharToMultiByte(CP_UTF8, 0, info->FileName, (int)(info->FileNameLength / sizeof(WCHAR)), name, (int)sizeof(name) - 1, nullptr, nullptr);
+
+        if (change != nullptr && size > 0)
+        {
+            name[size] = '\0';
+            watch->Changed(watch->folder, name, change);
+        }
+
+        if (info->NextEntryOffset == 0)
+        {
+            break;
+        }
+
+        at += info->NextEntryOffset;
+    }
+}
+
+/// @brief Tells each watch the changes of its folder that its read gave, and starts its next read. A read that has not ended waits for the next call.
+static void FsReadChanges(void *data)
+{
+    (void)data;
+    FS.telling = true;
+
+    // the watches may change while they are told, so they are counted again each time
+    for (usz i = 0; i < FS.watchCount; i++)
+    {
+        FsWatch *watch = FS.watches[i];
+        DWORD length = 0;
+
+        if (watch->stopped || !watch->reading)
+        {
+            continue;
+        }
+
+        // a read that overflowed lost its changes, and gives none; the next read goes on
+        if (!GetOverlappedResult(watch->directory, &watch->overlapped, &length, FALSE))
+        {
+            DWORD error = GetLastError();
+
+            if (error == ERROR_IO_INCOMPLETE)
+            {
+                continue;
+            }
+
+            length = 0;
+
+            if (error != ERROR_NOTIFY_ENUM_DIR)
+            {
+                watch->reading = false;
+                ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)error);
+                continue;
+            }
+        }
+
+        FsTellChanges(watch, length);
+
+        if (!watch->stopped && !FsStartRead(watch))
+        {
+            ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)GetLastError());
         }
     }
 
@@ -486,6 +609,52 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 
     SDL_free(full);
     watch->descriptor = descriptor;
+    watch->Changed = Changed;
+    FS.watches[FS.watchCount++] = watch;
+    return watch;
+#elif defined(_WIN32)
+    char *full = FsFull(folder);
+    usz length = SDL_strlen(folder);
+    int wideLength = full == nullptr ? 0 : MultiByteToWideChar(CP_UTF8, 0, full, -1, nullptr, 0);
+    WCHAR *wide = wideLength <= 0 ? nullptr : SDL_malloc((usz)wideLength * sizeof(WCHAR));
+    FsWatch *watch = wide == nullptr || Changed == nullptr ? nullptr : SDL_calloc(1, sizeof(FsWatch));
+    FsWatch **watches = watch == nullptr ? nullptr : SDL_realloc(FS.watches, (FS.watchCount + 1) * sizeof(FsWatch *));
+    FS.watches = watches != nullptr ? watches : FS.watches;
+
+    if (watches != nullptr && MultiByteToWideChar(CP_UTF8, 0, full, -1, wide, wideLength) > 0)
+    {
+        // a file is opened too, but its read of changes fails
+        watch->directory = CreateFileW(wide, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+        watch->buffer = SDL_malloc(FS_WATCH_BUFFER);
+    }
+
+    if (watches == nullptr || watch->directory == nullptr || watch->directory == INVALID_HANDLE_VALUE || watch->buffer == nullptr || !FsStartRead(watch) ||
+        SDL_asprintf(&watch->folder, "%s%s", folder, length > 0 && ECSPath_IsSeparator(folder[length - 1]) ? "" : "/") < 0 ||
+        (FS.timer == nullptr && ECSTimer_Start(FS.plugin, &FS.timer, FS_WATCH_INTERVAL, true, FsReadChanges, nullptr) != SHUResult_Ok))
+    {
+        ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s'", folder);
+
+        // the watch is freed as one that was added, which stops the timer if nothing is watched
+        if (watches != nullptr)
+        {
+            watch->Changed = Changed;
+            FS.watches[FS.watchCount++] = watch;
+            FsFreeWatch(watch);
+        }
+        else
+        {
+            SDL_free(watch);
+            ECSService_ReleaseCallback((ECSFunction)Changed);
+        }
+
+        SDL_free(wide);
+        SDL_free(full);
+        return nullptr;
+    }
+
+    SDL_free(wide);
+    SDL_free(full);
+    watch->descriptor = -1;
     watch->Changed = Changed;
     FS.watches[FS.watchCount++] = watch;
     return watch;
