@@ -72,8 +72,10 @@ jobs:
 
       # GitHub's own source archives leave the submodules out, so they cannot be built
       - name: Package the source with its submodules
+        # a run by hand names the branch, whose slashes would make folders
         run: |
-          name="openecs-std-${GITHUB_REF_NAME#v}-source"
+          ref="${GITHUB_REF_NAME#v}"
+          name="openecs-std-${ref//\//-}-source"
           mkdir -p dist
           git ls-files --recurse-submodules -z | tar --null -T - --transform "s,^,$name/," -czf "dist/$name.tar.gz"
 
