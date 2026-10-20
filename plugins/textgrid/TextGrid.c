@@ -87,6 +87,12 @@ static void TextGridClearRow(TextGridGrid *grid, i32 row)
     grid->wrapped[row] = false;
 }
 
+/// @brief Whether a character is a control character, which takes no cell: C0, delete and C1.
+static bool TextGridIsControl(u32 character)
+{
+    return character < 0x20 || (character >= 0x7F && character < 0xA0);
+}
+
 /// @brief How many cells a character takes: 2 for the wide and full-width characters of East Asian scripts and for most emoji, and 1 for the others.
 static i32 TextGridWidth(u32 character)
 {
@@ -484,6 +490,12 @@ static void TextGridPut(TextGridGrid *grid, i32 column, i32 row, const char *tex
     // a wide character that does not fit at the edge is left out; the text stops at the edge, so the column never overflows
     for (u32 character = SDL_StepUTF8(&text, &length); character != 0 && column < grid->columns; character = SDL_StepUTF8(&text, &length))
     {
+        // control characters, new lines and tabs among them, are left out
+        if (TextGridIsControl(character))
+        {
+            continue;
+        }
+
         i32 width = TextGridWidth(character);
 
         if (row >= 0 && row < grid->rows && column >= 0 && width <= grid->columns - column)
@@ -504,6 +516,12 @@ static void TextGridPrint(TextGridGrid *grid, const char *text)
         if (character == '\r')
         {
             grid->cursorColumn = 0;
+            continue;
+        }
+
+        // other control characters are left out
+        if (character != '\n' && character != '\t' && TextGridIsControl(character))
+        {
             continue;
         }
 
@@ -713,11 +731,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param grid The grid; its cursor does not move\n"
          "@param column The first character's column, from 0 at the left; characters left of the grid are cut\n"
          "@param row The row, from 0 at the top; outside the grid, nothing is written\n"
-         "@param text The text, in UTF-8"},
+         "@param text The text, in UTF-8; control characters, new lines and tabs among them, are left out"},
         {"print", (ECSFunction)TextGridPrint, "void(handle<textgrid.grid> grid, string text)",
          "Write text at the cursor, as a terminal does\n"
          "@param grid The grid; its cursor moves to the end of the text\n"
-         "@param text The text, in UTF-8; new lines, carriage returns and tabs move the cursor"},
+         "@param text The text, in UTF-8; new lines, carriage returns and tabs move the cursor, and other control characters are left out"},
         {"setCursor", (ECSFunction)TextGridSetCursor, "void(handle<textgrid.grid> grid, int column, int row)",
          "Move the cursor\n"
          "@param grid The grid\n"

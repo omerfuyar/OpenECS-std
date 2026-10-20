@@ -111,7 +111,11 @@ static SHUSlice CglmNone(void)
         {                                                                                                                      \
             return CglmNone();                                                                                                 \
         }                                                                                                                      \
-        glm_vec##N##_lerp(x, y, t, CGLM_RESULT);                                                                               \
+        /* cglm keeps t between 0 and 1 for vec2, but not for vec3 and vec4, so all sizes go as vec3 and vec4 do */            \
+        for (int i = 0; i < N; i++)                                                                                            \
+        {                                                                                                                      \
+            CGLM_RESULT[i] = x[i] + t * (y[i] - x[i]);                                                                         \
+        }                                                                                                                      \
         return CglmResult(N);                                                                                                  \
     }
 
@@ -158,7 +162,7 @@ CGLM_VECTOR(4)
          "Give the vector at t between from, at 0, and to, at 1\n"                                        \
          "@param from The vector at 0: " #N " floats\n"                                                   \
          "@param to The vector at 1: " #N " floats\n"                                                     \
-         "@param t Where between them: 0 gives from, 1 gives to\n"                                        \
+         "@param t Where between them: 0 gives from, 1 gives to, and t below 0 or above 1 goes past them\n" \
          "@return The vector at t: " #N " floats, or an empty buffer if a buffer has another size"}
 
 static SHUSlice CglmVec2(f32 x, f32 y)
