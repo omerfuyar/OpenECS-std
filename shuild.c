@@ -124,8 +124,8 @@ static const char *CompilerArgument(int argc, char **argv)
 int main(int argc, char **argv)
 {
     CONFIG.compiler = CompilerArgument(argc, argv);
-    SHU_CompilerTryConfigure(CONFIG.compiler);
-    CONFIG.windows = SHU_CompilerGetTarget() == SHUM_PLATFORM_WINDOWS;
+    SHU_CompilerConfigureTry(CONFIG.compiler);
+    CONFIG.windows = SHU_CompilerGetTarget() == SHUPlatform_Windows;
     SetupConfiguration(argc, argv);
 
     // cglm's headers go to OpenECS's include/, beside SDL's, so C plugins get cglm through the cglm plugin's header (DESIGN 16)
@@ -208,8 +208,8 @@ static void SetupConfiguration(int argc, char **argv)
     }
 
     // a build for another system has a cache of its own, as OpenECS's build has a folder of its own
-    u8 target = SHU_CompilerGetTarget();
-    CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPE_STRINGS[CONFIG.type], SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUM_PLATFORM_GET_STRING(target));
+    SHUPlatform target = SHU_CompilerGetTarget();
+    CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPE_STRINGS[CONFIG.type], SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUPlatform_GetString(target));
     SHU_CacheConfigure(CONFIG.cache);
 }
 
@@ -234,7 +234,7 @@ static void SetBuildFlags(bool ownCode)
         {
             SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID);
 
-            if (SHU_CompilerGetIdentifier() == SHUM_COMPILER_GCC)
+            if (SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
             {
                 SHU_CompilerAddFlags(" -fanalyzer");
             }
@@ -353,7 +353,7 @@ static void BuildLibrary(const Library *library, const char *folder)
 /// @param gcc The tool's name for gcc. @param clang The tool's name for clang.
 static char *CompilerTool(const char *gcc, const char *clang)
 {
-    const char *name = SHU_CompilerGetIdentifier() == SHUM_COMPILER_CLANG ? "clang" : "gcc";
+    const char *name = SHU_CompilerGetIdentifier() == SHUCompiler_Clang ? "clang" : "gcc";
     const char *found = NULL;
 
     for (const char *c = strstr(CONFIG.compiler, name); c != NULL; c = strstr(c + 1, name))
@@ -394,7 +394,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
     // a cross compiler builds for its system
     if (!SHUM_PLATFORM_IS_HOST(SHU_CompilerGetTarget()))
     {
-        compilers = SHU_UtilFormat("%s -DCMAKE_SYSTEM_NAME=%s", compilers, SHUM_PLATFORM_GET_STRING(SHU_CompilerGetTarget()));
+        compilers = SHU_UtilFormat("%s -DCMAKE_SYSTEM_NAME=%s", compilers, SHUPlatform_GetString(SHU_CompilerGetTarget()));
     }
 
     char *logs = SHU_UtilFormat("%scmake/%s/", CONFIG.cache, library->name);
@@ -411,7 +411,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
 /// The C++ compiler gives its path, as OpenECS's C compiler may be another version than the C++ compiler that built the libraries.
 static char *CppLibrary(void)
 {
-    const char *file = CONFIG.windows && SHU_CompilerGetIdentifier() == SHUM_COMPILER_CLANG ? "libc++.a" : "libstdc++.a";
+    const char *file = CONFIG.windows && SHU_CompilerGetIdentifier() == SHUCompiler_Clang ? "libc++.a" : "libstdc++.a";
     char *log = SHU_UtilFormat("%scmake/library.log", CONFIG.cache);
     SHU_UtilCreateDirectory(SHU_UtilFormat("%scmake/", CONFIG.cache));
     SHU_UtilRunLogged(log, "%s -print-file-name=%s", CompilerTool("g++", "clang++"), file);
@@ -479,7 +479,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
     // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
-    if (needs != NULL && !needs->analyze && SHU_CompilerGetIdentifier() == SHUM_COMPILER_GCC)
+    if (needs != NULL && !needs->analyze && SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }
