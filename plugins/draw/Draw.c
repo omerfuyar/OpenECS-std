@@ -862,27 +862,149 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"fill", (ECSFunction)DrawFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)", "Fill a rectangle"},
-        {"outline", (ECSFunction)DrawOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, color color)", "Draw the edge of a rectangle"},
-        {"line", (ECSFunction)DrawLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
-        {"circle", (ECSFunction)DrawCircle, "void(handle<ecs.surface> surface, float x, float y, float radius, float thickness, color color)", "Draw a circle: a ring of a thickness, or filled with a thickness of 0"},
-        {"rounded", (ECSFunction)DrawRoundedFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, color color)", "Fill a rectangle with corners rounded by a radius"},
-        {"roundedOutline", (ECSFunction)DrawRoundedOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, float thickness, color color)", "Draw the edge of a rectangle with corners rounded by a radius"},
-        {"triangles", (ECSFunction)DrawTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
-        {"lines", (ECSFunction)DrawLines, "void(handle<ecs.surface> surface, buffer points, buffer indices, float thickness, color color)", "Draw lines: points are x and y floats, and indices name two points for each line, or are empty for one line through the points"},
-        {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels)", "Make an image from pixels, ARGB in native byte order, row after row; empty pixels make it transparent"},
-        {"imageSize", (ECSFunction)DrawImageSize, "void(handle<draw.image> image, out int width, out int height)", "Give an image's size in pixels"},
-        {"imagePixel", (ECSFunction)DrawImagePixel, "color(handle<draw.image> image, int x, int y)", "Give the colour of a pixel of an image"},
-        {"imagePixels", (ECSFunction)DrawImagePixels, "buffer(handle<draw.image> image)", "Give an image's pixels, ARGB in native byte order, row after row; they stay the image's, so C reads them only while the image lives"},
-        {"freeImage", (ECSFunction)DrawFreeImage, "void(handle<draw.image> image)", "Free an image now, instead of when no one uses its handle"},
-        {"image", (ECSFunction)DrawDrawImage, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)", "Draw an image stretched to a rectangle"},
-        {"imageTransformed", (ECSFunction)DrawImageTransformed, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height, float angle, color color)", "Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
-        {"font", (ECSFunction)DrawGetFontByName, "handle<draw.font>(string name)", "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file"},
-        {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)", "Give the file a font is read from; a setting that names another file changes it"},
-        {"text", (ECSFunction)DrawText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text with its line's top left at a position, and give its width"},
-        {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)", "Give the width and the line height of a text"},
-        {"clip", (ECSFunction)DrawSetClip, "void(handle<ecs.surface> surface, float x, float y, float width, float height)", "Limit later drawing into a surface to a rectangle"},
-        {"unclip", (ECSFunction)DrawUnclip, "void(handle<ecs.surface> surface)", "Let drawing reach the whole surface again"},
+        {"fill", (ECSFunction)DrawFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)",
+         "Fill a rectangle\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param color The colour, blended by its alpha"},
+        {"outline", (ECSFunction)DrawOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, color color)",
+         "Draw the edge of a rectangle\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param thickness The edge's thickness inward, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"line", (ECSFunction)DrawLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)",
+         "Draw a line\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x1 The start's x, in layout units\n"
+         "@param y1 The start's y, in layout units\n"
+         "@param x2 The end's x, in layout units; an end at the start draws nothing\n"
+         "@param y2 The end's y, in layout units\n"
+         "@param thickness The line's thickness, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"circle", (ECSFunction)DrawCircle, "void(handle<ecs.surface> surface, float x, float y, float radius, float thickness, color color)",
+         "Draw a circle: a ring of a thickness, or filled with a thickness of 0\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The centre's x, in layout units\n"
+         "@param y The centre's y, in layout units\n"
+         "@param radius The radius, in layout units\n"
+         "@param thickness The ring's thickness inward from the edge, in layout units; 0 or less fills the circle\n"
+         "@param color The colour, blended by its alpha"},
+        {"rounded", (ECSFunction)DrawRoundedFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, color color)",
+         "Fill a rectangle with corners rounded by a radius\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param radius The corners' radius, in layout units; at most half the shorter side\n"
+         "@param color The colour, blended by its alpha"},
+        {"roundedOutline", (ECSFunction)DrawRoundedOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, float thickness, color color)",
+         "Draw the edge of a rectangle with corners rounded by a radius\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param radius The corners' radius, in layout units; at most half the shorter side\n"
+         "@param thickness The edge's thickness inward, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"triangles", (ECSFunction)DrawTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)",
+         "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param points The points, an x and a y float each, in layout units\n"
+         "@param indices Three 32-bit point numbers for each triangle, counted from 0; a triangle that names a missing point is skipped\n"
+         "@param color The colour, blended by its alpha"},
+        {"lines", (ECSFunction)DrawLines, "void(handle<ecs.surface> surface, buffer points, buffer indices, float thickness, color color)",
+         "Draw lines: points are x and y floats, and indices name two points for each line, or are empty for one line through the points\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param points The points, an x and a y float each, in layout units\n"
+         "@param indices Two 32-bit point numbers for each line, counted from 0; a line that names a missing point is skipped\n"
+         "@param thickness The lines' thickness, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels)",
+         "Make an image from pixels, ARGB in native byte order, row after row; empty pixels make it transparent\n"
+         "@param width The image's width, in pixels; more than 0\n"
+         "@param height The image's height, in pixels; more than 0\n"
+         "@param pixels Four bytes for each pixel, not premultiplied, or none; they are copied\n"
+         "@return The image, or nothing if the pixels do not match the size or memory runs out"},
+        {"imageSize", (ECSFunction)DrawImageSize, "void(handle<draw.image> image, out int width, out int height)",
+         "Give an image's size in pixels\n"
+         "@param image The image\n"
+         "@param width Gets the image's width\n"
+         "@param height Gets the image's height"},
+        {"imagePixel", (ECSFunction)DrawImagePixel, "color(handle<draw.image> image, int x, int y)",
+         "Give the colour of a pixel of an image\n"
+         "@param image The image\n"
+         "@param x The pixel's column, from 0 at the left\n"
+         "@param y The pixel's row, from 0 at the top\n"
+         "@return The pixel's colour, not premultiplied, or 0, transparent, outside the image"},
+        {"imagePixels", (ECSFunction)DrawImagePixels, "buffer(handle<draw.image> image)",
+         "Give an image's pixels, ARGB in native byte order, row after row; they stay the image's, so C reads them only while the image lives\n"
+         "@param image The image\n"
+         "@return The pixels, four bytes each, not premultiplied"},
+        {"freeImage", (ECSFunction)DrawFreeImage, "void(handle<draw.image> image)",
+         "Free an image now, instead of when no one uses its handle\n"
+         "@param image The image; its handle is not used again"},
+        {"image", (ECSFunction)DrawDrawImage, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)",
+         "Draw an image stretched to a rectangle\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param image The image, blended by its alpha\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units"},
+        {"imageTransformed", (ECSFunction)DrawImageTransformed, "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height, float angle, color color)",
+         "Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param image The image, blended by its alpha\n"
+         "@param x The rectangle's left before it turns, in layout units\n"
+         "@param y The rectangle's top before it turns, in layout units\n"
+         "@param width The rectangle's width, in layout units; 0 or less draws nothing\n"
+         "@param height The rectangle's height, in layout units; 0 or less draws nothing\n"
+         "@param angle The turn, in degrees; a negative angle turns it anticlockwise\n"
+         "@param color Multiplies each pixel's colour: white leaves it as it is, and a lower alpha fades it"},
+        {"font", (ECSFunction)DrawGetFontByName, "handle<draw.font>(string name)",
+         "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file\n"
+         "@param name \"ui\", \"mono\" or a path; a relative path starts at the executable's folder\n"
+         "@return The font, the same handle for the same name, or nothing if memory runs out; a file that cannot be opened is reported when text is drawn"},
+        {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)",
+         "Give the file a font is read from; a setting that names another file changes it\n"
+         "@param font The font\n"
+         "@return The file's path; it stays the font's, so C reads it only until a font setting changes"},
+        {"text", (ECSFunction)DrawText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)",
+         "Draw text with its line's top left at a position, and give its width\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param font The font\n"
+         "@param text The text, in UTF-8\n"
+         "@param x The line's left, in layout units\n"
+         "@param y The line's top, in layout units\n"
+         "@param size The font size, in layout units\n"
+         "@param color The colour, blended by its alpha\n"
+         "@return The text's width, in layout units, or 0 if nothing is drawn"},
+        {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)",
+         "Give the width and the line height of a text\n"
+         "@param font The font\n"
+         "@param text The text, in UTF-8\n"
+         "@param size The font size; the width and the line height are in the same units\n"
+         "@param width Gets the text's width, or 0 if the font cannot be opened\n"
+         "@param lineHeight Gets the font's line height, or 0 if the font cannot be opened"},
+        {"clip", (ECSFunction)DrawSetClip, "void(handle<ecs.surface> surface, float x, float y, float width, float height)",
+         "Limit later drawing into a surface to a rectangle\n"
+         "@param surface The panel's surface, as its Draw gives it; a new clip replaces its old one\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units"},
+        {"unclip", (ECSFunction)DrawUnclip, "void(handle<ecs.surface> surface)",
+         "Let drawing reach the whole surface again\n"
+         "@param surface The panel's surface, as its Draw gives it"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

@@ -1959,37 +1959,265 @@ function services.take(panel, id, callback)
 end
 
 assert(ecs.service.register({
-  show = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)", doc = "Lay out elements in a panel and draw them", fn = services.show },
-  event = { sig = "bool(handle<ecs.panel> panel, value<ecs.PanelEvent> event)", doc = "Handle a panel's event, and call the callbacks of the elements it reaches", fn = services.event },
-  forget = { sig = "void(handle<ecs.panel> panel)", doc = "Forget a panel's state", fn = services.forget },
-  rect = { sig = "value<ui.Rect?>(handle<ecs.panel> panel, string id)", doc = "Give an element's rectangle in the last layout, a table of x, y, width and height, or nil if no element has the id", fn = services.rect },
-  focus = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the focused field", fn = services.focus },
-  tip = { sig = "string(handle<ecs.panel> panel)", doc = "Give the id of the element whose tooltip shows", fn = services.tip },
-  edit = { sig = "void(handle<ecs.panel> panel, string id)", doc = "Give a field the focus", fn = services.edit },
-  reveal = { sig = "void(handle<ecs.panel> panel, string scroll, string child)", doc = "Scroll so a child shows", fn = services.reveal },
-  move = { sig = "void(handle<ecs.panel> panel, string list, int step)", doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it", fn = services.move },
-  activate = { sig = "void(handle<ecs.panel> panel, string list)", doc = "Activate a list's chosen item; onActivate gets it", fn = services.activate },
-  expand = { sig = "void(handle<ecs.panel> panel, string tree, bool open)", doc = "Open or close a tree's chosen node; onToggle gets it, opening an open node chooses its first child, and closing a closed one its parent", fn = services.expand },
-  column = { sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other", fn = elements.column },
-  row = { sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)", doc = "Elements beside each other", fn = elements.row },
-  scroll = { sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other, which scroll", fn = elements.scroll },
-  list = { sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)", doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate", fn = elements.list },
-  group = { sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)", doc = "Elements below each other in a frame, under a title", fn = elements.group },
-  table = { sig = "value<ui.Element>(value<ui.TableProps?> props, value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows)", doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort", fn = elements.table },
-  tree = { sig = "value<ui.Element>(value<ui.TreeProps?> props, value<ui.TreeNode[]?> nodes)", doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id", fn = elements.tree },
-  separator = { sig = "value<ui.Element>(value<ui.SeparatorProps?> props)", doc = "A line across a column, or up a row", fn = elements.separator },
-  text = { sig = "value<ui.Element>(string text, value<ui.TextProps?> props)", doc = "A line of text", fn = elements.text },
-  button = { sig = "value<ui.Element>(string label, value<ui.ButtonProps?> props)", doc = "A button; onClick runs when it is clicked", fn = elements.button },
-  toggle = { sig = "value<ui.Element>(bool on, value<ui.ToggleProps?> props)", doc = "On or off: a check box, or a switch with look = \"switch\"; onChange gets the new state", fn = elements.toggle },
-  slider = { sig = "value<ui.Element>(double value, value<ui.SliderProps?> props)", doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it", fn = elements.slider },
-  selector = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "One of a few choices, side by side; onChange gets the clicked one", fn = elements.selector },
-  tabs = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one", fn = elements.tabs },
-  dropdown = { sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)", doc = "One of a list of choices, which a click opens; onChange gets the chosen one", fn = elements.dropdown },
-  field = { sig = "value<ui.Element>(string text, value<ui.FieldProps?> props)", doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed", fn = elements.field },
-  number = { sig = "value<ui.Element>(double value, value<ui.NumberProps?> props)", doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange", fn = elements.number },
-  key = { sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)", doc = "A key combination, which a click and a key press change; onChange gets it", fn = elements.key },
-  image = { sig = "value<ui.Element>(string path, value<ui.Props?> props)", doc = "An image file", fn = elements.image },
-  space = { sig = "value<ui.Element>(value<ui.Props?> props)", doc = "Empty room, which grows by default", fn = elements.space },
-  showDescription = { sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Description> root)", doc = "Build the elements of a description, as C plugins give them, and show them; a described element with an id keeps what its callbacks get, for take", fn = services.showDescription },
-  take = { sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)", doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run", fn = services.take },
+  show = {
+    sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)",
+    doc = "Lay out elements in a panel and draw them\n"
+        .. "@param panel The panel, as its draw gets it\n"
+        .. "@param surface The panel's surface, as its draw gets it; ui fills it with the theme's background first\n"
+        .. "@param root The element that takes the whole surface, with the others inside it; elements without an id get one from their place",
+    fn = services.show,
+  },
+  event = {
+    sig = "bool(handle<ecs.panel> panel, value<ecs.PanelEvent> event)",
+    doc = "Handle a panel's event, and call the callbacks of the elements it reaches\n"
+        .. "@param panel The panel, as its event gets it\n"
+        .. "@param event The event, as the panel's event gets it\n"
+        .. "@return True if ui handled the event, false if it reached no element or the panel was not shown yet",
+    fn = services.event,
+  },
+  forget = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Forget a panel's state\n"
+        .. "@param panel The panel, as its destroy gets it",
+    fn = services.forget,
+  },
+  rect = {
+    sig = "value<ui.Rect?>(handle<ecs.panel> panel, string id)",
+    doc = "Give an element's rectangle in the last layout, a table of x, y, width and height, or nil if no element has the id\n"
+        .. "@param panel The panel that showed the element\n"
+        .. "@param id The element's id\n"
+        .. "@return The rectangle, in layout units, or nil if no element has the id or the panel was not shown yet",
+    fn = services.rect,
+  },
+  focus = {
+    sig = "string(handle<ecs.panel> panel)",
+    doc = "Give the id of the focused field\n"
+        .. "@param panel The panel that shows the field\n"
+        .. "@return The id of the field or key element that takes typing, or nil if none does",
+    fn = services.focus,
+  },
+  tip = {
+    sig = "string(handle<ecs.panel> panel)",
+    doc = "Give the id of the element whose tooltip shows\n"
+        .. "@param panel The panel that shows the element\n"
+        .. "@return The element's id, or nil if no tooltip shows",
+    fn = services.tip,
+  },
+  edit = {
+    sig = "void(handle<ecs.panel> panel, string id)",
+    doc = "Give a field the focus\n"
+        .. "@param panel The panel that shows the field, often the focused panel that a key passes\n"
+        .. "@param id The id of a field or key element in the last layout; another id does nothing",
+    fn = services.edit,
+  },
+  reveal = {
+    sig = "void(handle<ecs.panel> panel, string scroll, string child)",
+    doc = "Scroll so a child shows\n"
+        .. "@param panel The panel that shows the scroll element\n"
+        .. "@param scroll The id of the scroll element, or of a list, tree or table\n"
+        .. "@param child The id of an element inside it, in the last layout; nothing happens if it has none",
+    fn = services.reveal,
+  },
+  move = {
+    sig = "void(handle<ecs.panel> panel, string list, int step)",
+    doc = "Choose the item of a list a number of items away, and scroll it into view; onSelect gets it\n"
+        .. "@param panel The panel that shows the list, often the focused panel that a key passes\n"
+        .. "@param list The id of the list, tree or table\n"
+        .. "@param step How many items away, down if positive and up if negative; it stops at the first and last items; with no chosen item, a positive step chooses the first and another the last",
+    fn = services.move,
+  },
+  activate = {
+    sig = "void(handle<ecs.panel> panel, string list)",
+    doc = "Activate a list's chosen item; onActivate gets it\n"
+        .. "@param panel The panel that shows the list, often the focused panel that a key passes\n"
+        .. "@param list The id of the list, tree or table; nothing happens if no item is chosen",
+    fn = services.activate,
+  },
+  expand = {
+    sig = "void(handle<ecs.panel> panel, string tree, bool open)",
+    doc = "Open or close a tree's chosen node; onToggle gets it, opening an open node chooses its first child, and closing a closed one its parent\n"
+        .. "@param panel The panel that shows the tree, often the focused panel that a key passes\n"
+        .. "@param tree The id of the tree; nothing happens if no node is chosen\n"
+        .. "@param open True to open the node, false to close it",
+    fn = services.expand,
+  },
+  column = {
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    doc = "Elements below each other\n"
+        .. "@param props The column's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
+        .. "@param children The elements, from the top; none if nil\n"
+        .. "@return The column",
+    fn = elements.column,
+  },
+  row = {
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    doc = "Elements beside each other\n"
+        .. "@param props The row's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
+        .. "@param children The elements, from the left; none if nil\n"
+        .. "@return The row",
+    fn = elements.row,
+  },
+  scroll = {
+    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)",
+    doc = "Elements below each other, which scroll\n"
+        .. "@param props The scroll element's properties (ui.ScrollProps), which must have an id; it grows unless grow says otherwise\n"
+        .. "@param children The elements, from the top; none if nil\n"
+        .. "@return The scroll element",
+    fn = elements.scroll,
+  },
+  list = {
+    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)",
+    doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate\n"
+        .. "@param props The list's properties (ui.ListProps), which must have an id\n"
+        .. "@param children The items, from the top; those with selectable = false, such as headings, are not items; none if nil\n"
+        .. "@return The list",
+    fn = elements.list,
+  },
+  group = {
+    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)",
+    doc = "Elements below each other in a frame, under a title\n"
+        .. "@param props The group's properties (ui.GroupProps), with its title; padding, gap and border have defaults\n"
+        .. "@param children The elements, from the top, below the title; none if nil\n"
+        .. "@return The group",
+    fn = elements.group,
+  },
+  table = {
+    sig = "value<ui.Element>(value<ui.TableProps?> props, value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows)",
+    doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort\n"
+        .. "@param props The table's properties (ui.TableProps), which must have an id\n"
+        .. "@param columns The columns, from the left (ui.TableColumn); none if nil\n"
+        .. "@param rows The rows, from the top, in the order given, each a table of its cells' values by column id; none if nil\n"
+        .. "@return The table",
+    fn = elements.table,
+  },
+  tree = {
+    sig = "value<ui.Element>(value<ui.TreeProps?> props, value<ui.TreeNode[]?> nodes)",
+    doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id\n"
+        .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
+        .. "@param nodes The top nodes, each with its children (ui.TreeNode); none if nil\n"
+        .. "@return The tree",
+    fn = elements.tree,
+  },
+  separator = {
+    sig = "value<ui.Element>(value<ui.SeparatorProps?> props)",
+    doc = "A line across a column, or up a row\n"
+        .. "@param props The separator's properties (ui.SeparatorProps)\n"
+        .. "@return The separator",
+    fn = elements.separator,
+  },
+  text = {
+    sig = "value<ui.Element>(string text, value<ui.TextProps?> props)",
+    doc = "A line of text\n"
+        .. "@param text The text, cut with an ellipsis when it does not fit unless props has wrap = true\n"
+        .. "@param props The text's properties (ui.TextProps)\n"
+        .. "@return The text element",
+    fn = elements.text,
+  },
+  button = {
+    sig = "value<ui.Element>(string label, value<ui.ButtonProps?> props)",
+    doc = "A button; onClick runs when it is clicked\n"
+        .. "@param label The text on the button\n"
+        .. "@param props The button's properties (ui.ButtonProps)\n"
+        .. "@return The button",
+    fn = elements.button,
+  },
+  toggle = {
+    sig = "value<ui.Element>(bool on, value<ui.ToggleProps?> props)",
+    doc = "On or off: a check box, or a switch with look = \"switch\"; onChange gets the new state\n"
+        .. "@param on Whether it shows as on\n"
+        .. "@param props The toggle's properties (ui.ToggleProps), with its label and look\n"
+        .. "@return The toggle",
+    fn = elements.toggle,
+  },
+  slider = {
+    sig = "value<ui.Element>(double value, value<ui.SliderProps?> props)",
+    doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it\n"
+        .. "@param value The number it shows, kept from min to max\n"
+        .. "@param props The slider's properties (ui.SliderProps); min and max are 0 and 1 if missing\n"
+        .. "@return The slider",
+    fn = elements.slider,
+  },
+  selector = {
+    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a few choices, side by side; onChange gets the clicked one\n"
+        .. "@param value The chosen text\n"
+        .. "@param choices The texts to choose from, from the left; none if nil\n"
+        .. "@param props The selector's properties (ui.ChoiceProps)\n"
+        .. "@return The selector",
+    fn = elements.selector,
+  },
+  tabs = {
+    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one\n"
+        .. "@param value The chosen tab's text\n"
+        .. "@param choices The tabs' texts, from the left; none if nil\n"
+        .. "@param props The tabs' properties (ui.ChoiceProps)\n"
+        .. "@return The tabs",
+    fn = elements.tabs,
+  },
+  dropdown = {
+    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a list of choices, which a click opens; onChange gets the chosen one\n"
+        .. "@param value The chosen text, which the closed dropdown shows\n"
+        .. "@param choices The texts to choose from, from the top; none if nil\n"
+        .. "@param props The dropdown's properties (ui.ChoiceProps)\n"
+        .. "@return The dropdown",
+    fn = elements.dropdown,
+  },
+  field = {
+    sig = "value<ui.Element>(string text, value<ui.FieldProps?> props)",
+    doc = "A text field; onChange gets each edit and onSubmit the text when Return is pressed\n"
+        .. "@param text The field's text, which typing starts from; empty if nil\n"
+        .. "@param props The field's properties (ui.FieldProps), which must have an id\n"
+        .. "@return The field",
+    fn = elements.field,
+  },
+  number = {
+    sig = "value<ui.Element>(double value, value<ui.NumberProps?> props)",
+    doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange\n"
+        .. "@param value The number it shows, kept from min to max and rounded to step; 0 if it is not a number\n"
+        .. "@param props The field's properties (ui.NumberProps), which must have an id\n"
+        .. "@return The number field",
+    fn = elements.number,
+  },
+  key = {
+    sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)",
+    doc = "A key combination, which a click and a key press change; onChange gets it\n"
+        .. "@param combination The key combination it shows, such as \"Ctrl+S\"; empty if nil\n"
+        .. "@param props The key element's properties (ui.KeyProps), which must have an id\n"
+        .. "@return The key element",
+    fn = elements.key,
+  },
+  image = {
+    sig = "value<ui.Element>(string path, value<ui.Props?> props)",
+    doc = "An image file\n"
+        .. "@param path The image file's path, read with image at the surface's scale and kept; one that cannot be read takes no room\n"
+        .. "@param props The image's properties (ui.Props)\n"
+        .. "@return The image element",
+    fn = elements.image,
+  },
+  space = {
+    sig = "value<ui.Element>(value<ui.Props?> props)",
+    doc = "Empty room, which grows by default\n"
+        .. "@param props The space's properties (ui.Props); it grows unless grow says otherwise\n"
+        .. "@return The space",
+    fn = elements.space,
+  },
+  showDescription = {
+    sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Description> root)",
+    doc = "Build the elements of a description, as C plugins give them, and show them; a described element with an id keeps what its callbacks get, for take\n"
+        .. "@param panel The panel, as its draw gets it\n"
+        .. "@param surface The panel's surface, as its draw gets it\n"
+        .. "@param root The description of the element that takes the whole surface, with the others as its children (ui.Description)",
+    fn = services.showDescription,
+  },
+  take = {
+    sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)",
+    doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run\n"
+        .. "@param panel The panel that showed the description\n"
+        .. "@param id The described element's id\n"
+        .. "@param callback The callback's name, such as \"onClick\", \"onChange\" or \"onToggle\"\n"
+        .. "@return What the callback got, as value and, for onToggle, open; nil if it did not run or was taken already",
+    fn = services.take,
+  },
 }))

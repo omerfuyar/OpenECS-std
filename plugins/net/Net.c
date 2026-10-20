@@ -798,19 +798,68 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port)", "Start a TCP connection to a host and port"},
-        {"connectTLS", (ECSFunction)NetConnectTLS, "handle<net.connection>(string host, int port)", "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones"},
-        {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)", "Give a connection's state: 1 connected, and for TLS secured, 0 waiting, -1 failed or closed"},
-        {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data)", "Send data; it goes out in the background"},
-        {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int most)", "Take what has arrived, at most a number of bytes; nothing if nothing has"},
-        {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)", "Close a connection"},
-        {"listen", (ECSFunction)NetListen, "handle<net.server>(int port)", "Wait for TCP connections on a port of every address of this computer"},
-        {"listenTLS", (ECSFunction)NetListenTLS, "handle<net.server>(int port, string certificate, string key)", "Wait for TLS connections on a port, with a certificate and its key from PEM files"},
-        {"trust", (ECSFunction)NetTrust, "bool(string path)", "Trust the certificates of a PEM file too, beside the system's, for later TLS connections"},
-        {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server)", "Take a connection that a server has, if any"},
-        {"udp", (ECSFunction)NetUDPOpen, "handle<net.udp>(int port)", "Open a UDP socket on a port of every address of this computer; port 0 picks a free one"},
-        {"sendTo", (ECSFunction)NetUDPSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)", "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way"},
-        {"receiveFrom", (ECSFunction)NetUDPReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)", "Take a datagram that has arrived, with the address and port it came from; nothing if none has"},
+        {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port)",
+         "Start a TCP connection to a host and port\n"
+         "@param host The host's name or address; it resolves in the background\n"
+         "@param port The port, from 0 to 65535\n"
+         "@return The connection, whose status tells when it connects or fails"},
+        {"connectTLS", (ECSFunction)NetConnectTLS, "handle<net.connection>(string host, int port)",
+         "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones\n"
+         "@param host The host's name or address; it resolves in the background, and the certificate must be for it\n"
+         "@param port The port, from 0 to 65535\n"
+         "@return The connection, whose status is 1 once the handshake is done; nothing if TLS cannot start"},
+        {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)",
+         "Give a connection's state: 1 connected, and for TLS secured, 0 waiting, -1 failed or closed\n"
+         "@param connection The connection\n"
+         "@return 1 once it is connected, and for TLS its handshake done; 0 while it waits; -1 if it failed or closed"},
+        {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data)",
+         "Send data; it goes out in the background\n"
+         "@param connection The connection\n"
+         "@param data The bytes to send; they are copied\n"
+         "@return False if it has no socket yet, it is closed, or for TLS its handshake is not done"},
+        {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int most)",
+         "Take what has arrived, at most a number of bytes; nothing if nothing has\n"
+         "@param connection The connection\n"
+         "@param most The most bytes to take\n"
+         "@return What arrived, kept until the next receive on the connection; empty if nothing has"},
+        {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)",
+         "Close a connection\n"
+         "@param connection The connection; its status is -1 after"},
+        {"listen", (ECSFunction)NetListen, "handle<net.server>(int port)",
+         "Wait for TCP connections on a port of every address of this computer\n"
+         "@param port The port, from 0 to 65535\n"
+         "@return The server, or nothing if it cannot listen"},
+        {"listenTLS", (ECSFunction)NetListenTLS, "handle<net.server>(int port, string certificate, string key)",
+         "Wait for TLS connections on a port, with a certificate and its key from PEM files\n"
+         "@param port The port, from 0 to 65535\n"
+         "@param certificate The path of the certificate's PEM file; a relative path starts at the executable's folder\n"
+         "@param key The path of the private key's PEM file; a relative path starts at the executable's folder\n"
+         "@return The server, or nothing if it cannot listen or cannot read the certificate or key"},
+        {"trust", (ECSFunction)NetTrust, "bool(string path)",
+         "Trust the certificates of a PEM file too, beside the system's, for later TLS connections\n"
+         "@param path The path of the PEM file; a relative path starts at the executable's folder\n"
+         "@return False if the file cannot be read"},
+        {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server)",
+         "Take a connection that a server has, if any\n"
+         "@param server The server, as listen or listenTLS gives it\n"
+         "@return A connection that a client made, or nothing if none waits"},
+        {"udp", (ECSFunction)NetUDPOpen, "handle<net.udp>(int port)",
+         "Open a UDP socket on a port of every address of this computer; port 0 picks a free one\n"
+         "@param port The port, from 0 to 65535; 0 picks a free one\n"
+         "@return The socket, or nothing if it cannot open"},
+        {"sendTo", (ECSFunction)NetUDPSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)",
+         "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way\n"
+         "@param socket The UDP socket\n"
+         "@param host The host's name or address; the socket keeps the last 8 it resolved\n"
+         "@param port The host's port, from 0 to 65535\n"
+         "@param data The datagram's bytes; they are copied\n"
+         "@return False if the host's name cannot start to resolve"},
+        {"receiveFrom", (ECSFunction)NetUDPReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)",
+         "Take a datagram that has arrived, with the address and port it came from; nothing if none has\n"
+         "@param socket The UDP socket\n"
+         "@param host The address the datagram came from, kept until the next receiveFrom; nothing if none has arrived\n"
+         "@param port The port the datagram came from; 0 if none has arrived\n"
+         "@return The datagram, kept until the next receiveFrom on the socket; empty if none has arrived"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here

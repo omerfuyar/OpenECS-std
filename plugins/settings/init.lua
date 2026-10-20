@@ -372,11 +372,36 @@ end
 
 assert(ecs.service.register({
   open = { sig = "void()", doc = "Open settings", fn = services.open },
-  up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting above", fn = services.up },
-  down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the setting below", fn = services.down },
-  previous = { sig = "void(handle<ecs.panel> panel)", doc = "Change the chosen setting one step back", fn = services.previous },
-  next = { sig = "void(handle<ecs.panel> panel)", doc = "Change the chosen setting one step forward", fn = services.next },
-  edit = { sig = "void(handle<ecs.panel> panel)", doc = "Toggle or cycle the chosen setting, or type its value", fn = services.edit },
+  up = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the setting above\n"
+        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
+    fn = services.up,
+  },
+  down = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the setting below\n"
+        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
+    fn = services.down,
+  },
+  previous = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Change the chosen setting one step back\n"
+        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
+    fn = services.previous,
+  },
+  next = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Change the chosen setting one step forward\n"
+        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
+    fn = services.next,
+  },
+  edit = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Toggle or cycle the chosen setting, or type its value\n"
+        .. "@param panel The settings window, as its keys pass the focused panel; while one of its fields has the keys, what is typed is saved",
+    fn = services.edit,
+  },
 }))
 
 -- default keys for the window; presets and the user's settings can change them

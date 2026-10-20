@@ -757,13 +757,36 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"info", (ECSFunction)FsInfo, "void(string path, out value<fs.Info?> info)", "Tell what a path is: its type (file, folder or other), size and when it changed; nothing if it does not exist"},
-        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value<fs.Entry[]?> entries)", "List the entries of a folder whose names match a pattern, such as *.lua, by name; an empty pattern matches every name"},
-        {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path)", "Make a folder, and the folders above it that are missing"},
-        {"copy", (ECSFunction)FsCopy, "bool(string from, string to)", "Copy a file, replacing what is at the new path"},
-        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed)", "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change"},
-        {"unwatch", (ECSFunction)FsUnwatch, "void(handle<fs.watch> watch)", "Stop watching a folder now, instead of when no one uses its handle"},
-        {"folder", (ECSFunction)FsFolder, "string(string name)", "Give a folder by name: executable, home, desktop, documents, downloads, music, pictures, videos, screenshots or templates"},
+        {"info", (ECSFunction)FsInfo, "void(string path, out value<fs.Info?> info)",
+         "Tell what a path is: its type (file, folder or other), size and when it changed; nothing if it does not exist\n"
+         "@param path The path; a relative path starts at the executable's folder\n"
+         "@param info Its type, \"file\", \"folder\" or \"other\", its size in bytes, and modified, when it last changed, in seconds since 1970; nothing if the path does not exist"},
+        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value<fs.Entry[]?> entries)",
+         "List the entries of a folder whose names match a pattern, such as *.lua, by name; an empty pattern matches every name\n"
+         "@param folder The folder's path; a relative path starts at the executable's folder\n"
+         "@param pattern The names to list: * stands for any characters but /, and ? for one; empty for every name\n"
+         "@param entries The entries, sorted by name, each with its name and the fields of info; the entries of the folder's folders are not listed; nothing if the folder cannot be read"},
+        {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path)",
+         "Make a folder, and the folders above it that are missing\n"
+         "@param path The folder's path; a relative path starts at the executable's folder\n"
+         "@return False if it fails"},
+        {"copy", (ECSFunction)FsCopy, "bool(string from, string to)",
+         "Copy a file, replacing what is at the new path\n"
+         "@param from The file's path; a relative path starts at the executable's folder\n"
+         "@param to The new path; a relative path starts at the executable's folder\n"
+         "@return False if it fails"},
+        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed)",
+         "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change\n"
+         "@param folder The folder's path; a relative path starts at the executable's folder\n"
+         "@param changed Called on the main thread for each change: its folder is the folder as given, ending with /, its name the entry's name, and its change \"added\", \"removed\" or \"changed\"; not called after the watch stops\n"
+         "@return The watch, or nothing if the folder cannot be watched, or it is a file"},
+        {"unwatch", (ECSFunction)FsUnwatch, "void(handle<fs.watch> watch)",
+         "Stop watching a folder now, instead of when no one uses its handle\n"
+         "@param watch The watch, as watch gives it; its handle must not be used after"},
+        {"folder", (ECSFunction)FsFolder, "string(string name)",
+         "Give a folder by name: executable, home, desktop, documents, downloads, music, pictures, videos, screenshots or templates\n"
+         "@param name The folder's name: executable, the executable's folder, or one of the user's folders: home, desktop, documents, downloads, music, pictures, videos, screenshots or templates\n"
+         "@return The folder's path, ending with /; nothing if the system does not have it or the name is not one of these"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

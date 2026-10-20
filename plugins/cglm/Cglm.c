@@ -120,15 +120,46 @@ CGLM_VECTOR(3)
 CGLM_VECTOR(4)
 
 // the registration of a vector's functions, with their signatures
-#define CGLM_VECTOR_FUNCTIONS(N)                                                                                                          \
-    {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "buffer(buffer a, buffer b)", "Add two vectors of " #N " floats"},                     \
-        {"vec" #N "Sub", (ECSFunction)CglmVec##N##Sub, "buffer(buffer a, buffer b)", "Subtract b from a, vectors of " #N " floats"},      \
-        {"vec" #N "Scale", (ECSFunction)CglmVec##N##Scale, "buffer(buffer v, float s)", "Multiply a vector of " #N " floats by a number"}, \
-        {"vec" #N "Dot", (ECSFunction)CglmVec##N##Dot, "float(buffer a, buffer b)", "Give the dot product of two vectors of " #N " floats"}, \
-        {"vec" #N "Norm", (ECSFunction)CglmVec##N##Norm, "float(buffer v)", "Give the length of a vector of " #N " floats"},               \
-        {"vec" #N "Distance", (ECSFunction)CglmVec##N##Distance, "float(buffer a, buffer b)", "Give the distance between two points of " #N " floats"}, \
-        {"vec" #N "Normalize", (ECSFunction)CglmVec##N##Normalize, "buffer(buffer v)", "Give a vector of " #N " floats the length 1, in its direction"}, \
-        {"vec" #N "Lerp", (ECSFunction)CglmVec##N##Lerp, "buffer(buffer from, buffer to, float t)", "Give the vector at t between from, at 0, and to, at 1"}
+#define CGLM_VECTOR_FUNCTIONS(N)                                                                          \
+    {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "buffer(buffer a, buffer b)",                          \
+     "Add two vectors of " #N " floats\n"                                                                 \
+     "@param a A vector: " #N " floats\n"                                                                 \
+     "@param b A vector: " #N " floats\n"                                                                 \
+     "@return The sum: " #N " floats, or an empty buffer if a buffer has another size"},                  \
+        {"vec" #N "Sub", (ECSFunction)CglmVec##N##Sub, "buffer(buffer a, buffer b)",                      \
+         "Subtract b from a, vectors of " #N " floats\n"                                                  \
+         "@param a The vector to subtract from: " #N " floats\n"                                          \
+         "@param b The vector to subtract: " #N " floats\n"                                               \
+         "@return The difference, a minus b: " #N " floats, or an empty buffer if a buffer has another size"},             \
+        {"vec" #N "Scale", (ECSFunction)CglmVec##N##Scale, "buffer(buffer v, float s)",                   \
+         "Multiply a vector of " #N " floats by a number\n"                                               \
+         "@param v A vector: " #N " floats\n"                                                             \
+         "@param s The number each float is multiplied by\n"                                              \
+         "@return The scaled vector: " #N " floats, or an empty buffer if v has another size"},            \
+        {"vec" #N "Dot", (ECSFunction)CglmVec##N##Dot, "float(buffer a, buffer b)",                       \
+         "Give the dot product of two vectors of " #N " floats\n"                                         \
+         "@param a A vector: " #N " floats\n"                                                             \
+         "@param b A vector: " #N " floats\n"                                                             \
+         "@return The dot product, or 0 if a buffer has another size"},                                    \
+        {"vec" #N "Norm", (ECSFunction)CglmVec##N##Norm, "float(buffer v)",                               \
+         "Give the length of a vector of " #N " floats\n"                                                 \
+         "@param v A vector: " #N " floats\n"                                                             \
+         "@return The length, or 0 if v has another size"},                                                \
+        {"vec" #N "Distance", (ECSFunction)CglmVec##N##Distance, "float(buffer a, buffer b)",             \
+         "Give the distance between two points of " #N " floats\n"                                        \
+         "@param a A point: " #N " floats\n"                                                              \
+         "@param b A point: " #N " floats\n"                                                              \
+         "@return The distance, or 0 if a buffer has another size"},                                       \
+        {"vec" #N "Normalize", (ECSFunction)CglmVec##N##Normalize, "buffer(buffer v)",                    \
+         "Give a vector of " #N " floats the length 1, in its direction\n"                                \
+         "@param v A vector: " #N " floats\n"                                                             \
+         "@return The vector: " #N " floats, all 0 if v's length is about 0, or an empty buffer if v has another size"}, \
+        {"vec" #N "Lerp", (ECSFunction)CglmVec##N##Lerp, "buffer(buffer from, buffer to, float t)",       \
+         "Give the vector at t between from, at 0, and to, at 1\n"                                        \
+         "@param from The vector at 0: " #N " floats\n"                                                   \
+         "@param to The vector at 1: " #N " floats\n"                                                     \
+         "@param t Where between them: 0 gives from, 1 gives to\n"                                        \
+         "@return The vector at t: " #N " floats, or an empty buffer if a buffer has another size"}
 
 static SHUSlice CglmVec2(f32 x, f32 y)
 {
@@ -503,42 +534,178 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"vec2", (ECSFunction)CglmVec2, "buffer(float x, float y)", "Make a vector of 2 floats"},
-        {"vec3", (ECSFunction)CglmVec3, "buffer(float x, float y, float z)", "Make a vector of 3 floats, such as a point or a direction"},
-        {"vec4", (ECSFunction)CglmVec4, "buffer(float x, float y, float z, float w)", "Make a vector of 4 floats, such as a colour for a shader"},
-        {"components", (ECSFunction)CglmComponents, "void(buffer v, out float x, out float y, out float z, out float w)", "Give the floats of a vector or quaternion; those it lacks are 0"},
+        {"vec2", (ECSFunction)CglmVec2, "buffer(float x, float y)",
+         "Make a vector of 2 floats\n"
+         "@param x The first float\n"
+         "@param y The second float\n"
+         "@return The vector: 2 floats"},
+        {"vec3", (ECSFunction)CglmVec3, "buffer(float x, float y, float z)",
+         "Make a vector of 3 floats, such as a point or a direction\n"
+         "@param x The first float\n"
+         "@param y The second float\n"
+         "@param z The third float\n"
+         "@return The vector: 3 floats"},
+        {"vec4", (ECSFunction)CglmVec4, "buffer(float x, float y, float z, float w)",
+         "Make a vector of 4 floats, such as a colour for a shader\n"
+         "@param x The first float\n"
+         "@param y The second float\n"
+         "@param z The third float\n"
+         "@param w The fourth float\n"
+         "@return The vector: 4 floats"},
+        {"components", (ECSFunction)CglmComponents, "void(buffer v, out float x, out float y, out float z, out float w)",
+         "Give the floats of a vector or quaternion; those it lacks are 0\n"
+         "@param v A vector or quaternion: up to 4 floats; with more, or not whole floats, all four are 0\n"
+         "@param x The first float\n"
+         "@param y The second float\n"
+         "@param z The third float\n"
+         "@param w The fourth float"},
         CGLM_VECTOR_FUNCTIONS(2),
         CGLM_VECTOR_FUNCTIONS(3),
         CGLM_VECTOR_FUNCTIONS(4),
-        {"vec3Cross", (ECSFunction)CglmVec3Cross, "buffer(buffer a, buffer b)", "Give the cross product of two vectors of 3 floats"},
-        {"mat4Identity", (ECSFunction)CglmMat4Identity, "buffer()", "Give the matrix that changes nothing"},
-        {"mat4Mul", (ECSFunction)CglmMat4Mul, "buffer(buffer m1, buffer m2)", "Multiply matrix m1 by matrix m2: the result does m2, then m1"},
-        {"mat4Mulv", (ECSFunction)CglmMat4Mulv, "buffer(buffer m, buffer v)", "Multiply a matrix by a vector of 4 floats"},
-        {"mat4Mulv3", (ECSFunction)CglmMat4Mulv3, "buffer(buffer m, buffer v, float last)", "Multiply a matrix by a vector of 3 floats whose fourth is last, 1 for a point and 0 for a direction"},
-        {"mat4Transpose", (ECSFunction)CglmMat4Transpose, "buffer(buffer m)", "Swap a matrix's rows and columns"},
-        {"mat4Det", (ECSFunction)CglmMat4Det, "float(buffer m)", "Give a matrix's determinant"},
-        {"mat4Inv", (ECSFunction)CglmMat4Inv, "buffer(buffer m)", "Give the matrix that undoes a matrix; an empty buffer if it has none"},
-        {"translateMake", (ECSFunction)CglmTranslateMake, "buffer(buffer v)", "Give the matrix that moves by a vector of 3 floats"},
-        {"scaleMake", (ECSFunction)CglmScaleMake, "buffer(buffer v)", "Give the matrix that scales by a vector of 3 floats"},
-        {"rotateMake", (ECSFunction)CglmRotateMake, "buffer(float angle, buffer axis)", "Give the matrix that turns by an angle in radians around an axis, counterclockwise as the axis points at the viewer"},
-        {"translate", (ECSFunction)CglmTranslate, "buffer(buffer m, buffer v)", "Give a matrix that moves by a vector of 3 floats, then does m"},
-        {"rotate", (ECSFunction)CglmRotate, "buffer(buffer m, float angle, buffer axis)", "Give a matrix that turns by an angle around an axis, then does m"},
-        {"scale", (ECSFunction)CglmScale, "buffer(buffer m, buffer v)", "Give a matrix that scales by a vector of 3 floats, then does m"},
-        {"perspective", (ECSFunction)CglmPerspective, "buffer(float fovy, float aspect, float nearZ, float farZ)", "Give a perspective that sees down -z, with a vertical field of view in radians and the width's ratio to the height; the depth goes from 0, at nearZ, to 1, at farZ, as gpu takes it"},
-        {"ortho", (ECSFunction)CglmOrtho, "buffer(float left, float right, float bottom, float top, float nearZ, float farZ)", "Give a projection without perspective, of a box that sees down -z; the depth goes from 0 to 1"},
-        {"lookat", (ECSFunction)CglmLookat, "buffer(buffer eye, buffer center, buffer up)", "Give the matrix of a camera at eye that looks at center, with up as near its up as it can be"},
-        {"project", (ECSFunction)CglmProject, "buffer(buffer pos, buffer m, buffer vp)", "Give where a point is in a viewport, x, y, width and height, through a matrix such as a projection's: x and y in it, from its bottom left, and the depth"},
-        {"quatIdentity", (ECSFunction)CglmQuatIdentity, "buffer()", "Give the quaternion that turns nothing"},
-        {"quat", (ECSFunction)CglmQuat, "buffer(float angle, float x, float y, float z)", "Give the quaternion that turns by an angle in radians around the axis x, y, z"},
-        {"quatv", (ECSFunction)CglmQuatv, "buffer(float angle, buffer axis)", "Give the quaternion that turns by an angle in radians around an axis of 3 floats"},
-        {"quatMul", (ECSFunction)CglmQuatMul, "buffer(buffer p, buffer q)", "Multiply quaternion p by quaternion q: the result turns as q, then as p"},
-        {"quatNormalize", (ECSFunction)CglmQuatNormalize, "buffer(buffer q)", "Give a quaternion the length 1"},
-        {"quatSlerp", (ECSFunction)CglmQuatSlerp, "buffer(buffer from, buffer to, float t)", "Give the turn at t between quaternions from, at 0, and to, at 1, at an even speed"},
-        {"quatMat4", (ECSFunction)CglmQuatMat4, "buffer(buffer q)", "Give the matrix that turns as a quaternion does"},
-        {"quatRotatev", (ECSFunction)CglmQuatRotatev, "buffer(buffer q, buffer v)", "Turn a vector of 3 floats by a quaternion"},
-        {"perlinVec2", (ECSFunction)CglmPerlinVec2, "float(buffer point)", "Give Perlin noise at a point of 2 floats, from about -1 to 1"},
-        {"perlinVec3", (ECSFunction)CglmPerlinVec3, "float(buffer point)", "Give Perlin noise at a point of 3 floats, from about -1 to 1"},
-        {"perlinVec4", (ECSFunction)CglmPerlinVec4, "float(buffer point)", "Give Perlin noise at a point of 4 floats, from about -1 to 1"},
+        {"vec3Cross", (ECSFunction)CglmVec3Cross, "buffer(buffer a, buffer b)",
+         "Give the cross product of two vectors of 3 floats\n"
+         "@param a A vector: 3 floats\n"
+         "@param b A vector: 3 floats\n"
+         "@return The cross product of a and b: 3 floats, or an empty buffer if a buffer has another size"},
+        {"mat4Identity", (ECSFunction)CglmMat4Identity, "buffer()",
+         "Give the matrix that changes nothing\n"
+         "@return The identity matrix: 16 floats, column by column"},
+        {"mat4Mul", (ECSFunction)CglmMat4Mul, "buffer(buffer m1, buffer m2)",
+         "Multiply matrix m1 by matrix m2: the result does m2, then m1\n"
+         "@param m1 A matrix: 16 floats, column by column\n"
+         "@param m2 A matrix: 16 floats, column by column\n"
+         "@return The product: 16 floats, column by column, or an empty buffer if a buffer has another size"},
+        {"mat4Mulv", (ECSFunction)CglmMat4Mulv, "buffer(buffer m, buffer v)",
+         "Multiply a matrix by a vector of 4 floats\n"
+         "@param m A matrix: 16 floats, column by column\n"
+         "@param v A vector: 4 floats\n"
+         "@return The product: 4 floats, or an empty buffer if a buffer has another size"},
+        {"mat4Mulv3", (ECSFunction)CglmMat4Mulv3, "buffer(buffer m, buffer v, float last)",
+         "Multiply a matrix by a vector of 3 floats whose fourth is last, 1 for a point and 0 for a direction\n"
+         "@param m A matrix: 16 floats, column by column\n"
+         "@param v A vector: 3 floats\n"
+         "@param last The vector's fourth float\n"
+         "@return The product's first 3 floats, not divided by its fourth, or an empty buffer if a buffer has another size"},
+        {"mat4Transpose", (ECSFunction)CglmMat4Transpose, "buffer(buffer m)",
+         "Swap a matrix's rows and columns\n"
+         "@param m A matrix: 16 floats, column by column\n"
+         "@return The transposed matrix: 16 floats, column by column, or an empty buffer if m has another size"},
+        {"mat4Det", (ECSFunction)CglmMat4Det, "float(buffer m)",
+         "Give a matrix's determinant\n"
+         "@param m A matrix: 16 floats, column by column\n"
+         "@return The determinant, or 0 if m has another size"},
+        {"mat4Inv", (ECSFunction)CglmMat4Inv, "buffer(buffer m)",
+         "Give the matrix that undoes a matrix; an empty buffer if it has none\n"
+         "@param m A matrix: 16 floats, column by column\n"
+         "@return The inverse: 16 floats, column by column, or an empty buffer if m's determinant is 0 or m has another size"},
+        {"translateMake", (ECSFunction)CglmTranslateMake, "buffer(buffer v)",
+         "Give the matrix that moves by a vector of 3 floats\n"
+         "@param v The move along x, y and z: 3 floats\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if v has another size"},
+        {"scaleMake", (ECSFunction)CglmScaleMake, "buffer(buffer v)",
+         "Give the matrix that scales by a vector of 3 floats\n"
+         "@param v The scale along x, y and z: 3 floats\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if v has another size"},
+        {"rotateMake", (ECSFunction)CglmRotateMake, "buffer(float angle, buffer axis)",
+         "Give the matrix that turns by an angle in radians around an axis, counterclockwise as the axis points at the viewer\n"
+         "@param angle The angle, in radians\n"
+         "@param axis The axis: 3 floats, of any length but 0\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if axis has another size"},
+        {"translate", (ECSFunction)CglmTranslate, "buffer(buffer m, buffer v)",
+         "Give a matrix that moves by a vector of 3 floats, then does m\n"
+         "@param m The matrix to change: 16 floats, column by column\n"
+         "@param v The move along x, y and z: 3 floats\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if a buffer has another size"},
+        {"rotate", (ECSFunction)CglmRotate, "buffer(buffer m, float angle, buffer axis)",
+         "Give a matrix that turns by an angle around an axis, then does m\n"
+         "@param m The matrix to change: 16 floats, column by column\n"
+         "@param angle The angle, in radians, counterclockwise as the axis points at the viewer\n"
+         "@param axis The axis: 3 floats, of any length but 0\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if a buffer has another size"},
+        {"scale", (ECSFunction)CglmScale, "buffer(buffer m, buffer v)",
+         "Give a matrix that scales by a vector of 3 floats, then does m\n"
+         "@param m The matrix to change: 16 floats, column by column\n"
+         "@param v The scale along x, y and z: 3 floats\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if a buffer has another size"},
+        {"perspective", (ECSFunction)CglmPerspective, "buffer(float fovy, float aspect, float nearZ, float farZ)",
+         "Give a perspective that sees down -z, with a vertical field of view in radians and the width's ratio to the height; the depth goes from 0, at nearZ, to 1, at farZ, as gpu takes it\n"
+         "@param fovy The vertical field of view, in radians\n"
+         "@param aspect The width divided by the height\n"
+         "@param nearZ The distance to the near plane, more than 0\n"
+         "@param farZ The distance to the far plane, more than nearZ\n"
+         "@return The projection matrix: 16 floats, column by column"},
+        {"ortho", (ECSFunction)CglmOrtho, "buffer(float left, float right, float bottom, float top, float nearZ, float farZ)",
+         "Give a projection without perspective, of a box that sees down -z; the depth goes from 0 to 1\n"
+         "@param left The box's left x\n"
+         "@param right The box's right x\n"
+         "@param bottom The box's bottom y\n"
+         "@param top The box's top y\n"
+         "@param nearZ The distance along -z to the box's near side, where the depth is 0\n"
+         "@param farZ The distance along -z to the box's far side, where the depth is 1\n"
+         "@return The projection matrix: 16 floats, column by column"},
+        {"lookat", (ECSFunction)CglmLookat, "buffer(buffer eye, buffer center, buffer up)",
+         "Give the matrix of a camera at eye that looks at center, with up as near its up as it can be\n"
+         "@param eye The camera's position: 3 floats\n"
+         "@param center The point it looks at: 3 floats\n"
+         "@param up The direction that is up: 3 floats, not along the line from eye to center\n"
+         "@return The view matrix: 16 floats, column by column, or an empty buffer if a buffer has another size"},
+        {"project", (ECSFunction)CglmProject, "buffer(buffer pos, buffer m, buffer vp)",
+         "Give where a point is in a viewport, x, y, width and height, through a matrix such as a projection's: x and y in it, from its bottom left, and the depth\n"
+         "@param pos The point: 3 floats\n"
+         "@param m The matrix, such as projection, view and model multiplied: 16 floats, column by column\n"
+         "@param vp The viewport: 4 floats, x, y, width and height\n"
+         "@return The point in the viewport: 3 floats, x, y and the depth, from 0 at near to 1 at far; an empty buffer if a buffer has another size"},
+        {"quatIdentity", (ECSFunction)CglmQuatIdentity, "buffer()",
+         "Give the quaternion that turns nothing\n"
+         "@return The quaternion: 4 floats, x, y, z and w"},
+        {"quat", (ECSFunction)CglmQuat, "buffer(float angle, float x, float y, float z)",
+         "Give the quaternion that turns by an angle in radians around the axis x, y, z\n"
+         "@param angle The angle, in radians\n"
+         "@param x The axis's x; the axis can have any length but 0\n"
+         "@param y The axis's y\n"
+         "@param z The axis's z\n"
+         "@return The quaternion: 4 floats, x, y, z and w"},
+        {"quatv", (ECSFunction)CglmQuatv, "buffer(float angle, buffer axis)",
+         "Give the quaternion that turns by an angle in radians around an axis of 3 floats\n"
+         "@param angle The angle, in radians\n"
+         "@param axis The axis: 3 floats, of any length but 0\n"
+         "@return The quaternion: 4 floats, x, y, z and w, or an empty buffer if axis has another size"},
+        {"quatMul", (ECSFunction)CglmQuatMul, "buffer(buffer p, buffer q)",
+         "Multiply quaternion p by quaternion q: the result turns as q, then as p\n"
+         "@param p A quaternion: 4 floats, x, y, z and w\n"
+         "@param q A quaternion: 4 floats, x, y, z and w\n"
+         "@return The product: 4 floats, x, y, z and w, or an empty buffer if a buffer has another size"},
+        {"quatNormalize", (ECSFunction)CglmQuatNormalize, "buffer(buffer q)",
+         "Give a quaternion the length 1\n"
+         "@param q A quaternion: 4 floats, x, y, z and w\n"
+         "@return The quaternion of length 1: 4 floats; the one that turns nothing if q's length is 0; an empty buffer if q has another size"},
+        {"quatSlerp", (ECSFunction)CglmQuatSlerp, "buffer(buffer from, buffer to, float t)",
+         "Give the turn at t between quaternions from, at 0, and to, at 1, at an even speed\n"
+         "@param from The quaternion at 0: 4 floats, x, y, z and w\n"
+         "@param to The quaternion at 1: 4 floats, x, y, z and w\n"
+         "@param t Where between them: 0 gives from, 1 gives to\n"
+         "@return The quaternion at t: 4 floats, x, y, z and w, or an empty buffer if a buffer has another size"},
+        {"quatMat4", (ECSFunction)CglmQuatMat4, "buffer(buffer q)",
+         "Give the matrix that turns as a quaternion does\n"
+         "@param q A quaternion of length 1: 4 floats, x, y, z and w\n"
+         "@return The matrix: 16 floats, column by column, or an empty buffer if q has another size"},
+        {"quatRotatev", (ECSFunction)CglmQuatRotatev, "buffer(buffer q, buffer v)",
+         "Turn a vector of 3 floats by a quaternion\n"
+         "@param q A quaternion: 4 floats, x, y, z and w, of any length but 0\n"
+         "@param v The vector to turn: 3 floats\n"
+         "@return The turned vector: 3 floats, or an empty buffer if a buffer has another size"},
+        {"perlinVec2", (ECSFunction)CglmPerlinVec2, "float(buffer point)",
+         "Give Perlin noise at a point of 2 floats, from about -1 to 1\n"
+         "@param point The point: 2 floats\n"
+         "@return The noise, or 0 if point has another size"},
+        {"perlinVec3", (ECSFunction)CglmPerlinVec3, "float(buffer point)",
+         "Give Perlin noise at a point of 3 floats, from about -1 to 1\n"
+         "@param point The point: 3 floats\n"
+         "@return The noise, or 0 if point has another size"},
+        {"perlinVec4", (ECSFunction)CglmPerlinVec4, "float(buffer point)",
+         "Give Perlin noise at a point of 4 floats, from about -1 to 1\n"
+         "@param point The point: 4 floats\n"
+         "@return The noise, or 0 if point has another size"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

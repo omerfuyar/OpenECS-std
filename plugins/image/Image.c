@@ -427,14 +427,26 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), ImageFree(nullptr););
 
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
-                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read"));
+                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read\n"
+                                                 "@param path The file's path, PNG, JPG, GIF, BMP, TGA, PSD, HDR, PNM or SVG; a relative path starts at the executable's folder\n"
+                                                 "@param scale The scale of the file's own size, above 0; 1 keeps its size, and an SVG file's size is its own at 96 dots per inch\n"
+                                                 "@return A new image, or nothing if the file cannot be read; the reason is logged"));
 
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "decode", (ECSFunction)ImageDecode, "handle<draw.image>(buffer bytes, float scale)",
-                                                 "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does. Nothing if they are not an image"));
+                                                 "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does. Nothing if they are not an image\n"
+                                                 "@param bytes The whole file's bytes; bytes that start with < after any spaces are read as SVG\n"
+                                                 "@param scale The scale of the image's own size, above 0; 1 keeps its size\n"
+                                                 "@return A new image, or nothing if the bytes are not an image; the reason is logged"));
 
     SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value<image.Frame[]?> frames)",
-                                                 "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame"));
+                                                 "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame\n"
+                                                 "@param path The file's path, as load takes it\n"
+                                                 "@param scale The scale of each frame's own size, above 0, as load takes it\n"
+                                                 "@param frames Set to the list of frames in order, each with its new image and the seconds it shows for, 0 for a file that is not a GIF; nothing if the file cannot be read"));
 
     return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path)",
-                                       "Write an image of draw to a file, in the format its extension names: .png, .jpg, .jpeg, .bmp or .tga");
+                                       "Write an image of draw to a file, in the format its extension names: .png, .jpg, .jpeg, .bmp or .tga\n"
+                                       "@param image The image to write, which is left as it is\n"
+                                       "@param path The file's path, replaced if it is there; a relative path starts at the executable's folder, and a JPG file is written at a quality of 90 in 100\n"
+                                       "@return Whether the file was written; the reason it was not is logged");
 }

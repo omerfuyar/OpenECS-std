@@ -1565,27 +1565,128 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"clear", (ECSFunction)GpuClear, "void(handle<ecs.surface> surface, color color)", "Fill the whole surface with a colour, replacing what it holds"},
-        {"fill", (ECSFunction)GpuFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)", "Fill a rectangle"},
-        {"line", (ECSFunction)GpuLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)", "Draw a line"},
-        {"triangles", (ECSFunction)GpuTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)", "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes"},
-        {"mesh", (ECSFunction)GpuMesh, "void(handle<ecs.surface> surface, buffer points, buffer colors, buffer indices)", "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones"},
-        {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)", "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have"},
-        {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)", "Replace a texture's pixels with as many new ones"},
-        {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)", "Give a texture's size in pixels"},
-        {"freeTexture", (ECSFunction)GpuFreeTexture, "void(handle<gpu.texture> texture)", "Free a texture now, instead of when no one uses its handle"},
-        {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes)", "Make a buffer on the GPU of \"vertex\" data, vertices one after another as a pipeline's attributes lay them out, or of \"index\" data, 32-bit indices"},
-        {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)", "Replace a buffer's bytes; bytes of another size make the buffer again"},
-        {"bufferSize", (ECSFunction)GpuBufferSize, "int(handle<gpu.buffer> buffer)", "Give a buffer's size in bytes"},
-        {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)", "Free a buffer now, instead of when no one uses its handle"},
-        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)", "Make a vertex or fragment shader from GLSL, or from compiled code: SPIR-V, DXIL or MSL; gpu turns GLSL and SPIR-V into the code the GPU's driver takes"},
-        {"compile", (ECSFunction)GpuCompile, "buffer(string source, string stage, out string error)", "Compile GLSL to SPIR-V for a vertex or fragment stage; an empty buffer and why if it cannot"},
-        {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)", "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn"},
-        {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
-        {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
-        {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)", "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour"},
-        {"text", (ECSFunction)GpuText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)", "Draw text in one of draw's fonts with its line's top left at a position, and give its width"},
-        {"glyphs", (ECSFunction)GpuGlyphs, "void(handle<draw.font> font, string text, float size, out value<gpu.Glyphs?> glyphs)", "Give the glyphs of a text in one of draw's fonts at a size in pixels, for a pipeline of a plugin's own: for each texture of the glyphs, its number, which a draw's atlas samples, and the glyphs' rectangles as vertices and indices; nothing without a GPU renderer"},
+        {"clear", (ECSFunction)GpuClear, "void(handle<ecs.surface> surface, color color)",
+         "Fill the whole surface with a colour, replacing what it holds\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param color The colour, alpha included, that every pixel takes"},
+        {"fill", (ECSFunction)GpuFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)",
+         "Fill a rectangle\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param color The colour, blended by its alpha"},
+        {"line", (ECSFunction)GpuLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)",
+         "Draw a line\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x1 The start's x, in layout units\n"
+         "@param y1 The start's y, in layout units\n"
+         "@param x2 The end's x, in layout units\n"
+         "@param y2 The end's y, in layout units\n"
+         "@param thickness The line's thickness, in layout units, half on each side; a line whose ends meet draws nothing\n"
+         "@param color The colour, blended by its alpha"},
+        {"triangles", (ECSFunction)GpuTriangles, "void(handle<ecs.surface> surface, buffer points, buffer indices, color color)",
+         "Fill triangles: points are x and y floats, and indices name three points for each triangle, or are empty for the points in threes\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param points The points, x and y 32-bit floats each, in layout units\n"
+         "@param indices The 32-bit indices of the points, from 0, three for each triangle; a triangle with an index past the points is left out\n"
+         "@param color The colour of every triangle, blended by its alpha"},
+        {"mesh", (ECSFunction)GpuMesh, "void(handle<ecs.surface> surface, buffer points, buffer colors, buffer indices)",
+         "Fill triangles whose points each have a colour, blended across each triangle: points are x and y floats, colors are one ARGB 32-bit number for each point, and indices name three points for each triangle, or are empty for the points in threes; later triangles cover earlier ones\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param points The points, x and y 32-bit floats each, in layout units\n"
+         "@param colors One colour for each point, ARGB without premultiplied alpha; fewer colours than points draw nothing\n"
+         "@param indices The 32-bit indices of the points, from 0, three for each triangle; a triangle with an index past the points is left out"},
+        {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)",
+         "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have\n"
+         "@param width The texture's width in pixels, at least 1\n"
+         "@param height The texture's height in pixels, at least 1\n"
+         "@param pixels Exactly 4 bytes for each pixel, which are copied\n"
+         "@return The texture, or nothing for a wrong size or without a GPU renderer; the reason is logged"},
+        {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)",
+         "Replace a texture's pixels with as many new ones\n"
+         "@param texture The texture\n"
+         "@param pixels Exactly 4 bytes for each of the texture's pixels, laid out as texture takes them, which are copied\n"
+         "@return Whether the pixels were replaced; false for another number of bytes"},
+        {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)",
+         "Give a texture's size in pixels\n"
+         "@param texture The texture\n"
+         "@param width Set to the texture's width in pixels\n"
+         "@param height Set to the texture's height in pixels"},
+        {"freeTexture", (ECSFunction)GpuFreeTexture, "void(handle<gpu.texture> texture)",
+         "Free a texture now, instead of when no one uses its handle\n"
+         "@param texture The texture, which is not used again after this"},
+        {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes)",
+         "Make a buffer on the GPU of \"vertex\" data, vertices one after another as a pipeline's attributes lay them out, or of \"index\" data, 32-bit indices\n"
+         "@param usage What it holds: \"vertex\" or \"index\"\n"
+         "@param bytes The buffer's bytes, at least one, which are copied; 4 bytes for each index\n"
+         "@return The buffer, or nothing for another usage, no bytes or without a GPU renderer; the reason is logged"},
+        {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)",
+         "Replace a buffer's bytes; bytes of another size make the buffer again\n"
+         "@param buffer The buffer\n"
+         "@param bytes The new bytes, at least one, which are copied; 4 bytes for each index\n"
+         "@return Whether the bytes were replaced; the reason they were not is logged"},
+        {"bufferSize", (ECSFunction)GpuBufferSize, "int(handle<gpu.buffer> buffer)",
+         "Give a buffer's size in bytes\n"
+         "@param buffer The buffer\n"
+         "@return The number of bytes it holds"},
+        {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)",
+         "Free a buffer now, instead of when no one uses its handle\n"
+         "@param buffer The buffer, which is not used again after this"},
+        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)",
+         "Make a vertex or fragment shader from GLSL, or from compiled code: SPIR-V, DXIL or MSL; gpu turns GLSL and SPIR-V into the code the GPU's driver takes\n"
+         "@param desc The shader's stage, its code, its entry, and its numbers of uniforms and samplers, as gpu.ShaderDesc's fields say\n"
+         "@return The shader, or nothing if it cannot be made, such as for code that does not compile; the reason is logged"},
+        {"compile", (ECSFunction)GpuCompile, "buffer(string source, string stage, out string error)",
+         "Compile GLSL to SPIR-V for a vertex or fragment stage; an empty buffer and why if it cannot\n"
+         "@param source The GLSL source, version 450 for Vulkan\n"
+         "@param stage The shader's stage: \"vertex\" or \"fragment\"\n"
+         "@param error Set to why it does not compile, or to an empty string if it does\n"
+         "@return The SPIR-V, kept until the next compile, or an empty buffer if it does not compile"},
+        {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)",
+         "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn\n"
+         "@param desc The shaders, the attributes, from 1 to 16, the primitive, depth, cull and blend, as gpu.PipelineDesc's fields say\n"
+         "@return The pipeline, or nothing if it cannot be made, such as for a missing shader or an unknown word; the reason is logged"},
+        {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)",
+         "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param pipeline The pipeline that draws them\n"
+         "@param draw The vertex and index buffers, the count, the uniforms and the texture or atlas, as gpu.Draw's fields say; a count above what the buffers hold draws all"},
+        {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)",
+         "Draw a texture stretched to a rectangle\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param texture The texture, blended by its premultiplied alpha\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units"},
+        {"imageTransformed", (ECSFunction)GpuImageTransformed, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height, float angle, color color)",
+         "Draw a texture stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param texture The texture, blended by its premultiplied alpha\n"
+         "@param x The rectangle's left before it is turned, in layout units\n"
+         "@param y The rectangle's top before it is turned, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param angle The turn in degrees, clockwise; 0 leaves it upright\n"
+         "@param color The colour each pixel's colour is multiplied by; its alpha fades the whole texture, and white leaves it as it is"},
+        {"text", (ECSFunction)GpuText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)",
+         "Draw text in one of draw's fonts with its line's top left at a position, and give its width\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param font The font, such as draw.font gives\n"
+         "@param text The text, in UTF-8\n"
+         "@param x The left of the text's line, in layout units\n"
+         "@param y The top of the text's line, in layout units\n"
+         "@param size The font's size, in layout units\n"
+         "@param color The text's colour, blended by its alpha\n"
+         "@return The text's width in layout units; 0 for empty text, or when it cannot draw"},
+        {"glyphs", (ECSFunction)GpuGlyphs, "void(handle<draw.font> font, string text, float size, out value<gpu.Glyphs?> glyphs)",
+         "Give the glyphs of a text in one of draw's fonts at a size in pixels, for a pipeline of a plugin's own: for each texture of the glyphs, its number, which a draw's atlas samples, and the glyphs' rectangles as vertices and indices; nothing without a GPU renderer\n"
+         "@param font The font, such as draw.font gives\n"
+         "@param text The text, in UTF-8\n"
+         "@param size The font's size in pixels, rounded to a whole pixel\n"
+         "@param glyphs Set to the text's width, its line's height and its parts, as gpu.Glyphs's fields say; nothing for empty text, without a GPU renderer, or if the font cannot be opened"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

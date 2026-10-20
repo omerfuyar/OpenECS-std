@@ -671,21 +671,83 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"new", (ECSFunction)TextGridNew, "handle<textgrid.grid>(int columns, int rows)", "Make a grid of empty cells, in the theme's colours of text"},
-        {"free", (ECSFunction)TextGridFree, "void(handle<textgrid.grid> grid)", "Free a grid now, instead of when no one uses its handle"},
-        {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)", "Change a grid's size; its lines wrap again at the new width, and the first rows go when they do not fit"},
-        {"size", (ECSFunction)TextGridSize, "void(handle<textgrid.grid> grid, out int columns, out int rows)", "Give a grid's size"},
-        {"clear", (ECSFunction)TextGridClear, "void(handle<textgrid.grid> grid)", "Empty every cell, and move the cursor to the top left"},
-        {"style", (ECSFunction)TextGridStyle, "void(handle<textgrid.grid> grid, string style)", "Set the style that later writing uses: the words bold and underline, or an empty text for none"},
-        {"get", (ECSFunction)TextGridGet, "string(handle<textgrid.grid> grid, int column, int row, out string style)", "Give the character and the style of a cell; the right half of a wide character, and a cell outside the grid, give an empty text"},
-        {"colors", (ECSFunction)TextGridColors, "void(handle<textgrid.grid> grid, color foreground, color background)", "Set the colours that later writing uses"},
-        {"put", (ECSFunction)TextGridPut, "void(handle<textgrid.grid> grid, int column, int row, string text)", "Write text from a cell to the right, cut at the grid's edge"},
-        {"print", (ECSFunction)TextGridPrint, "void(handle<textgrid.grid> grid, string text)", "Write text at the cursor, as a terminal does"},
-        {"setCursor", (ECSFunction)TextGridSetCursor, "void(handle<textgrid.grid> grid, int column, int row)", "Move the cursor"},
-        {"cursor", (ECSFunction)TextGridGetCursor, "void(handle<textgrid.grid> grid, out int column, out int row)", "Give where the cursor is"},
-        {"cell", (ECSFunction)TextGridCellSize, "void(float size, out float width, out float height)", "Give the size of a cell at a font size"},
-        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, out int columns, out int rows)", "Give how many cells fit a rectangle at a font size"},
-        {"draw", (ECSFunction)TextGridDraw, "void(handle<ecs.surface> surface, handle<textgrid.grid> grid, float x, float y, float size, bool cursor)", "Draw a grid into a surface at a font size"},
+        {"new", (ECSFunction)TextGridNew, "handle<textgrid.grid>(int columns, int rows)",
+         "Make a grid of empty cells, in the theme's colours of text\n"
+         "@param columns The number of columns; at least 1\n"
+         "@param rows The number of rows; at least 1\n"
+         "@return The grid, or nothing if memory runs out"},
+        {"free", (ECSFunction)TextGridFree, "void(handle<textgrid.grid> grid)",
+         "Free a grid now, instead of when no one uses its handle\n"
+         "@param grid The grid; its handle is not used again"},
+        {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)",
+         "Change a grid's size; its lines wrap again at the new width, and the first rows go when they do not fit\n"
+         "@param grid The grid; it stays as it was if memory runs out\n"
+         "@param columns The new number of columns; at least 1\n"
+         "@param rows The new number of rows; at least 1"},
+        {"size", (ECSFunction)TextGridSize, "void(handle<textgrid.grid> grid, out int columns, out int rows)",
+         "Give a grid's size\n"
+         "@param grid The grid\n"
+         "@param columns Gets the number of columns\n"
+         "@param rows Gets the number of rows"},
+        {"clear", (ECSFunction)TextGridClear, "void(handle<textgrid.grid> grid)",
+         "Empty every cell, and move the cursor to the top left\n"
+         "@param grid The grid; its cells become spaces in its current colours"},
+        {"style", (ECSFunction)TextGridStyle, "void(handle<textgrid.grid> grid, string style)",
+         "Set the style that later writing uses: the words bold and underline, or an empty text for none\n"
+         "@param grid The grid\n"
+         "@param style The words, with spaces between them; another word is reported and left out"},
+        {"get", (ECSFunction)TextGridGet, "string(handle<textgrid.grid> grid, int column, int row, out string style)",
+         "Give the character and the style of a cell; the right half of a wide character, and a cell outside the grid, give an empty text\n"
+         "@param grid The grid\n"
+         "@param column The cell's column, from 0 at the left\n"
+         "@param row The cell's row, from 0 at the top\n"
+         "@param style Gets the cell's style: \"\", \"bold\", \"underline\" or \"bold underline\"\n"
+         "@return The cell's character, in UTF-8; C reads it only until the next call"},
+        {"colors", (ECSFunction)TextGridColors, "void(handle<textgrid.grid> grid, color foreground, color background)",
+         "Set the colours that later writing uses\n"
+         "@param grid The grid; clearing, scrolling and resizing fill new cells with these colours too\n"
+         "@param foreground The colour of the characters, and of the cursor\n"
+         "@param background The colour behind the characters"},
+        {"put", (ECSFunction)TextGridPut, "void(handle<textgrid.grid> grid, int column, int row, string text)",
+         "Write text from a cell to the right, cut at the grid's edge\n"
+         "@param grid The grid; its cursor does not move\n"
+         "@param column The first character's column, from 0 at the left; characters left of the grid are cut\n"
+         "@param row The row, from 0 at the top; outside the grid, nothing is written\n"
+         "@param text The text, in UTF-8"},
+        {"print", (ECSFunction)TextGridPrint, "void(handle<textgrid.grid> grid, string text)",
+         "Write text at the cursor, as a terminal does\n"
+         "@param grid The grid; its cursor moves to the end of the text\n"
+         "@param text The text, in UTF-8; new lines, carriage returns and tabs move the cursor"},
+        {"setCursor", (ECSFunction)TextGridSetCursor, "void(handle<textgrid.grid> grid, int column, int row)",
+         "Move the cursor\n"
+         "@param grid The grid\n"
+         "@param column The cursor's column, from 0 at the left; kept inside the grid\n"
+         "@param row The cursor's row, from 0 at the top; kept inside the grid"},
+        {"cursor", (ECSFunction)TextGridGetCursor, "void(handle<textgrid.grid> grid, out int column, out int row)",
+         "Give where the cursor is\n"
+         "@param grid The grid\n"
+         "@param column Gets the cursor's column, from 0 at the left; it is the number of columns after print fills a row\n"
+         "@param row Gets the cursor's row, from 0 at the top"},
+        {"cell", (ECSFunction)TextGridCellSize, "void(float size, out float width, out float height)",
+         "Give the size of a cell at a font size\n"
+         "@param size The font size, in layout units\n"
+         "@param width Gets a cell's width, in layout units: a character's width in draw's \"mono\" font\n"
+         "@param height Gets a cell's height, in layout units: the font's line height"},
+        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, out int columns, out int rows)",
+         "Give how many cells fit a rectangle at a font size\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param size The font size, in layout units\n"
+         "@param columns Gets the number of whole columns that fit, or 0 if the font cannot be opened\n"
+         "@param rows Gets the number of whole rows that fit, or 0 if the font cannot be opened"},
+        {"draw", (ECSFunction)TextGridDraw, "void(handle<ecs.surface> surface, handle<textgrid.grid> grid, float x, float y, float size, bool cursor)",
+         "Draw a grid into a surface at a font size\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param grid The grid, every cell with its background\n"
+         "@param x The grid's left, in layout units\n"
+         "@param y The grid's top, in layout units\n"
+         "@param size The font size, in layout units\n"
+         "@param cursor Whether to show the cursor, as a line under its cell in the grid's foreground colour"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

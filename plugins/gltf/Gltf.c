@@ -897,14 +897,50 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)", "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read"},
-        {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)", "Free a model now, instead of when no one uses its handle"},
-        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info)", "Give a model's meshes, materials, nodes and root nodes as a table"},
-        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)", "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image, pose or skin call on the model"},
-        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)", "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image, pose or skin call on the model"},
-        {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds)", "Give a primitive's positions moved by a skin's joints at a time of an animation, in the model's space; kept until the next attribute, indices, image, pose or skin call on the model"},
-        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)", "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image, pose or skin call on the model"},
-        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)", "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image, pose or skin call on the model"},
+        {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)",
+         "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read\n"
+         "@param path The file's path; a relative path starts at the executable's folder, and the files a .gltf names are relative to its own folder\n"
+         "@return A new model, which owns all that was read, or nothing if the file cannot be read or is not valid glTF; the reason is logged"},
+        {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)",
+         "Free a model now, instead of when no one uses its handle\n"
+         "@param model The model, which is not used again after this"},
+        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info)",
+         "Give a model's meshes, materials, nodes and root nodes as a table\n"
+         "@param model The model\n"
+         "@param info Set to the model's meshes, materials, images, nodes, animations, skins and roots, numbered from 1; nothing if memory runs out"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)",
+         "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image, pose or skin call on the model\n"
+         "@param model The model\n"
+         "@param mesh The mesh's number in describe's meshes, from 1\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
+         "@param name The attribute's name as describe gives it, such as POSITION or TEXCOORD_0; case matters\n"
+         "@return The attribute's 32-bit floats, one vertex after another, such as three for a POSITION; empty for a missing mesh, primitive or attribute"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)",
+         "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image, pose or skin call on the model\n"
+         "@param model The model\n"
+         "@param mesh The mesh's number in describe's meshes, from 1\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
+         "@return The indices, from 0, or the vertices in order for a primitive without indices; empty for a missing mesh or primitive"},
+        {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds)",
+         "Give a primitive's positions moved by a skin's joints at a time of an animation, in the model's space; kept until the next attribute, indices, image, pose or skin call on the model\n"
+         "@param model The model\n"
+         "@param mesh The mesh's number in describe's meshes, from 1\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
+         "@param skin The skin's number in describe's skins, from 1, such as the one its node names\n"
+         "@param animation The animation's number in describe's animations, from 1; 0 or a missing one leaves the joints where the nodes' own matrices put them\n"
+         "@param seconds The time in the animation; before its first key the first key holds, and after its last the last\n"
+         "@return Three 32-bit floats for each vertex; the positions as they are for a missing skin or a primitive without JOINTS_0 and WEIGHTS_0, and empty for a missing mesh or primitive"},
+        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)",
+         "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image, pose or skin call on the model\n"
+         "@param model The model\n"
+         "@param animation The animation's number in describe's animations, from 1; 0 or a missing one gives the nodes' own matrices\n"
+         "@param seconds The time in the animation; before its first key the first key holds, and after its last the last\n"
+         "@return 16 32-bit floats for each node, column by column, in the order of describe's nodes; empty for a model without nodes"},
+        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)",
+         "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image, pose or skin call on the model\n"
+         "@param model The model\n"
+         "@param image The image's number in describe's images, from 1, such as a material's image\n"
+         "@return The image file's bytes, which image.decode reads; empty for a missing image or one that cannot be read"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
