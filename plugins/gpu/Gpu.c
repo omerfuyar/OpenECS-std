@@ -849,8 +849,14 @@ static GpuBuffer *GpuNewBuffer(const char *usage, SHUSlice bytes)
         buffer->index = index;
     }
 
+    // a buffer made on the GPU whose upload failed is released with it
     if (buffer == nullptr || !GpuFillBuffer(buffer, bytes))
     {
+        if (buffer != nullptr && buffer->buffer != nullptr)
+        {
+            SDL_ReleaseGPUBuffer(GPU.device, buffer->buffer);
+        }
+
         SDL_free(buffer);
         return nullptr;
     }
@@ -932,6 +938,10 @@ static u32 *GpuCompileGlsl(const char *source, bool vertex, usz *retSize, char *
             {
                 glslang_program_SPIRV_get(program, spirv);
                 *retSize = words * sizeof(u32);
+            }
+            else
+            {
+                *retError = SDL_strdup("there is not enough memory for the SPIR-V");
             }
         }
     }
@@ -1221,9 +1231,14 @@ static SHUSlice GpuCompile(const char *source, const char *stage, const char **r
     usz size = 0;
     GPU.compiled = GpuCompileGlsl(source, vertex, &size, &GPU.compileError);
 
+    // a failure always says why, even when there was no memory for the reason
     if (GPU.compileError != nullptr)
     {
         *retError = GPU.compileError;
+    }
+    else if (GPU.compiled == nullptr)
+    {
+        *retError = "gpu cannot compile the shader";
     }
 
     return cs(GPU.compiled, size);

@@ -309,15 +309,27 @@ static void *AudioStreamFile(const char *path)
 
     AudioStream *stream = SDL_calloc(1, sizeof(AudioStream));
 
-    if (stream == nullptr || !AudioOpen(stream, full))
+    bool opened = stream != nullptr && AudioOpen(stream, full);
+
+    // each failure says its own reason: no memory, or a file that cannot be read, which a sound without channels or rate is too
+    if (!opened || stream->channels == 0 || stream->rate == 0)
     {
-        ECS_LogError(AUDIO.plugin, "Cannot stream the sound '%s': not a WAV, MP3, FLAC or OGG file that can be read.", full);
-        SDL_free(stream);
+        ECS_LogError(AUDIO.plugin, "Cannot stream the sound '%s': %s", full, stream == nullptr ? "out of memory." : "not a WAV, MP3, FLAC or OGG file that can be read.");
+
+        if (opened)
+        {
+            AudioClose(stream);
+        }
+        else
+        {
+            SDL_free(stream);
+        }
+
         SDL_free(full);
         return nullptr;
     }
 
-    stream->piece = stream->channels == 0 || stream->rate == 0 ? nullptr : SDL_malloc((usz)((f64)stream->rate * AUDIO_PIECE) * stream->channels * sizeof(f32));
+    stream->piece = SDL_malloc((usz)((f64)stream->rate * AUDIO_PIECE) * stream->channels * sizeof(f32));
     stream->sound = stream->piece == nullptr ? nullptr : AUDIO.NewStream((i32)stream->channels, (i32)stream->rate);
     AudioStream **streams = stream->sound == nullptr ? nullptr : SDL_realloc(AUDIO.streams, (AUDIO.streamCount + 1) * sizeof(AudioStream *));
     AUDIO.streams = streams != nullptr ? streams : AUDIO.streams;
