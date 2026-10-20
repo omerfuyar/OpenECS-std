@@ -374,7 +374,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     const ECSPluginDesc desc = {.Destroy = AudioQuit};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)AudioLoad, "handle<mixer.sound>(string path)", "Read a sound file into a sound of mixer; nothing if it cannot be read"));
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)AudioLoad, "handle<mixer.sound>(string path)",
+                                                 "Read a sound file into a sound of mixer; nothing if it cannot be read\n"
+                                                 "@param path The file's path, a .wav, .mp3, .flac or .ogg file; a relative path starts at the executable's folder\n"
+                                                 "@return A new sound with all the file's samples, or nothing if the file cannot be read; the reason is logged"));
     return ECSService_RegisterFunction(plugin, "stream", (ECSFunction)AudioStreamFile, "handle<mixer.sound>(string path)",
-                                       "Read a long sound file, such as music, a piece at a time into a stream of mixer while it plays; nothing if it cannot be read");
+                                       "Read a long sound file, such as music, a piece at a time into a stream of mixer while it plays; nothing if it cannot be read\n"
+                                       "@param path The file's path, a .wav, .mp3, .flac or .ogg file; a relative path starts at the executable's folder\n"
+                                       "@return A new stream, which audio keeps and finishes at the file's end, or nothing if the file cannot be read; the reason is logged");
 }

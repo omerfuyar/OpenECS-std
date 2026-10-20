@@ -215,9 +215,21 @@ function services.open()
 end
 
 assert(ecs.service.register({
-  up = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry above", fn = services.up },
-  down = { sig = "void(handle<ecs.panel>)", doc = "Choose the entry below", fn = services.down },
-  start = { sig = "void(handle<ecs.panel>)", doc = "Start the chosen preset or session", fn = services.start },
+  up = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the entry above\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
+    fn = services.up,
+  },
+  down = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the entry below\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
+    fn = services.down,
+  },
+  start = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Start the chosen preset or session\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
+    fn = services.start,
+  },
   open = { sig = "void()", doc = "Open launcher", fn = services.open },
 }))
 

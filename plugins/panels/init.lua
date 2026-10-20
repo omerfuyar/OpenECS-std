@@ -199,9 +199,21 @@ end
 
 assert(ecs.service.register({
   open = { sig = "void()", doc = "Open panels", fn = services.open },
-  up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type above", fn = services.up },
-  down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type below", fn = services.down },
-  choose = { sig = "void(handle<ecs.panel> panel)", doc = "Open a panel of the chosen type", fn = services.choose },
+  up = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the panel type above\n" .. "@param panel The panel list, as its keys pass the focused panel",
+    fn = services.up,
+  },
+  down = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Choose the panel type below\n" .. "@param panel The panel list, as its keys pass the focused panel",
+    fn = services.down,
+  },
+  choose = {
+    sig = "void(handle<ecs.panel> panel)",
+    doc = "Open a panel of the chosen type\n" .. "@param panel The panel list, as its keys pass the focused panel",
+    fn = services.choose,
+  },
 }))
 
 -- default keys for the list; presets and the user's settings can change them
