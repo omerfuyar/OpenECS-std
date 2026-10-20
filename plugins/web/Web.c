@@ -931,19 +931,66 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done)", "Start a GET request to a URL; done, if given, gets the request once it is done"},
-        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)", "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done"},
-        {"status", (ECSFunction)WebStatus, "int(handle<web.request> request)", "Give a request's HTTP status once it is done, 0 while it runs, or -1 if it failed"},
-        {"body", (ECSFunction)WebBody, "buffer(handle<web.request> request)", "Give the body of a request's answer once it is done"},
-        {"header", (ECSFunction)WebHeader, "string(handle<web.request> request, string name)", "Give a header of a request's answer once it is done, or nothing"},
-        {"error", (ECSFunction)WebError, "string(handle<web.request> request)", "Give why a request failed"},
-        {"free", (ECSFunction)WebFree, "void(handle<web.request> request)", "Free a request now; one that runs stops"},
-        {"socket", (ECSFunction)WebSocketOpen, "handle<web.socket>(string url, value<string[]?> headers)", "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")"},
-        {"socketStatus", (ECSFunction)WebSocketStatus, "int(handle<web.socket> socket)", "Give a connection's state: 1 open, 0 connecting, -1 failed or closed"},
-        {"socketSend", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text)", "Send a message, as text or as bytes; it goes once the connection is open"},
-        {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string kind)", "Take the oldest message that arrived, and its kind, \"text\" or \"binary\"; nothing if none has"},
-        {"socketError", (ECSFunction)WebSocketError, "string(handle<web.socket> socket)", "Give why a connection failed or closed"},
-        {"socketClose", (ECSFunction)WebFree, "void(handle<web.socket> socket)", "Close a connection and free it now"},
+        {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done)",
+         "Start a GET request to a URL; done, if given, gets the request once it is done\n"
+         "@param url The URL, http:// or https://; one with another scheme fails\n"
+         "@param done Called once, on the main thread, when the request is done or failed; its request is the request, in a new handle if the first was dropped; not called if the request is freed first; nothing for no call\n"
+         "@return The request, or nothing if it cannot be made"},
+        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)",
+         "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done\n"
+         "@param method The method, such as \"GET\", \"POST\" or \"HEAD\"\n"
+         "@param url The URL, http:// or https://; one with another scheme fails\n"
+         "@param headers The headers, each a text such as \"Content-Type: application/json\"; nothing for none\n"
+         "@param body The body to send, copied; empty for none; a body makes a request POST unless the method names another\n"
+         "@param done Called once, on the main thread, when the request is done or failed; its request is the request, in a new handle if the first was dropped; not called if the request is freed first; nothing for no call\n"
+         "@return The request, or nothing if it cannot be made"},
+        {"status", (ECSFunction)WebStatus, "int(handle<web.request> request)",
+         "Give a request's HTTP status once it is done, 0 while it runs, or -1 if it failed\n"
+         "@param request The request\n"
+         "@return The answer's HTTP status once it is done, such as 200 or 404; 0 while it runs; -1 if it failed"},
+        {"body", (ECSFunction)WebBody, "buffer(handle<web.request> request)",
+         "Give the body of a request's answer once it is done\n"
+         "@param request The request\n"
+         "@return The last answer's body, kept while the request lives; empty while it runs"},
+        {"header", (ECSFunction)WebHeader, "string(handle<web.request> request, string name)",
+         "Give a header of a request's answer once it is done, or nothing\n"
+         "@param request The request\n"
+         "@param name The header's name, such as \"Content-Type\", in any case\n"
+         "@return The last answer's value of the header, kept until the next header on the request; nothing while it runs or if the answer has no such header"},
+        {"error", (ECSFunction)WebError, "string(handle<web.request> request)",
+         "Give why a request failed\n"
+         "@param request The request\n"
+         "@return Why it failed; empty while it runs or if it did not fail"},
+        {"free", (ECSFunction)WebFree, "void(handle<web.request> request)",
+         "Free a request now; one that runs stops\n"
+         "@param request The request; its handle must not be used after, and its done is not called"},
+        {"socket", (ECSFunction)WebSocketOpen, "handle<web.socket>(string url, value<string[]?> headers)",
+         "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")\n"
+         "@param url The URL, ws:// or wss://\n"
+         "@param headers The headers, each a text such as \"Origin: http://localhost\"; nothing for none\n"
+         "@return The connection, or nothing if it cannot be made"},
+        {"socketStatus", (ECSFunction)WebSocketStatus, "int(handle<web.socket> socket)",
+         "Give a connection's state: 1 open, 0 connecting, -1 failed or closed\n"
+         "@param socket The connection\n"
+         "@return 1 once the server took it; 0 while it connects; -1 if it failed or closed"},
+        {"socketSend", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text)",
+         "Send a message, as text or as bytes; it goes once the connection is open\n"
+         "@param socket The connection\n"
+         "@param data The message, copied; it goes in one frame\n"
+         "@param text True: it goes as text; false: as bytes\n"
+         "@return False if the connection failed or closed"},
+        {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string kind)",
+         "Take the oldest message that arrived, and its kind, \"text\" or \"binary\"; nothing if none has\n"
+         "@param socket The connection\n"
+         "@param kind The message's kind, \"text\" or \"binary\"; nothing if no message waits\n"
+         "@return The message, whole, kept until the next receive on the connection; empty if none waits"},
+        {"socketError", (ECSFunction)WebSocketError, "string(handle<web.socket> socket)",
+         "Give why a connection failed or closed\n"
+         "@param socket The connection\n"
+         "@return Why it failed or closed; empty while it connects or is open"},
+        {"socketClose", (ECSFunction)WebFree, "void(handle<web.socket> socket)",
+         "Close a connection and free it now\n"
+         "@param socket The connection; its handle must not be used after"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here

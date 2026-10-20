@@ -916,24 +916,80 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"newSound", (ECSFunction)MixerNewSound, "handle<mixer.sound>(int channels, int rate, buffer samples)", "Make a sound from 32-bit float samples, frame after frame, at a rate in frames a second"},
-        {"newStream", (ECSFunction)MixerNewStream, "handle<mixer.sound>(int channels, int rate)", "Make a stream: a sound whose 32-bit float samples are given while it plays, with queue"},
-        {"queue", (ECSFunction)MixerQueue, "bool(handle<mixer.sound> stream, buffer samples)", "Add samples to the end of a stream; false if it is not a stream, it is finished, or the samples are not whole frames"},
-        {"queued", (ECSFunction)MixerQueued, "double(handle<mixer.sound> stream)", "Give the seconds of a stream's samples that wait to play"},
-        {"finish", (ECSFunction)MixerFinish, "void(handle<mixer.sound> stream)", "Tell that no more samples come, so the stream's voice ends once it has played what waits"},
-        {"length", (ECSFunction)MixerLength, "double(handle<mixer.sound> sound)", "Give a sound's length in seconds; 0 for a stream"},
-        {"play", (ECSFunction)MixerPlay, "int(handle<mixer.sound> sound, float volume, bool loop)", "Play a sound, and give the number of the voice that plays it; 0 if it cannot play"},
-        {"stop", (ECSFunction)MixerStop, "void(int voice)", "Stop a voice"},
+        {"newSound", (ECSFunction)MixerNewSound, "handle<mixer.sound>(int channels, int rate, buffer samples)",
+         "Make a sound from 32-bit float samples, frame after frame, at a rate in frames a second\n"
+         "@param channels The number of channels, above 0; each frame has a sample for each\n"
+         "@param rate The frames a second, above 0\n"
+         "@param samples The 32-bit float samples, frame after frame, in whole frames; they are copied\n"
+         "@return The sound, or nothing if channels or rate is not above 0, or the samples are not whole frames"},
+        {"newStream", (ECSFunction)MixerNewStream, "handle<mixer.sound>(int channels, int rate)",
+         "Make a stream: a sound whose 32-bit float samples are given while it plays, with queue\n"
+         "@param channels The number of channels, above 0; each frame has a sample for each\n"
+         "@param rate The frames a second, above 0\n"
+         "@return The stream, or nothing if channels or rate is not above 0"},
+        {"queue", (ECSFunction)MixerQueue, "bool(handle<mixer.sound> stream, buffer samples)",
+         "Add samples to the end of a stream; false if it is not a stream, it is finished, or the samples are not whole frames\n"
+         "@param stream The stream, as newStream gives it\n"
+         "@param samples The 32-bit float samples, frame after frame, with the stream's channels; they are copied\n"
+         "@return True if the samples are added"},
+        {"queued", (ECSFunction)MixerQueued, "double(handle<mixer.sound> stream)",
+         "Give the seconds of a stream's samples that wait to play\n"
+         "@param stream The stream, as newStream gives it\n"
+         "@return The seconds that wait to play; 0 for a sound that is not a stream"},
+        {"finish", (ECSFunction)MixerFinish, "void(handle<mixer.sound> stream)",
+         "Tell that no more samples come, so the stream's voice ends once it has played what waits\n"
+         "@param stream The stream, as newStream gives it; a sound that is not a stream is left as it is"},
+        {"length", (ECSFunction)MixerLength, "double(handle<mixer.sound> sound)",
+         "Give a sound's length in seconds; 0 for a stream\n"
+         "@param sound The sound\n"
+         "@return The length in seconds"},
+        {"play", (ECSFunction)MixerPlay, "int(handle<mixer.sound> sound, float volume, bool loop)",
+         "Play a sound, and give the number of the voice that plays it; 0 if it cannot play\n"
+         "@param sound The sound or stream to play; the voice keeps it while it plays\n"
+         "@param volume The voice's gain: 1 is the sound's own, 0 is silent; below 0 counts as 0\n"
+         "@param loop True: the sound starts again when it ends, until stopped; a stream does not loop\n"
+         "@return The voice, a number above 0; 0 if there is no output, or the stream already plays in a voice"},
+        {"stop", (ECSFunction)MixerStop, "void(int voice)",
+         "Stop a voice\n"
+         "@param voice The voice, as play gives it; a voice that has ended is left alone"},
         {"stopAll", (ECSFunction)MixerStopAll, "void()", "Stop every voice"},
-        {"playing", (ECSFunction)MixerPlaying, "bool(int voice)", "Tell whether a voice still plays"},
-        {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)", "Change a voice's volume; 1 is the sound's own"},
-        {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)", "Move a voice from left, -1, to right, 1; 0 is the middle"},
-        {"filter", (ECSFunction)MixerSetFilter, "void(int voice, float lowpass, float highpass)", "Filter a voice: lowpass cuts the sounds above a frequency in hertz, and highpass those below one; 0 turns a filter off"},
-        {"echo", (ECSFunction)MixerSetEcho, "void(int voice, float delay, float feedback, float mix)", "Give a voice an echo: what it played delay seconds ago, up to 2, comes back at mix, and again at feedback times as loud each time; a delay or mix of 0 takes it away"},
-        {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)", "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output"},
-        {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)", "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away"},
-        {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)", "Let go of a sound that keepSound kept"},
-        {"freeSound", (ECSFunction)MixerFreeSound, "void(handle<mixer.sound> sound)", "Free a sound now, instead of when no one uses its handle; voices that play it finish first"},
+        {"playing", (ECSFunction)MixerPlaying, "bool(int voice)",
+         "Tell whether a voice still plays\n"
+         "@param voice The voice, as play gives it\n"
+         "@return True while it plays, its echo included; false once it has ended"},
+        {"volume", (ECSFunction)MixerVolume, "void(int voice, float volume)",
+         "Change a voice's volume; 1 is the sound's own\n"
+         "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
+         "@param volume The new gain: 1 is the sound's own, 0 is silent; below 0 counts as 0"},
+        {"pan", (ECSFunction)MixerPan, "void(int voice, float pan)",
+         "Move a voice from left, -1, to right, 1; 0 is the middle\n"
+         "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
+         "@param pan From -1, left, to 1, right; 0 is the middle, where both channels keep their whole gain"},
+        {"filter", (ECSFunction)MixerSetFilter, "void(int voice, float lowpass, float highpass)",
+         "Filter a voice: lowpass cuts the sounds above a frequency in hertz, and highpass those below one; 0 turns a filter off\n"
+         "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
+         "@param lowpass The frequency in hertz above which sounds are cut; 0 turns it off\n"
+         "@param highpass The frequency in hertz below which sounds are cut; 0 turns it off"},
+        {"echo", (ECSFunction)MixerSetEcho, "void(int voice, float delay, float feedback, float mix)",
+         "Give a voice an echo: what it played delay seconds ago, up to 2, comes back at mix, and again at feedback times as loud each time; a delay or mix of 0 takes it away\n"
+         "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
+         "@param delay The seconds after which a sound comes back, up to 2; 0 takes the echo away\n"
+         "@param feedback How loud each echo comes back next to the one before, from 0 to 0.95\n"
+         "@param mix How loud the first echo is, from 0 to 1; 0 takes the echo away"},
+        {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)",
+         "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output\n"
+         "@param mix How much of the reverb is heard, from 0, none, to 1\n"
+         "@param size The room's size, from 0 to 1; a larger room rings longer\n"
+         "@return True if the reverb is set; false if there is no output"},
+        {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)",
+         "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away\n"
+         "@param sound The sound to keep; each keepSound needs its own releaseSound"},
+        {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)",
+         "Let go of a sound that keepSound kept\n"
+         "@param sound The sound that keepSound kept"},
+        {"freeSound", (ECSFunction)MixerFreeSound, "void(handle<mixer.sound> sound)",
+         "Free a sound now, instead of when no one uses its handle; voices that play it finish first\n"
+         "@param sound The sound; its handle must not be used after"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
