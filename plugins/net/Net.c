@@ -227,11 +227,18 @@ static char *NetFull(const char *path)
 static bool NetTrust(const char *path)
 {
     char *full = NetFull(path);
-    bool trusted = full != nullptr && NetTLSStart() && mbedtls_x509_crt_parse_file(&NET.certificates, full) == 0;
+
+    // as with the system's file, the certificates that parse are trusted, and those that do not are reported
+    int failed = full != nullptr && NetTLSStart() ? mbedtls_x509_crt_parse_file(&NET.certificates, full) : -1;
+    bool trusted = failed >= 0;
 
     if (!trusted)
     {
         ECS_LogWarn(NET.plugin, "Cannot read the certificates of '%s'", full != nullptr ? full : path);
+    }
+    else if (failed > 0)
+    {
+        ECS_LogWarn(NET.plugin, "%d certificates of '%s' cannot be read; the others are trusted", failed, full);
     }
 
     SDL_free(full);
@@ -664,10 +671,22 @@ static NET_Address *NetUDPAddress(NetUDP *udp, const char *host)
 {
     for (usz i = 0; i < NET_UDP_HOSTS; i++)
     {
-        if (udp->hosts[i].host != nullptr && SDL_strcmp(udp->hosts[i].host, host) == 0)
+        if (udp->hosts[i].host == nullptr || SDL_strcmp(udp->hosts[i].host, host) != 0)
+        {
+            continue;
+        }
+
+        // a host whose name failed to resolve is looked up again, as it may resolve now
+        if (NET_GetAddressStatus(udp->hosts[i].address) != NET_FAILURE)
         {
             return NET_RefAddress(udp->hosts[i].address);
         }
+
+        SDL_free(udp->hosts[i].host);
+        NET_UnrefAddress(udp->hosts[i].address);
+        udp->hosts[i].host = nullptr;
+        udp->hosts[i].address = nullptr;
+        break;
     }
 
     NET_Address *address = NET_ResolveHostname(host);
