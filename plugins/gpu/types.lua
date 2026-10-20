@@ -11,12 +11,13 @@
 ---gpu uses the first one given that it takes, so a plugin gives the kinds of the systems it runs on.
 ---@class gpu.ShaderDesc
 ---@field stage "vertex"|"fragment"
+---@field glsl? string GLSL source, version 450 for Vulkan, which gpu compiles to SPIR-V. Uniform blocks are in set 1 for vertex shaders and set 3 for fragment shaders, and samplers in set 2, as SDL's GPU API sets them.
 ---@field spirv? string SPIR-V bytes. Uniform blocks are in set 1 for vertex shaders and set 3 for fragment shaders, and samplers in set 2, as SDL's GPU API sets them.
 ---@field dxil? string DXIL bytes.
 ---@field msl? string MSL source.
 ---@field entry? string The function the stage starts in; "main" if missing.
----@field uniforms? integer How many uniform blocks it reads; 0 if missing. A draw gives the first one.
----@field samplers? integer How many textures it samples; 0 if missing. A draw gives the first one.
+---@field uniforms? integer How many uniform blocks it reads; counted from GLSL or SPIR-V if missing, else 0. A draw gives the first one.
+---@field samplers? integer How many textures it samples; counted from GLSL or SPIR-V if missing, else 0. A draw gives the first one.
 
 ---A pipeline: two shaders, and how vertices and primitives are drawn.
 ---@class gpu.PipelineDesc

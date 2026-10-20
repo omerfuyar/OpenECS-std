@@ -12,7 +12,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **net:** TCP connections and servers, TLS connections and servers, and UDP sockets, that never block the program.
 - **web:** HTTP and HTTPS requests, and WebSocket connections, that never block the program.
 - **fs:** lists, makes and watches folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
-- **gpu:** draws into GPU surfaces on the GPU, from Lua or C: shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders.
+- **gpu:** draws into GPU surfaces on the GPU, from Lua or C: shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders, which it compiles from GLSL.
 - **cglm:** [cglm](https://github.com/recp/cglm)'s vectors, matrices, quaternions, cameras and noise for 3D scenes and shaders, in Lua; C plugins call cglm itself.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.

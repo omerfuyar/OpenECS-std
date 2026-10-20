@@ -40,6 +40,17 @@ typedef struct Library
     const char *windowsLinks[5];     // the Windows libraries it uses, ending with NULL
 } Library;
 
+/// @brief A C++ library of dependencies/, which CMake builds into static archives in the cache, as shuild compiles only C. A plugin that takes one
+/// also takes the C++ compiler's own library, so it still needs nothing but OpenECS (DESIGN 1).
+typedef struct CMakeLibrary
+{
+    const char *name;        // its folder in dependencies/, and its build's folder in the cache
+    const char *options;     // CMake's options
+    const char *includes[3]; // the folders of dependencies/ of its interface, ending with NULL
+    const char *built[2];    // the folders of its build of its interface, such as of the headers it writes, ending with NULL
+    const char *archives[6]; // its archives in its build, in the order the linker takes them, ending with NULL
+} CMakeLibrary;
+
 /// @brief A plugin that compiles code of std's dependencies into itself: the folders of dependencies/ of the headers and sources its C files include, and the libraries it takes, whose headers it gets by linking them.
 typedef struct PluginNeeds
 {
@@ -49,6 +60,7 @@ typedef struct PluginNeeds
     const Library *libraries[3]; // ending with NULL
     const char *windowsLinks[4]; // the Windows libraries it uses, ending with NULL
     bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
+    const CMakeLibrary *cmake[3]; // the C++ libraries it takes, ending with NULL
 } PluginNeeds;
 
 // mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
@@ -58,6 +70,21 @@ typedef struct PluginNeeds
 static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}, {"bcrypt", NULL}};
 static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/lib", NULL}, {"curl/include", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB", {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", "bcrypt"}};
 
+// glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
+static const CMakeLibrary GLSLANG = {"glslang",
+                                     "-DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=OFF -DBUILD_SHARED_LIBS=OFF "
+                                     "-DGLSLANG_ENABLE_INSTALL=OFF -DENABLE_SPVREMAPPER=OFF",
+                                     {"glslang", NULL},
+                                     {"include", NULL},
+                                     {"glslang/libglslang.a", "glslang/libglslang-default-resource-limits.a", NULL}};
+static const CMakeLibrary SPIRV_CROSS = {"SPIRV-Cross",
+                                         "-DSPIRV_CROSS_SHARED=OFF -DSPIRV_CROSS_STATIC=ON -DSPIRV_CROSS_CLI=OFF -DSPIRV_CROSS_ENABLE_TESTS=OFF "
+                                         "-DSPIRV_CROSS_ENABLE_CPP=OFF -DSPIRV_CROSS_ENABLE_REFLECT=OFF -DSPIRV_CROSS_ENABLE_UTIL=OFF -DSPIRV_CROSS_ENABLE_MSL=OFF "
+                                         "-DSPIRV_CROSS_SKIP_INSTALL=ON",
+                                         {"SPIRV-Cross", NULL},
+                                         {NULL},
+                                         {"libspirv-cross-c.a", "libspirv-cross-hlsl.a", "libspirv-cross-glsl.a", "libspirv-cross-core.a", NULL}};
+
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it, and on Windows the system's libraries it uses; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
     {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
@@ -66,6 +93,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"gltf", {"cgltf", NULL}, NULL, {NULL}, {NULL}, false},
     {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {"crypt32", NULL}, true},
+    {"gpu", {NULL}, NULL, {NULL}, {NULL}, true, {&GLSLANG, &SPIRV_CROSS, NULL}},
 };
 
 #pragma endregion Setup
@@ -321,6 +349,91 @@ static void BuildLibrary(const Library *library, const char *folder)
     SHU_ModuleCompile(folder, SHUModuleType_LibraryStatic);
 }
 
+/// @brief The compiler's tool of another name, such as g++ for gcc, or x86_64-w64-mingw32-clang++ for x86_64-w64-mingw32-clang.
+/// @param gcc The tool's name for gcc. @param clang The tool's name for clang.
+static char *CompilerTool(const char *gcc, const char *clang)
+{
+    const char *name = SHU_CompilerGetIdentifier() == SHUM_COMPILER_CLANG ? "clang" : "gcc";
+    const char *found = NULL;
+
+    for (const char *c = strstr(CONFIG.compiler, name); c != NULL; c = strstr(c + 1, name))
+    {
+        found = c;
+    }
+
+    return found == NULL ? SHU_UtilFormat("%s", CONFIG.compiler) : SHU_UtilFormat("%.*s%s%s", (int)(found - CONFIG.compiler), CONFIG.compiler, !strcmp(name, "clang") ? clang : gcc, found + strlen(name));
+}
+
+/// @brief The folder of a C++ library's build in the cache.
+static char *CMakeFolder(const CMakeLibrary *library)
+{
+    return SHU_UtilFormat("%s%scmake/%s/", SHU_UtilGetExecutablePath(), CONFIG.cache, library->name);
+}
+
+/// @brief Builds a C++ library of dependencies/ with CMake, with OpenECS's compiler and its C++ compiler, into static archives in the cache, unless they
+/// are there. It is built for Release in every build type, as a shader takes long to compile in Debug, and like OpenECS's dependencies it gets neither
+/// the warnings, nor the analyzer, nor the sanitizers. Its symbols are hidden, so they stay inside the plugin. Each step's output goes to a log beside it.
+static void BuildCMakeLibrary(const CMakeLibrary *library)
+{
+    char *folder = CMakeFolder(library);
+    bool built = true;
+
+    for (usz i = 0; library->archives[i] != NULL; i++)
+    {
+        built = built && SHU_UtilFileExists(SHU_UtilFormat("%s%s", folder, library->archives[i])) == SHUFileType_Regular;
+    }
+
+    if (built)
+    {
+        return;
+    }
+
+    SHU_UtilLog(SHUM_LOG_NAME("%s") " (CMake): building", library->name);
+    char *compilers = SHU_UtilFormat("-DCMAKE_C_COMPILER=\"%s\" -DCMAKE_CXX_COMPILER=\"%s\"", CONFIG.compiler, CompilerTool("g++", "clang++"));
+
+    // a cross compiler builds for its system
+    if (!SHUM_PLATFORM_IS_HOST(SHU_CompilerGetTarget()))
+    {
+        compilers = SHU_UtilFormat("%s -DCMAKE_SYSTEM_NAME=%s", compilers, SHUM_PLATFORM_GET_STRING(SHU_CompilerGetTarget()));
+    }
+
+    char *logs = SHU_UtilFormat("%scmake/%s/", CONFIG.cache, library->name);
+    SHU_UtilCreateDirectory(logs); // shuild makes a log's folder only with the system's separators
+    SHU_UtilRunLogged(SHU_UtilFormat("%sconfigure.log", logs),
+                      "cmake -S \"%sdependencies/%s\" -B \"%s\" -G Ninja -DCMAKE_BUILD_TYPE=Release %s -DCMAKE_POSITION_INDEPENDENT_CODE=ON "
+                      "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
+                      SHU_UtilGetExecutablePath(), library->name, folder, compilers, library->options);
+    SHU_UtilRunLogged(SHU_UtilFormat("%sbuild.log", logs), "cmake --build \"%s\" --parallel", folder);
+    SHU_UtilLog(SHUM_LOG_NAME("%s") " (CMake): built", library->name);
+}
+
+/// @brief The C++ compiler's own static library, which C++ libraries need: libc++ for LLVM-MinGW's clang, libstdc++ elsewhere.
+/// The C++ compiler gives its path, as OpenECS's C compiler may be another version than the C++ compiler that built the libraries.
+static char *CppLibrary(void)
+{
+    const char *file = CONFIG.windows && SHU_CompilerGetIdentifier() == SHUM_COMPILER_CLANG ? "libc++.a" : "libstdc++.a";
+    char *log = SHU_UtilFormat("%scmake/library.log", CONFIG.cache);
+    SHU_UtilCreateDirectory(SHU_UtilFormat("%scmake/", CONFIG.cache));
+    SHU_UtilRunLogged(log, "%s -print-file-name=%s", CompilerTool("g++", "clang++"), file);
+
+    char path[1024] = {0};
+    FILE *read = fopen(SHU_UtilFormat("%s%s", SHU_UtilGetExecutablePath(), log), "r");
+
+    bool given = read != NULL && fgets(path, sizeof(path), read) != NULL;
+
+    if (read != NULL)
+    {
+        fclose(read);
+    }
+
+    if (!given)
+    {
+        SHU_UtilFail(1, "The C++ compiler does not give the path of " SHUM_LOG_VALUE("%s"), file);
+    }
+    path[strcspn(path, "\r\n")] = '\0';
+    return SHU_UtilFormat("%s", path);
+}
+
 /// @brief Compiles the C files of a plugin's folder, root, into the plugin's native library in output. Does nothing if the folder has no C file.
 /// The plugin sees OpenECS's plugin interface and SDL from the build's include/ folder, and, if it has needs, the folders of dependencies/ it compiles in, as system headers, so their warnings stay out.
 static void BuildNative(const char *name, const char *root, const char *output)
@@ -356,6 +469,11 @@ static void BuildNative(const char *name, const char *root, const char *output)
         BuildLibrary(needs->libraries[i], archives);
     }
 
+    for (usz i = 0; needs != NULL && needs->cmake[i] != NULL; i++)
+    {
+        BuildCMakeLibrary(needs->cmake[i]);
+    }
+
     SHU_ModuleBegin(name, root);
     SetBuildFlags(true);
 
@@ -374,6 +492,20 @@ static void BuildNative(const char *name, const char *root, const char *output)
         // shuild finds the headers a file includes in the module's folders, so the plugin is rebuilt when they change
         char *folder = SHU_UtilFormat("%sdependencies/%s", up, needs->includes[i]);
         SHU_ModuleAddIncludeDirectory(folder);
+    }
+
+    // a C++ library's headers are system headers too, those its build writes among them
+    for (usz i = 0; needs != NULL && needs->cmake[i] != NULL; i++)
+    {
+        for (usz j = 0; needs->cmake[i]->includes[j] != NULL; j++)
+        {
+            SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->cmake[i]->includes[j]));
+        }
+
+        for (usz j = 0; needs->cmake[i]->built[j] != NULL; j++)
+        {
+            SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %s%s", CMakeFolder(needs->cmake[i]), needs->cmake[i]->built[j]));
+        }
     }
 
     if (needs != NULL && needs->flags != NULL)
@@ -407,6 +539,26 @@ static void BuildNative(const char *name, const char *root, const char *output)
         for (usz i = 0; needs != NULL && needs->windowsLinks[i] != NULL; i++)
         {
             SHU_ModuleLinkLibrary(needs->windowsLinks[i]);
+        }
+    }
+
+    // the archives of the C++ libraries go after the plugin's files, then the C++ compiler's own library and the C compiler's runtime, all compiled in;
+    // on Linux, what they define stays inside the plugin, so it meets no other plugin's copy
+    if (needs != NULL && needs->cmake[0] != NULL)
+    {
+        for (usz i = 0; needs->cmake[i] != NULL; i++)
+        {
+            for (usz j = 0; needs->cmake[i]->archives[j] != NULL; j++)
+            {
+                SHU_CompilerAddLinkerFlags(SHU_UtilFormat(" \"%s%s\"", CMakeFolder(needs->cmake[i]), needs->cmake[i]->archives[j]));
+            }
+        }
+
+        SHU_CompilerAddLinkerFlags(SHU_UtilFormat(" \"%s\" -static-libgcc", CppLibrary()));
+
+        if (!CONFIG.windows)
+        {
+            SHU_CompilerAddLinkerFlags(" -Wl,--exclude-libs,ALL");
         }
     }
 

@@ -1,13 +1,22 @@
 // The gpu standard plugin: draws into the GPU surface of another plugin's panel, on the GPU (DESIGN 15).
 // A panel's Draw passes its surface to gpu's functions, as to draw's, and gpu sends what they drew to the GPU when the Draw returns. It draws shapes,
 // lines, textures and text as draw does, with an offscreen SDL renderer of its own on OpenECS's GPU device, and vertex buffers with a plugin's own
-// shaders, through pipelines, with SDL's GPU API.
+// shaders, through pipelines, with SDL's GPU API. It compiles shaders from GLSL with glslang, to SPIR-V, which Vulkan takes, and turns SPIR-V into
+// DXBC for Direct3D 12, through HLSL from SPIRV-Cross and Windows' own HLSL compiler.
 // It holds no scene: the plugin that draws keeps its buffers and says what to draw each frame.
 
 #include "OpenECS.h"
 
 #include "SDL3/SDL.h"
 #include "SDL3_ttf/SDL_ttf.h"
+
+#include "glslang/Include/glslang_c_interface.h"
+#include "glslang/Public/resource_limits_c.h"
+#include "spirv_cross_c.h"
+
+#ifdef _WIN32
+#include <d3dcompiler.h>
+#endif
 
 #pragma region Source Only
 
@@ -88,6 +97,10 @@ static struct
     usz fontCount;
     GpuAtlas *atlases;                         // the text engine's textures, as the renderer sees them
     usz atlasCount;
+    bool glslangStarted;
+    SDL_SharedObject *d3dcompiler; // Windows' HLSL compiler, d3dcompiler_47.dll, loaded the first time a shader needs DXBC
+    void *compiled;                // the SPIR-V that gpu.compile gave last, kept until its next call
+    char *compileError;            // why gpu.compile failed last, kept until its next call
 } GPU = {0};
 
 /// @brief Frees the renderer; the plugin's Destroy, after the handles of its frames and textures are gone.
@@ -116,6 +129,23 @@ static void GpuFree(void *data)
     {
         TTF_Quit();
     }
+
+    if (GPU.glslangStarted)
+    {
+        glslang_finalize_process();
+    }
+
+    if (GPU.d3dcompiler != nullptr)
+    {
+        SDL_UnloadObject(GPU.d3dcompiler);
+    }
+
+    SDL_free(GPU.compiled);
+    SDL_free(GPU.compileError);
+    GPU.compiled = nullptr;
+    GPU.compileError = nullptr;
+    GPU.glslangStarted = false;
+    GPU.d3dcompiler = nullptr;
 
     SDL_free(GPU.atlases);
     SDL_free(GPU.fonts);
@@ -849,6 +879,211 @@ static void GpuShaderDestroy(void *object)
     SDL_ReleaseGPUShader(GPU.device, object);
 }
 
+/// @brief Compiles a vertex or fragment shader from GLSL to SPIR-V with glslang, for Vulkan 1.0. Gives the SPIR-V, which SDL_free frees, and its
+/// size in bytes; or nullptr, and why, which SDL_free frees too.
+static u32 *GpuCompileGlsl(const char *source, bool vertex, usz *retSize, char **retError)
+{
+    *retSize = 0;
+    *retError = nullptr;
+
+    if (!GPU.glslangStarted)
+    {
+        GPU.glslangStarted = glslang_initialize_process() != 0;
+    }
+
+    const glslang_input_t input = {
+        .language = GLSLANG_SOURCE_GLSL,
+        .stage = vertex ? GLSLANG_STAGE_VERTEX : GLSLANG_STAGE_FRAGMENT,
+        .client = GLSLANG_CLIENT_VULKAN,
+        .client_version = GLSLANG_TARGET_VULKAN_1_0,
+        .target_language = GLSLANG_TARGET_SPV,
+        .target_language_version = GLSLANG_TARGET_SPV_1_0,
+        .code = source,
+        .default_version = 450,
+        .default_profile = GLSLANG_NO_PROFILE,
+        .messages = GLSLANG_MSG_DEFAULT_BIT,
+        .resource = glslang_default_resource(),
+    };
+
+    glslang_shader_t *shader = glslang_shader_create(&input);
+    glslang_program_t *program = nullptr;
+    u32 *spirv = nullptr;
+
+    if (shader == nullptr || !glslang_shader_preprocess(shader, &input) || !glslang_shader_parse(shader, &input))
+    {
+        *retError = SDL_strdup(shader == nullptr ? "glslang cannot make a shader" : glslang_shader_get_info_log(shader));
+    }
+    else
+    {
+        program = glslang_program_create();
+        glslang_program_add_shader(program, shader);
+
+        if (!glslang_program_link(program, GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT))
+        {
+            *retError = SDL_strdup(glslang_program_get_info_log(program));
+        }
+        else
+        {
+            glslang_program_SPIRV_generate(program, input.stage);
+            usz words = glslang_program_SPIRV_get_size(program);
+            spirv = SDL_malloc(words * sizeof(u32));
+
+            if (spirv != nullptr)
+            {
+                glslang_program_SPIRV_get(program, spirv);
+                *retSize = words * sizeof(u32);
+            }
+        }
+    }
+
+    if (program != nullptr)
+    {
+        glslang_program_delete(program);
+    }
+
+    if (shader != nullptr)
+    {
+        glslang_shader_delete(shader);
+    }
+
+    return spirv;
+}
+
+/// @brief Counts the uniform blocks and the sampled textures of SPIR-V, as a shader's description may leave them out. Leaves them as they are if
+/// SPIRV-Cross cannot read it.
+static void GpuReflect(const u32 *spirv, usz size, u32 *uniforms, u32 *samplers)
+{
+    spvc_context context = nullptr;
+    spvc_parsed_ir ir = nullptr;
+    spvc_compiler compiler = nullptr;
+    spvc_resources resources = nullptr;
+    const spvc_reflected_resource *list = nullptr;
+    usz count = 0;
+
+    if (spvc_context_create(&context) != SPVC_SUCCESS)
+    {
+        return;
+    }
+
+    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &ir) == SPVC_SUCCESS &&
+        spvc_context_create_compiler(context, SPVC_BACKEND_NONE, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
+        spvc_compiler_create_shader_resources(compiler, &resources) == SPVC_SUCCESS)
+    {
+        if (spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, &list, &count) == SPVC_SUCCESS)
+        {
+            *uniforms = (u32)count;
+        }
+
+        if (spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, &list, &count) == SPVC_SUCCESS)
+        {
+            *samplers = (u32)count;
+        }
+    }
+
+    spvc_context_destroy(context);
+}
+
+/// @brief Turns SPIR-V into HLSL of shader model 5.1 with SPIRV-Cross. Its uniform blocks and textures keep their sets as register spaces, as
+/// SDL's GPU API sets them for Direct3D 12, and a vertex attribute of location n is TEXCOORDn. Gives the HLSL, which SDL_free frees, or nullptr.
+static char *GpuHlsl(const u32 *spirv, usz size)
+{
+    spvc_context context = nullptr;
+    spvc_parsed_ir ir = nullptr;
+    spvc_compiler compiler = nullptr;
+    spvc_compiler_options options = nullptr;
+    const char *hlsl = nullptr;
+    char *copy = nullptr;
+
+    if (spvc_context_create(&context) != SPVC_SUCCESS)
+    {
+        return nullptr;
+    }
+
+    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &ir) == SPVC_SUCCESS &&
+        spvc_context_create_compiler(context, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
+        spvc_compiler_create_compiler_options(compiler, &options) == SPVC_SUCCESS)
+    {
+        spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL, 51);
+        spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_HLSL_NONWRITABLE_UAV_TEXTURE_AS_SRV, SPVC_TRUE);
+        spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_HLSL_FLATTEN_MATRIX_VERTEX_INPUT_SEMANTICS, SPVC_TRUE);
+        spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_HLSL_USE_ENTRY_POINT_NAME, SPVC_TRUE);
+        spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_HLSL_POINT_SIZE_COMPAT, SPVC_TRUE);
+
+        if (spvc_compiler_install_compiler_options(compiler, options) == SPVC_SUCCESS && spvc_compiler_compile(compiler, &hlsl) == SPVC_SUCCESS)
+        {
+            copy = SDL_strdup(hlsl);
+        }
+    }
+
+    if (copy == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "SPIRV-Cross cannot turn a shader into HLSL: %s", spvc_context_get_last_error_string(context));
+    }
+
+    spvc_context_destroy(context);
+    return copy;
+}
+
+/// @brief Compiles HLSL of shader model 5.1 to DXBC with Windows' own compiler, d3dcompiler_47.dll, which Windows ships. Gives the DXBC, which
+/// SDL_free frees, or nullptr; elsewhere than on Windows, always nullptr.
+static void *GpuDxbc(const char *hlsl, const char *entry, bool vertex, usz *retSize)
+{
+    *retSize = 0;
+
+#ifdef _WIN32
+    if (GPU.d3dcompiler == nullptr)
+    {
+        GPU.d3dcompiler = SDL_LoadObject("d3dcompiler_47.dll");
+    }
+
+    pD3DCompile compile = GPU.d3dcompiler == nullptr ? nullptr : (pD3DCompile)(void *)SDL_LoadFunction(GPU.d3dcompiler, "D3DCompile");
+
+    if (compile == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Cannot load Windows' HLSL compiler, d3dcompiler_47.dll: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    ID3DBlob *code = nullptr;
+    ID3DBlob *errors = nullptr;
+    HRESULT result = compile(hlsl, SDL_strlen(hlsl), nullptr, nullptr, nullptr, entry, vertex ? "vs_5_1" : "ps_5_1", 0, 0, &code, &errors);
+    void *dxbc = nullptr;
+
+    if (result < 0 || code == nullptr)
+    {
+        ECS_LogError(GPU.plugin, "Windows' HLSL compiler cannot compile a shader: %s",
+                     errors != nullptr ? (const char *)errors->lpVtbl->GetBufferPointer(errors) : "it does not tell why");
+    }
+    else
+    {
+        *retSize = code->lpVtbl->GetBufferSize(code);
+        dxbc = SDL_malloc(*retSize);
+
+        if (dxbc != nullptr)
+        {
+            SDL_memcpy(dxbc, code->lpVtbl->GetBufferPointer(code), *retSize);
+        }
+    }
+
+    if (code != nullptr)
+    {
+        code->lpVtbl->Release(code);
+    }
+
+    if (errors != nullptr)
+    {
+        errors->lpVtbl->Release(errors);
+    }
+
+    return dxbc;
+#else
+    (void)hlsl;
+    (void)entry;
+    (void)vertex;
+    return nullptr;
+#endif
+}
+
 static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
 {
     if (GPU.device == nullptr)
@@ -857,7 +1092,16 @@ static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
         return nullptr;
     }
 
-    // the device takes one kind of code, by its driver: SPIR-V for Vulkan, DXIL for Direct3D 12, MSL for Metal; the first one given that it takes is used
+    const char *stage = ECSValue_GetString(ECSValue_GetTableField(desc, "stage"), "");
+    bool vertex = SDL_strcmp(stage, "vertex") == 0;
+
+    if (!vertex && SDL_strcmp(stage, "fragment") != 0)
+    {
+        ECS_LogWarn(GPU.plugin, "A shader's stage is \"vertex\" or \"fragment\".");
+        return nullptr;
+    }
+
+    // code that the device's driver takes is used as it is: SPIR-V for Vulkan, DXIL for Direct3D 12, MSL for Metal; the first one given that it takes
     const struct
     {
         const char *field;
@@ -873,23 +1117,78 @@ static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
         format = code.size > 0 && (formats & kinds[i].format) != 0 ? kinds[i].format : SDL_GPU_SHADERFORMAT_INVALID;
     }
 
-    const char *stage = ECSValue_GetString(ECSValue_GetTableField(desc, "stage"), "");
-    bool vertex = SDL_strcmp(stage, "vertex") == 0;
+    const char *entry = ECSValue_GetString(ECSValue_GetTableField(desc, "entry"), "main");
+    const char *glsl = ECSValue_GetString(ECSValue_GetTableField(desc, "glsl"), nullptr);
+    SHUSlice spirv = ECSValue_GetBuffer(ECSValue_GetTableField(desc, "spirv"), (SHUSlice){0});
+    void *made = nullptr; // code that gpu made, from GLSL or from SPIR-V, which it frees
+    u32 uniforms = 0, samplers = 0;
 
-    if (format == SDL_GPU_SHADERFORMAT_INVALID || (!vertex && SDL_strcmp(stage, "fragment") != 0))
+    // GLSL compiles to SPIR-V, which serves a driver that takes it as it is; it and SPIR-V that was given also tell the counts a description leaves out
+    if (format == SDL_GPU_SHADERFORMAT_INVALID && glsl != nullptr)
     {
-        ECS_LogWarn(GPU.plugin, format == SDL_GPU_SHADERFORMAT_INVALID ? "A shader needs code that the GPU's driver takes: spirv, dxil or msl." : "A shader's stage is \"vertex\" or \"fragment\".");
+        usz size = 0;
+        char *error = nullptr;
+        made = GpuCompileGlsl(glsl, vertex, &size, &error);
+
+        if (made == nullptr)
+        {
+            ECS_LogError(GPU.plugin, "Cannot compile a %s shader from GLSL: %s", stage, error != nullptr ? error : "glslang does not tell why");
+            SDL_free(error);
+            return nullptr;
+        }
+
+        spirv = cs(made, size);
+        code = spirv;
+        format = (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0 ? SDL_GPU_SHADERFORMAT_SPIRV : SDL_GPU_SHADERFORMAT_INVALID;
+    }
+
+    if (spirv.size > 0 && spirv.size % sizeof(u32) == 0)
+    {
+        u32 *words = SDL_malloc(spirv.size);
+
+        if (words != nullptr)
+        {
+            SDL_memcpy(words, spirv.data, spirv.size);
+            GpuReflect(words, spirv.size, &uniforms, &samplers);
+        }
+
+        // a driver that does not take SPIR-V, such as Direct3D 12's, gets DXBC made from it
+        if (format == SDL_GPU_SHADERFORMAT_INVALID && words != nullptr && (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0)
+        {
+            char *hlsl = GpuHlsl(words, spirv.size);
+            usz size = 0;
+            void *dxbc = hlsl == nullptr ? nullptr : GpuDxbc(hlsl, entry, vertex, &size);
+            SDL_free(hlsl);
+
+            if (dxbc != nullptr)
+            {
+                SDL_free(made);
+                made = dxbc;
+                code = cs(dxbc, size);
+                format = SDL_GPU_SHADERFORMAT_DXBC;
+            }
+        }
+
+        SDL_free(words);
+    }
+
+    if (format == SDL_GPU_SHADERFORMAT_INVALID)
+    {
+        ECS_LogWarn(GPU.plugin, "A shader needs code that the GPU's driver takes, or GLSL or SPIR-V that gpu turns into it: glsl, spirv, dxil or msl.");
+        SDL_free(made);
         return nullptr;
     }
 
+    const ECSValue *givenUniforms = ECSValue_GetTableField(desc, "uniforms");
+    const ECSValue *givenSamplers = ECSValue_GetTableField(desc, "samplers");
     const SDL_GPUShaderCreateInfo info = {
         .code_size = code.size,
         .code = code.data,
-        .entrypoint = ECSValue_GetString(ECSValue_GetTableField(desc, "entry"), "main"),
+        .entrypoint = entry,
         .format = format,
         .stage = vertex ? SDL_GPU_SHADERSTAGE_VERTEX : SDL_GPU_SHADERSTAGE_FRAGMENT,
-        .num_samplers = (Uint32)SDL_max(0, ECSValue_GetInteger(ECSValue_GetTableField(desc, "samplers"), 0)),
-        .num_uniform_buffers = (Uint32)SDL_max(0, ECSValue_GetInteger(ECSValue_GetTableField(desc, "uniforms"), 0)),
+        .num_samplers = givenSamplers == nullptr ? samplers : (Uint32)SDL_max(0, ECSValue_GetInteger(givenSamplers, 0)),
+        .num_uniform_buffers = givenUniforms == nullptr ? uniforms : (Uint32)SDL_max(0, ECSValue_GetInteger(givenUniforms, 0)),
     };
     SDL_GPUShader *shader = SDL_CreateGPUShader(GPU.device, &info);
 
@@ -898,7 +1197,36 @@ static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
         ECS_LogError(GPU.plugin, "Cannot make a %s shader: %s", stage, SDL_GetError());
     }
 
+    SDL_free(made);
     return shader;
+}
+
+/// @brief gpu.compile: compiles GLSL to SPIR-V, so a plugin finds a shader's errors, or keeps the SPIR-V. Both are kept until the next call.
+static SHUSlice GpuCompile(const char *source, const char *stage, const char **retError)
+{
+    SDL_free(GPU.compiled);
+    SDL_free(GPU.compileError);
+    GPU.compiled = nullptr;
+    GPU.compileError = nullptr;
+    *retError = "";
+
+    bool vertex = SDL_strcmp(stage, "vertex") == 0;
+
+    if (!vertex && SDL_strcmp(stage, "fragment") != 0)
+    {
+        *retError = "A shader's stage is \"vertex\" or \"fragment\".";
+        return cs(nullptr, 0);
+    }
+
+    usz size = 0;
+    GPU.compiled = GpuCompileGlsl(source, vertex, &size, &GPU.compileError);
+
+    if (GPU.compileError != nullptr)
+    {
+        *retError = GPU.compileError;
+    }
+
+    return cs(GPU.compiled, size);
 }
 
 static void GpuPipelineDestroy(void *object)
@@ -1250,7 +1578,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)", "Replace a buffer's bytes; bytes of another size make the buffer again"},
         {"bufferSize", (ECSFunction)GpuBufferSize, "int(handle<gpu.buffer> buffer)", "Give a buffer's size in bytes"},
         {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)", "Free a buffer now, instead of when no one uses its handle"},
-        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)", "Make a vertex or fragment shader from compiled code: SPIR-V, DXIL or MSL, the one the GPU's driver takes"},
+        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)", "Make a vertex or fragment shader from GLSL, or from compiled code: SPIR-V, DXIL or MSL; gpu turns GLSL and SPIR-V into the code the GPU's driver takes"},
+        {"compile", (ECSFunction)GpuCompile, "buffer(string source, string stage, out string error)", "Compile GLSL to SPIR-V for a vertex or fragment stage; an empty buffer and why if it cannot"},
         {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)", "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn"},
         {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)", "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share"},
         {"image", (ECSFunction)GpuImage, "void(handle<ecs.surface> surface, handle<gpu.texture> texture, float x, float y, float width, float height)", "Draw a texture stretched to a rectangle"},
