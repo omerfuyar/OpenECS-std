@@ -398,6 +398,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
     }
 
     char *logs = SHU_UtilFormat("%scmake/%s/", CONFIG.cache, library->name);
+    SHU_UtilCreateDirectory(logs); // shuild makes a log's folder only with the system's separators
     SHU_UtilRunLogged(SHU_UtilFormat("%sconfigure.log", logs),
                       "cmake -S \"%sdependencies/%s\" -B \"%s\" -G Ninja -DCMAKE_BUILD_TYPE=Release %s -DCMAKE_POSITION_INDEPENDENT_CODE=ON "
                       "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
@@ -412,6 +413,7 @@ static char *CppLibrary(void)
 {
     const char *file = CONFIG.windows && SHU_CompilerGetIdentifier() == SHUM_COMPILER_CLANG ? "libc++.a" : "libstdc++.a";
     char *log = SHU_UtilFormat("%scmake/library.log", CONFIG.cache);
+    SHU_UtilCreateDirectory(SHU_UtilFormat("%scmake/", CONFIG.cache));
     SHU_UtilRunLogged(log, "%s -print-file-name=%s", CompilerTool("g++", "clang++"), file);
 
     char path[1024] = {0};
