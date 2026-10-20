@@ -1619,7 +1619,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param texture The texture, which is not used again after this"},
         {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes)",
          "Make a buffer on the GPU of \"vertex\" data, vertices one after another as a pipeline's attributes lay them out, or of \"index\" data, 32-bit indices\n"
-         "@param usage \"vertex\" or \"index\"\n"
+         "@param usage What it holds: \"vertex\" or \"index\"\n"
          "@param bytes The buffer's bytes, at least one, which are copied; 4 bytes for each index\n"
          "@return The buffer, or nothing for another usage, no bytes or without a GPU renderer; the reason is logged"},
         {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)",
@@ -1641,7 +1641,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"compile", (ECSFunction)GpuCompile, "buffer(string source, string stage, out string error)",
          "Compile GLSL to SPIR-V for a vertex or fragment stage; an empty buffer and why if it cannot\n"
          "@param source The GLSL source, version 450 for Vulkan\n"
-         "@param stage \"vertex\" or \"fragment\"\n"
+         "@param stage The shader's stage: \"vertex\" or \"fragment\"\n"
          "@param error Set to why it does not compile, or to an empty string if it does\n"
          "@return The SPIR-V, kept until the next compile, or an empty buffer if it does not compile"},
         {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)",
