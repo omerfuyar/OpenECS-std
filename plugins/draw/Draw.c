@@ -58,6 +58,7 @@ static struct
     usz clipCount;
     TTF_TextEngine *engine; // draws text into surfaces, and keeps the glyphs it drew
     bool ttfStarted;
+    char *coreFont; // the setting ecs.font when the "ui" font was opened; the core does not say when it changes
 } DRAW = {0};
 
 #pragma region Pixels
@@ -336,7 +337,7 @@ static void DrawCircle(ECSSurface *surface, f32 x, f32 y, f32 radius, f32 thickn
     {
         f32 scale = surface->scale;
         f32 r = radius * scale;
-        DrawRoundedPixels(surface, DrawBounds(surface), x * scale - r, y * scale - r, 2.0f * r, 2.0f * r, r, SDL_max(thickness, 0.0f) * scale, color);
+        DrawRoundedPixels(surface, DrawBounds(surface), x * scale - r, y * scale - r, 2.0f * r, 2.0f * r, r, thickness > 0.0f ? SDL_max(thickness * scale, 1.0f) : 0.0f, color);
     }
 }
 
@@ -534,7 +535,7 @@ static DrawImage *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
 {
     if (width <= 0 || height <= 0 || (pixels.size != 0 && pixels.size != (usz)width * (usz)height * sizeof(u32)))
     {
-        ECS_LogWarn(DRAW.plugin, "An image of %d by %d pixels needs %d bytes of pixels, or none.", width, height, width * height * 4);
+        ECS_LogWarn(DRAW.plugin, "An image of %d by %d pixels needs %lld bytes of pixels, or none.", width, height, (long long)width * (long long)height * 4);
         return nullptr;
     }
 
@@ -665,10 +666,43 @@ static DrawFont *DrawGetFontByName(const char *name)
     return font;
 }
 
+/// @brief Opens the "ui" font again when the setting ecs.font has changed since it was opened.
+static void DrawFollowCoreFont(DrawFont *font)
+{
+    if (SDL_strcmp(font->name, "ui") != 0)
+    {
+        return;
+    }
+
+    const char *setting = ECSValue_GetString(ECSSetting_Get("ecs.font"), "");
+
+    if (DRAW.coreFont != nullptr && SDL_strcmp(DRAW.coreFont, setting) == 0)
+    {
+        return;
+    }
+
+    char *copy = SDL_strdup(setting);
+    char *path = copy == nullptr ? nullptr : DrawFontPath(font->name);
+
+    // when out of memory, the font stays as it is, and the next call tries again
+    if (path == nullptr)
+    {
+        SDL_free(copy);
+        return;
+    }
+
+    DrawCloseSizes(font);
+    SDL_free(font->path);
+    font->path = path;
+    SDL_free(DRAW.coreFont);
+    DRAW.coreFont = copy;
+}
+
 /// @brief Gets a font at a size in pixels, opening it the first time.
 /// @return The font, or nullptr if it cannot be opened; the reason is logged.
 static TTF_Font *DrawGetSize(DrawFont *font, f32 pixels)
 {
+    DrawFollowCoreFont(font);
     i32 size = (i32)SDL_max(1.0f, SDL_roundf(pixels));
 
     for (usz i = 0; i < font->sizeCount; i++)
@@ -715,6 +749,7 @@ static void DrawFontsChanged(void *data)
 /// @brief Gives the file a font is read from, for plugins that draw text in other ways, such as gpu. A setting that names another file changes it.
 static const char *DrawFontFile(DrawFont *font)
 {
+    DrawFollowCoreFont(font);
     return font->path;
 }
 
@@ -809,6 +844,8 @@ static void DrawFree(void *data)
         SDL_free(DRAW.fonts[i]);
     }
 
+    SDL_free(DRAW.coreFont);
+
     if (DRAW.engine != nullptr)
     {
         TTF_DestroySurfaceTextEngine(DRAW.engine);
@@ -894,7 +931,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param x The centre's x, in layout units\n"
          "@param y The centre's y, in layout units\n"
          "@param radius The radius, in layout units\n"
-         "@param thickness The ring's thickness inward from the edge, in layout units; 0 or less fills the circle\n"
+         "@param thickness The ring's thickness inward from the edge, in layout units, and at least a pixel; 0 or less fills the circle\n"
          "@param color The colour, blended by its alpha"},
         {"rounded", (ECSFunction)DrawRoundedFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, color color)",
          "Fill a rectangle with corners rounded by a radius\n"

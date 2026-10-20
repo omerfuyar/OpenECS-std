@@ -206,16 +206,25 @@ local function wrap(font, text, textSize, width)
   return lines
 end
 
--- images read once for each path and scale, so that they are drawn sharp
+-- images read once for each path and scale, so that they are drawn sharp.
+-- The cache starts again when it is full, so that images no longer shown are collected; a shown image stays in its node.
+local IMAGES_KEPT = 64
 local images = {}
+local imageCount = 0
 
 local function picture(path, scale)
   local key = path .. "@" .. scale
   local found = images[key]
 
   if found == nil then
+    if imageCount >= IMAGES_KEPT then
+      images = {}
+      imageCount = 0
+    end
+
     found = image.load(path, scale) or false
     images[key] = found
+    imageCount = imageCount + 1
   end
 
   return found or nil
