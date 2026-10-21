@@ -18,6 +18,7 @@
 //
 // C gives ui no functions. An element with an id keeps what its callback gets, and its macro takes it at the next draw: UI_BUTTON gives whether it
 // was clicked, and UI_TOGGLE writes the new state into its bool. The plugin's Init calls Ui_Init, and the panel's Event gives each event to Ui_Event.
+// The macros cover every element of Lua's ui, with the same props, so a plugin in C builds the same interface as one in Lua.
 
 #include <string.h>
 
@@ -64,6 +65,24 @@ typedef struct UiProps
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
 } UiProps;
 
+/// @brief A column of a table: the id names its cells, and the title shows in the header, the id if it is nullptr; a width of 0 is the widest cell's.
+typedef struct UiColumn
+{
+    const char *id;
+    const char *title;
+    f64 width;
+} UiColumn;
+
+/// @brief A node of a tree. A list of nodes ends with one whose id is nullptr. A node whose children are not nullptr has an arrow, even with none,
+/// and open points to whether it is open, which UI_TREE writes when the arrow is clicked.
+typedef struct UiTreeNode
+{
+    const char *id;
+    const char *label; // the id if it is nullptr
+    const struct UiTreeNode *children;
+    bool *open;
+} UiTreeNode;
+
 /// @brief What UI_SHOW describes into. Ui_Init prepares it.
 typedef struct Ui
 {
@@ -80,7 +99,7 @@ typedef struct Ui
 [[maybe_unused]] static Ui *Ui_current = nullptr;
 
 /// @brief Gives a field of a table that is made now, or nullptr if memory runs out.
-static inline ECSValue *Ui_Field(ECSValue *table, const char *name)
+static inline ECSValue *Ui_NewField(ECSValue *table, const char *name)
 {
     ECSValue *field = nullptr;
 
@@ -95,7 +114,7 @@ static inline ECSValue *Ui_Field(ECSValue *table, const char *name)
 
 static inline void Ui_SetString(ECSValue *table, const char *name, const char *text)
 {
-    ECSValue *field = text == nullptr ? nullptr : Ui_Field(table, name);
+    ECSValue *field = text == nullptr ? nullptr : Ui_NewField(table, name);
 
     if (field != nullptr && ECSValue_SetString(field, text))
     {
@@ -105,7 +124,7 @@ static inline void Ui_SetString(ECSValue *table, const char *name, const char *t
 
 static inline void Ui_SetNumber(ECSValue *table, const char *name, f64 number)
 {
-    ECSValue *field = Ui_Field(table, name);
+    ECSValue *field = Ui_NewField(table, name);
 
     if (field != nullptr)
     {
@@ -115,7 +134,7 @@ static inline void Ui_SetNumber(ECSValue *table, const char *name, f64 number)
 
 static inline void Ui_SetBool(ECSValue *table, const char *name, bool boolean)
 {
-    ECSValue *field = Ui_Field(table, name);
+    ECSValue *field = Ui_NewField(table, name);
 
     if (field != nullptr)
     {
@@ -123,17 +142,53 @@ static inline void Ui_SetBool(ECSValue *table, const char *name, bool boolean)
     }
 }
 
+/// @brief Sets a field of a table to an empty table, and gives it, or nullptr if memory runs out.
+static inline ECSValue *Ui_SetTable(ECSValue *table, const char *name)
+{
+    ECSValue *field = Ui_NewField(table, name);
+
+    if (field != nullptr)
+    {
+        ECSValue_SetTable(field);
+    }
+
+    return field;
+}
+
+/// @brief Adds an item at the end of a list, and gives it, or nullptr if memory runs out.
+static inline ECSValue *Ui_AddItem(ECSValue *list)
+{
+    ECSValue *item = nullptr;
+
+    if (list == nullptr || ECSValue_ListAddItem(list, &item))
+    {
+        Ui_current->failed = true;
+        return nullptr;
+    }
+
+    return item;
+}
+
+static inline void Ui_AddString(ECSValue *list, const char *text)
+{
+    ECSValue *item = Ui_AddItem(list);
+
+    if (item != nullptr && ECSValue_SetString(item, text))
+    {
+        Ui_current->failed = true;
+    }
+}
+
 /// @brief Writes the props that are not left to ui into a description's props.
 static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
 {
-    ECSValue *table = Ui_Field(description, "props");
+    ECSValue *table = Ui_SetTable(description, "props");
 
     if (table == nullptr)
     {
         return;
     }
 
-    ECSValue_SetTable(table);
     Ui_SetString(table, "id", props->id);
     Ui_SetString(table, "align", props->align);
     Ui_SetString(table, "background", props->background);
@@ -211,12 +266,7 @@ static inline ECSValue *Ui_Open(const char *type, const UiProps *props)
 {
     Ui *ui = Ui_current;
     ECSValue *description = Ui_Add(type, props);
-    ECSValue *children = Ui_Field(description, "children");
-
-    if (children != nullptr)
-    {
-        ECSValue_SetTable(children);
-    }
+    ECSValue *children = Ui_SetTable(description, "children");
 
     // a container that is too deep, or that memory ran out for, still counts, so Ui_Close stays in step; the root is its parent then
     ui->failed = ui->failed || ui->depth == UI_DEPTH;
@@ -232,10 +282,10 @@ static inline void Ui_Close(void)
 
 /// @brief Prepares a Ui for a plugin: looks up ui's functions. Call it from the plugin's Init; the plugin's manifest must depend on ui.
 /// @return SHUResult_Ok, or the error of the first function that cannot be looked up.
-static inline SHUWUR SHUResult Ui_Init(Ui *ui, ECSPlugin plugin)
+static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
 {
-    *ui = (Ui){.plugin = plugin};
-    return UiFunctions_Get(plugin, &ui->functions);
+    *retUi = (Ui){.plugin = plugin};
+    return UiFunctions_Get(plugin, &retUi->functions);
 }
 
 /// @brief Starts describing a panel's elements.
@@ -296,7 +346,7 @@ static inline bool Ui_Event(Ui *ui, ECSPanel panel, const ECSPanelEvent *event)
         return false;
     }
 
-    // Ui_Field reports to the current Ui
+    // Ui_NewField reports to the current Ui
     Ui *current = Ui_current;
     Ui_current = ui;
     ui->failed = false;
@@ -390,52 +440,49 @@ static inline bool Ui_Choice(const char *type, i32 *index, const char *const *ch
 
     ECSValue *description = Ui_Add(type, props);
     Ui_SetString(description, "value", *index >= 0 && *index < count ? choices[*index] : "");
-    ECSValue *list = Ui_Field(description, "choices");
+    ECSValue *list = Ui_SetTable(description, "choices");
 
-    if (list != nullptr)
+    for (i32 i = 0; i < count; i++)
     {
-        ECSValue_SetTable(list);
-    }
-
-    for (i32 i = 0; list != nullptr && i < count; i++)
-    {
-        ECSValue *item = nullptr;
-
-        if (ECSValue_ListAddItem(list, &item) || ECSValue_SetString(item, choices[i]))
-        {
-            Ui_current->failed = true;
-        }
+        Ui_AddString(list, choices[i]);
     }
 
     return chosen != nullptr;
 }
 
-/// @brief A text field or a key element: type is "field" or "key". The text is in a buffer of a capacity, which each edit changes.
-/// @return Whether Return was pressed in a field, or the key changed.
-static inline bool Ui_Typed(const char *type, char *buffer, usz capacity, const UiProps *props)
+/// @brief Copies a text into a buffer of a capacity, cut to fit, which always ends with a zero.
+static inline void Ui_CopyText(char *buffer, usz capacity, const char *text)
 {
-    // each take ends the one before, so the text is copied at once
-    const char *const callbacks[] = {"onChange", strcmp(type, "field") == 0 ? "onSubmit" : nullptr};
-    bool taken[2] = {false, false};
-
-    for (usz i = 0; i < UI__COUNT(callbacks) && callbacks[i] != nullptr; i++)
+    if (text == nullptr || capacity == 0)
     {
-        const ECSValue *got = Ui_Take(props->id, callbacks[i]);
-        taken[i] = got != nullptr;
-
-        // the text is cut to the buffer, which always ends with a zero
-        const char *text = ECSValue_GetString(ECSValue_GetTableField(got, "value"), nullptr);
-
-        if (text != nullptr && capacity > 0)
-        {
-            usz length = strlen(text) < capacity - 1 ? strlen(text) : capacity - 1;
-            memmove(buffer, text, length);
-            buffer[length] = '\0';
-        }
+        return;
     }
 
-    Ui_SetString(Ui_Add(type, props), "value", buffer);
-    return callbacks[1] != nullptr ? taken[1] : taken[0];
+    usz length = strlen(text) < capacity - 1 ? strlen(text) : capacity - 1;
+    memmove(buffer, text, length);
+    buffer[length] = '\0';
+}
+
+/// @brief A text field, whose text is in a buffer of a capacity, which each edit changes.
+/// @return Whether Return was pressed in it.
+static inline bool Ui_Field(char *buffer, usz capacity, const UiProps *props)
+{
+    // each take ends the one before, so the text is copied at once
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(Ui_Take(props->id, "onChange"), "value"), nullptr));
+    const ECSValue *submitted = Ui_Take(props->id, "onSubmit");
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(submitted, "value"), nullptr));
+    Ui_SetString(Ui_Add("field", props), "value", buffer);
+    return submitted != nullptr;
+}
+
+/// @brief A key combination, in a buffer of a capacity, which a click and a key press change.
+/// @return Whether it changed.
+static inline bool Ui_Key(char *buffer, usz capacity, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onChange");
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(taken, "value"), nullptr));
+    Ui_SetString(Ui_Add("key", props), "value", buffer);
+    return taken != nullptr;
 }
 
 /// @brief Opens a list, whose chosen item, from 1, is in selected; 0 for none.
@@ -452,6 +499,124 @@ static inline void Ui_OpenList(i32 *selected, const UiProps *props)
 static inline i32 Ui_Activated(const char *id)
 {
     return (i32)ECSValue_GetInteger(ECSValue_GetTableField(Ui_Take(id, "onActivate"), "value"), 0);
+}
+
+/// @brief A table: its columns, which end with one whose id is nullptr, and its rows' cells, a text for each column, row after row. The chosen row,
+/// from 1, is in selected; 0 for none. The props' sort and ascending show the arrow of the column the rows are sorted by; the plugin sorts the rows.
+static inline void Ui_Table(i32 *selected, const UiColumn *columns, const char *const *cells, usz rowCount, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onSelect");
+    *selected = taken != nullptr ? (i32)ECSValue_GetInteger(ECSValue_GetTableField(taken, "value"), *selected) : *selected;
+    UiProps chosen = *props;
+    chosen.selected = *selected;
+    ECSValue *description = Ui_Add("table", &chosen);
+    ECSValue *columnList = Ui_SetTable(description, "columns");
+    ECSValue *rowList = Ui_SetTable(description, "rows");
+    usz columnCount = 0;
+
+    for (; columns[columnCount].id != nullptr; columnCount++)
+    {
+        ECSValue *column = Ui_AddItem(columnList);
+
+        if (column != nullptr)
+        {
+            ECSValue_SetTable(column);
+            Ui_SetString(column, "id", columns[columnCount].id);
+            Ui_SetString(column, "title", columns[columnCount].title);
+
+            if (columns[columnCount].width > 0.0)
+            {
+                Ui_SetNumber(column, "width", columns[columnCount].width);
+            }
+        }
+    }
+
+    for (usz row = 0; row < rowCount; row++)
+    {
+        ECSValue *values = Ui_AddItem(rowList);
+
+        if (values != nullptr)
+        {
+            ECSValue_SetTable(values);
+        }
+
+        for (usz column = 0; values != nullptr && column < columnCount; column++)
+        {
+            Ui_SetString(values, columns[column].id, cells[row * columnCount + column]);
+        }
+    }
+}
+
+/// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr. It is valid until the next take.
+static inline const char *Ui_Sorted(const char *id)
+{
+    return ECSValue_GetString(ECSValue_GetTableField(Ui_Take(id, "onSort"), "value"), nullptr);
+}
+
+/// @brief Finds the node of an id among nodes and their children, or nullptr.
+static inline const UiTreeNode *Ui_FindTreeNode(const UiTreeNode *nodes, const char *id)
+{
+    for (const UiTreeNode *node = nodes; id != nullptr && node != nullptr && node->id != nullptr; node++)
+    {
+        const UiTreeNode *found = strcmp(node->id, id) == 0 ? node : Ui_FindTreeNode(node->children, id);
+
+        if (found != nullptr)
+        {
+            return found;
+        }
+    }
+
+    return nullptr;
+}
+
+/// @brief Adds the descriptions of tree nodes to a list, and the ids of the open ones to a table of them.
+static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeNode *nodes)
+{
+    for (const UiTreeNode *node = nodes; node->id != nullptr; node++)
+    {
+        ECSValue *item = Ui_AddItem(list);
+
+        if (item == nullptr)
+        {
+            return;
+        }
+
+        ECSValue_SetTable(item);
+        Ui_SetString(item, "id", node->id);
+        Ui_SetString(item, "label", node->label);
+
+        if (node->children != nullptr)
+        {
+            Ui_AddTreeNodes(Ui_SetTable(item, "children"), open, node->children);
+        }
+
+        if (node->open != nullptr && *node->open)
+        {
+            Ui_SetBool(open, node->id, true);
+        }
+    }
+}
+
+/// @brief A tree of nodes, which end with one whose id is nullptr. selected points to the chosen node's id, one of the nodes' own, or nullptr; a
+/// click on a node's arrow writes its new state into its open.
+/// @return Whether a node was chosen or opened or closed since the last draw.
+static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onSelect");
+    const UiTreeNode *chosen = Ui_FindTreeNode(nodes, ECSValue_GetString(ECSValue_GetTableField(taken, "value"), nullptr));
+    *selected = chosen != nullptr ? chosen->id : *selected;
+    const ECSValue *toggled = Ui_Take(props->id, "onToggle");
+    const UiTreeNode *opened = Ui_FindTreeNode(nodes, ECSValue_GetString(ECSValue_GetTableField(toggled, "value"), nullptr));
+
+    if (opened != nullptr && opened->open != nullptr)
+    {
+        *opened->open = ECSValue_GetBool(ECSValue_GetTableField(toggled, "open"), false);
+    }
+
+    ECSValue *description = Ui_Add("tree", props);
+    Ui_SetString(description, "selected", *selected);
+    Ui_AddTreeNodes(Ui_SetTable(description, "nodes"), Ui_SetTable(description, "open"), nodes);
+    return chosen != nullptr || opened != nullptr;
 }
 
 #pragma endregion Elements
@@ -481,8 +646,10 @@ static inline i32 Ui_Activated(const char *id)
 #define UI_SELECTOR(index, choices, ...) Ui_Choice("selector", (index), (choices), &(UiProps){__VA_ARGS__})
 #define UI_TABS(index, choices, ...) Ui_Choice("tabs", (index), (choices), &(UiProps){__VA_ARGS__})
 #define UI_DROPDOWN(index, choices, ...) Ui_Choice("dropdown", (index), (choices), &(UiProps){__VA_ARGS__})
-#define UI_FIELD(buffer, capacity, ...) Ui_Typed("field", (buffer), (capacity), &(UiProps){__VA_ARGS__})
-#define UI_KEY(buffer, capacity, ...) Ui_Typed("key", (buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_FIELD(buffer, capacity, ...) Ui_Field((buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_KEY(buffer, capacity, ...) Ui_Key((buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_TABLE(selected, columns, cells, rowCount, ...) Ui_Table((selected), (columns), (cells), (rowCount), &(UiProps){__VA_ARGS__})
+#define UI_TREE(selected, nodes, ...) Ui_Tree((selected), (nodes), &(UiProps){__VA_ARGS__})
 #define UI_SEPARATOR(...) ((void)Ui_Add("separator", &(UiProps){__VA_ARGS__}))
 #define UI_SPACE(...) ((void)Ui_Add("space", &(UiProps){__VA_ARGS__}))
 #define UI_IMAGE(path, ...) Ui_SetString(Ui_Add("image", &(UiProps){__VA_ARGS__}), "value", (path))
@@ -492,3 +659,6 @@ static inline i32 Ui_Activated(const char *id)
 
 /// @brief The item of the list with an id that was activated since the last draw, from 1, or 0.
 #define UI_ACTIVATED(id) Ui_Activated(id)
+
+/// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr.
+#define UI_SORTED(id) Ui_Sorted(id)

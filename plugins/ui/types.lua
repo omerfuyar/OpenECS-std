@@ -131,6 +131,8 @@
 ---@field columns? ui.TableColumn[] A table's columns.
 ---@field rows? ui.TableRow[] A table's rows.
 ---@field nodes? ui.TreeNode[] A tree's nodes.
+---@field open? table<any, boolean> A tree's open nodes, by id.
+---@field selected? any A tree's chosen node's id.
 ---@field children? ui.Description[] A container's children.
 
 ---What a callback of a described element got, which ui.take gives.

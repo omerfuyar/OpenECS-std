@@ -2077,6 +2077,7 @@ local function build(panel, description)
   elseif takes == "table" then
     return make(props, description.columns, description.rows)
   elseif takes == "tree" then
+    props.open, props.selected = description.open, description.selected
     return make(props, description.nodes)
   elseif takes == "none" then
     return make(props)
@@ -2133,14 +2134,14 @@ assert(ecs.service.register({
     fn = services.rect,
   },
   focus = {
-    sig = "string(handle<ecs.panel> panel)",
+    sig = "value<string?>(handle<ecs.panel> panel)",
     doc = "Give the id of the edited field\n"
         .. "@param panel The panel that shows the field\n"
         .. "@return The id of the field or key element that takes typing, or nil if none does",
     fn = services.focus,
   },
   tooltip = {
-    sig = "string(handle<ecs.panel> panel)",
+    sig = "value<string?>(handle<ecs.panel> panel)",
     doc = "Give the id of the element whose tooltip shows\n"
         .. "@param panel The panel that shows the element\n"
         .. "@return The element's id, or nil if no tooltip shows",
