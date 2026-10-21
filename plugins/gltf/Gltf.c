@@ -107,7 +107,7 @@ static SHUResult GltfSetString(ECSValue *table, const char *name, const char *st
         return SHUResult_Ok;
     }
 
-    SHU_ReturnResult(ECSValue_TableSetField(table, name, &field));
+    SHU_ReturnResult(ECSValue_SetTableField(table, name, &field));
     return ECSValue_SetString(field, string);
 }
 
@@ -115,7 +115,7 @@ static SHUResult GltfSetString(ECSValue *table, const char *name, const char *st
 static SHUResult GltfSetInteger(ECSValue *table, const char *name, i64 integer)
 {
     ECSValue *field = nullptr;
-    SHU_ReturnResult(name == nullptr ? ECSValue_ListAddItem(table, &field) : ECSValue_TableSetField(table, name, &field));
+    SHU_ReturnResult(name == nullptr ? ECSValue_AddListItem(table, &field) : ECSValue_SetTableField(table, name, &field));
     ECSValue_SetInteger(field, integer);
     return SHUResult_Ok;
 }
@@ -123,7 +123,7 @@ static SHUResult GltfSetInteger(ECSValue *table, const char *name, i64 integer)
 /// @brief Sets a field of a table, or an item added to a list when the name is nullptr, to an empty table.
 static SHUResult GltfSetTable(ECSValue *table, const char *name, ECSValue **retTable)
 {
-    SHU_ReturnResult(name == nullptr ? ECSValue_ListAddItem(table, retTable) : ECSValue_TableSetField(table, name, retTable));
+    SHU_ReturnResult(name == nullptr ? ECSValue_AddListItem(table, retTable) : ECSValue_SetTableField(table, name, retTable));
     ECSValue_SetTable(*retTable);
     return SHUResult_Ok;
 }
@@ -137,7 +137,7 @@ static SHUResult GltfSetNumbers(ECSValue *table, const char *name, const cgltf_f
     for (usz i = 0; i < count; i++)
     {
         ECSValue *item = nullptr;
-        SHU_ReturnResult(ECSValue_ListAddItem(list, &item));
+        SHU_ReturnResult(ECSValue_AddListItem(list, &item));
         ECSValue_SetNumber(item, (f64)numbers[i]);
     }
 
@@ -162,7 +162,7 @@ static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primi
     for (usz i = 0; i < primitive->attributes_count; i++)
     {
         ECSValue *name = nullptr;
-        SHU_ReturnResult(ECSValue_ListAddItem(attributes, &name));
+        SHU_ReturnResult(ECSValue_AddListItem(attributes, &name));
         SHU_ReturnResult(ECSValue_SetString(name, primitive->attributes[i].name));
 
         if (primitive->attributes[i].type == cgltf_attribute_type_position)
@@ -309,7 +309,7 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
         ECSValue *field = nullptr;
         SHU_ReturnResult(GltfSetTable(animations, nullptr, &item));
         SHU_ReturnResult(GltfSetString(item, "name", data->animations[i].name));
-        SHU_ReturnResult(ECSValue_TableSetField(item, "duration", &field));
+        SHU_ReturnResult(ECSValue_SetTableField(item, "duration", &field));
         ECSValue_SetNumber(field, (f64)GltfDuration(&data->animations[i]));
     }
 
@@ -833,7 +833,7 @@ static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz
     }
 
     // a file's URI is relative to the model's folder, and may escape characters, such as %20 for a space
-    const char *slash = ECSPath_LastSeparator(model->path);
+    const char *slash = ECSPath_FindLastSeparator(model->path);
     char *path = nullptr;
 
     if (SDL_asprintf(&path, "%.*s%s", slash == nullptr ? 0 : (int)(slash - model->path + 1), model->path, uri) < 0)

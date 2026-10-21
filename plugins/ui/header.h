@@ -84,7 +84,7 @@ static inline ECSValue *Ui_Field(ECSValue *table, const char *name)
 {
     ECSValue *field = nullptr;
 
-    if (table == nullptr || ECSValue_TableSetField(table, name, &field))
+    if (table == nullptr || ECSValue_SetTableField(table, name, &field))
     {
         Ui_current->failed = true;
         return nullptr;
@@ -194,7 +194,7 @@ static inline ECSValue *Ui_Add(const char *kind, const UiProps *props)
     Ui *ui = Ui_current;
     ECSValue *description = nullptr;
 
-    if (ui->failed || ECSValue_ListAddItem(ui->children[ui->depth - 1], &description))
+    if (ui->failed || ECSValue_AddListItem(ui->children[ui->depth - 1], &description))
     {
         ui->failed = true;
         return nullptr;
@@ -316,8 +316,8 @@ static inline bool Ui_Event(Ui *ui, ECSPanel panel, const ECSPanelEvent *event)
     case ECSPanelEventType_Wheel:
         Ui_SetNumber(table, "x", event->wheel.x);
         Ui_SetNumber(table, "y", event->wheel.y);
-        Ui_SetNumber(table, "wheelX", event->wheel.amountX);
-        Ui_SetNumber(table, "wheelY", event->wheel.amountY);
+        Ui_SetNumber(table, "scrollX", event->wheel.scrollX);
+        Ui_SetNumber(table, "scrollY", event->wheel.scrollY);
         break;
     case ECSPanelEventType_KeyDown:
     case ECSPanelEventType_KeyUp:
@@ -401,7 +401,7 @@ static inline bool Ui_Choice(const char *kind, i32 *index, const char *const *ch
     {
         ECSValue *item = nullptr;
 
-        if (ECSValue_ListAddItem(list, &item) || ECSValue_SetString(item, choices[i]))
+        if (ECSValue_AddListItem(list, &item) || ECSValue_SetString(item, choices[i]))
         {
             Ui_current->failed = true;
         }

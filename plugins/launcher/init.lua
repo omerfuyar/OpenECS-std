@@ -7,7 +7,7 @@ local ui = require("ui")
 
 -- a size of the ui plugin's settings, in layout units, which every first-party view shares
 local function size(name)
-  return ecs.settings.get("ui." .. name)
+  return ecs.setting.get("ui." .. name)
 end
 
 -- the id of the list of entries
@@ -20,7 +20,7 @@ local lists = {} -- every open list's state, by its panel handle
 
 -- presets of tools used before come first, the most recently used first, then the others by name; sessions are newest first
 local function readEntries()
-  local presets, sessions = ecs.session.presets(), ecs.session.sessions()
+  local presets, sessions = ecs.session.listPresets(), ecs.session.listSessions()
 
   table.sort(presets, function(a, b)
     if (a.lastUsed ~= nil) ~= (b.lastUsed ~= nil) then
@@ -235,5 +235,5 @@ assert(ecs.service.register({
 
 -- default keys for the list; presets and the user's settings can change them
 for service, key in pairs({ up = "Up", down = "Down", start = "Return" }) do
-  assert(ecs.input.bind("launcher.list", key, "launcher." .. service))
+  assert(ecs.key.bind("launcher.list", key, "launcher." .. service))
 end

@@ -93,11 +93,11 @@ static SHUResult FsSetInfo(ECSValue *table, const SDL_PathInfo *info)
 {
     ECSValue *field = nullptr;
     ECSValue_SetTable(table);
-    SHU_ReturnResult(ECSValue_TableSetField(table, "type", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(table, "type", &field));
     SHU_ReturnResult(ECSValue_SetString(field, FsTypeName(info->type)));
-    SHU_ReturnResult(ECSValue_TableSetField(table, "size", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(table, "size", &field));
     ECSValue_SetInteger(field, (i64)info->size);
-    SHU_ReturnResult(ECSValue_TableSetField(table, "modified", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(table, "modified", &field));
     ECSValue_SetNumber(field, (f64)info->modify_time / (f64)SDL_NS_PER_SECOND);
     return SHUResult_Ok;
 }
@@ -146,9 +146,9 @@ static SHUResult FsFillList(const char *folder, char **names, int count, ECSValu
             continue;
         }
 
-        SHU_ReturnResult(ECSValue_ListAddItem(list, &item));
+        SHU_ReturnResult(ECSValue_AddListItem(list, &item));
         SHU_ReturnResult(FsSetInfo(item, &info));
-        SHU_ReturnResult(ECSValue_TableSetField(item, "name", &name));
+        SHU_ReturnResult(ECSValue_SetTableField(item, "name", &name));
         SHU_ReturnResult(ECSValue_SetString(name, names[i]));
     }
 

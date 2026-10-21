@@ -278,7 +278,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
 - The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then `.` (OpenECS DESIGN 12.3).
-- It reads the list with `ecs.panel.types()` (OpenECS DESIGN 4.1), each time it is opened or shown, and leaves out its own type. The types are grouped by plugin, under the plugin's name and description; each row shows the type's title and name.
+- It reads the list with `ecs.panel.listTypes()` (OpenECS DESIGN 4.1), each time it is opened or shown, and leaves out its own type. The types are grouped by plugin, under the plugin's name and description; each row shows the type's title and name.
 - `panels.open` opens the list, or focuses it if it is open. The panel that had the focus is where a chosen type opens: in its group, or where the core puts new panels if it has closed.
 - A click on a row, or `panels.choose`, opens a panel of the type. `panels.up` and `panels.down` choose a row; the plugin binds them for its panel type to Up, Down and Return.
 - The panel's saved state is the chosen type.

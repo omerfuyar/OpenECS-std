@@ -680,23 +680,23 @@ static SHUResult GpuFillGlyphPart(ECSValue *part, usz atlas, const TTF_GPUAtlasD
     if (result == SHUResult_Ok)
     {
         ECSValue_SetTable(part);
-        result = ECSValue_TableSetField(part, "atlas", &field);
+        result = ECSValue_SetTableField(part, "atlas", &field);
     }
 
     if (result == SHUResult_Ok)
     {
         ECSValue_SetInteger(field, (i64)atlas);
-        result = ECSValue_TableSetField(part, "count", &field);
+        result = ECSValue_SetTableField(part, "count", &field);
     }
 
     if (result == SHUResult_Ok)
     {
         ECSValue_SetInteger(field, sequence->num_indices);
-        result = ECSValue_TableSetField(part, "vertices", &field);
+        result = ECSValue_SetTableField(part, "vertices", &field);
     }
 
     result = result ? result : ECSValue_SetBuffer(field, (SHUSliceView){vertices, vertexBytes});
-    result = result ? result : ECSValue_TableSetField(part, "indices", &field);
+    result = result ? result : ECSValue_SetTableField(part, "indices", &field);
     result = result ? result : ECSValue_SetBuffer(field, (SHUSliceView){indices, indexBytes});
     SDL_free(vertices);
     SDL_free(indices);
@@ -712,11 +712,11 @@ static SHUResult GpuFillGlyphs(TTF_Text *drawn, ECSValue *retGlyphs)
     ECSValue *parts = nullptr;
     TTF_GetTextSize(drawn, &width, &height);
     ECSValue_SetTable(retGlyphs);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "width", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "width", &field));
     ECSValue_SetNumber(field, width);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "height", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "height", &field));
     ECSValue_SetNumber(field, height);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "parts", &parts));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "parts", &parts));
     ECSValue_SetTable(parts);
 
     for (TTF_GPUAtlasDrawSequence *sequence = TTF_GetGPUTextDrawData(drawn); sequence != nullptr; sequence = sequence->next)
@@ -737,7 +737,7 @@ static SHUResult GpuFillGlyphs(TTF_Text *drawn, ECSValue *retGlyphs)
             return SHUResult_ErrInternal;
         }
 
-        SHU_ReturnResult(ECSValue_ListAddItem(parts, &part));
+        SHU_ReturnResult(ECSValue_AddListItem(parts, &part));
         SHU_ReturnResult(GpuFillGlyphPart(part, atlas + 1, sequence));
     }
 

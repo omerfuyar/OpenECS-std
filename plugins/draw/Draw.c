@@ -896,7 +896,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = DrawFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), DrawFree(nullptr););
     SHU_ReturnResult(ECSSetting_Declare(plugin, &monoFont), DrawFree(nullptr););
-    SHU_ReturnResult(ECSEvent_Subscribe(plugin, "ecs.settingChanged", &DRAW.settingChanged, DrawSettingChanged, nullptr), DrawFree(nullptr););
+    SHU_ReturnResult(ECSEvent_Subscribe(plugin, &DRAW.settingChanged, "ecs.settingChanged", DrawSettingChanged, nullptr), DrawFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "font", nullptr), DrawFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "image", DrawImageDestroy), DrawFree(nullptr););
 

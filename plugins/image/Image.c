@@ -219,11 +219,11 @@ static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
 {
     ECSValue *frame = nullptr;
     ECSValue *field = nullptr;
-    SHU_ReturnResult(ECSValue_ListAddItem(frames, &frame));
+    SHU_ReturnResult(ECSValue_AddListItem(frames, &frame));
     ECSValue_SetTable(frame);
-    SHU_ReturnResult(ECSValue_TableSetField(frame, "image", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(frame, "image", &field));
     SHU_ReturnResult(ECSValue_SetHandle(field, "draw.image", image));
-    SHU_ReturnResult(ECSValue_TableSetField(frame, "seconds", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(frame, "seconds", &field));
     ECSValue_SetNumber(field, seconds);
     return SHUResult_Ok;
 }
