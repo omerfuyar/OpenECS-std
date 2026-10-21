@@ -188,8 +188,8 @@ static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
     }
 }
 
-/// @brief Adds the description of an element of a kind to the innermost open container, and gives it, or nullptr if memory runs out.
-static inline ECSValue *Ui_Add(const char *kind, const UiProps *props)
+/// @brief Adds the description of an element of a type to the innermost open container, and gives it, or nullptr if memory runs out.
+static inline ECSValue *Ui_Add(const char *type, const UiProps *props)
 {
     Ui *ui = Ui_current;
     ECSValue *description = nullptr;
@@ -201,16 +201,16 @@ static inline ECSValue *Ui_Add(const char *kind, const UiProps *props)
     }
 
     ECSValue_SetTable(description);
-    Ui_SetString(description, "kind", kind);
+    Ui_SetString(description, "type", type);
     Ui_SetProps(description, props);
     return description;
 }
 
-/// @brief Opens a container of a kind, whose children the next descriptions are, until Ui_Close.
-static inline ECSValue *Ui_Open(const char *kind, const UiProps *props)
+/// @brief Opens a container of a type, whose children the next descriptions are, until Ui_Close.
+static inline ECSValue *Ui_Open(const char *type, const UiProps *props)
 {
     Ui *ui = Ui_current;
-    ECSValue *description = Ui_Add(kind, props);
+    ECSValue *description = Ui_Add(type, props);
     ECSValue *children = Ui_Field(description, "children");
 
     if (children != nullptr)
@@ -364,17 +364,17 @@ static inline bool Ui_Toggle(bool *on, const UiProps *props)
     return taken != nullptr;
 }
 
-/// @brief A slider or a number field: kind is "slider" or "number".
-static inline bool Ui_Number(const char *kind, f64 *value, const UiProps *props)
+/// @brief A slider or a number field: type is "slider" or "number".
+static inline bool Ui_Number(const char *type, f64 *value, const UiProps *props)
 {
     const ECSValue *taken = Ui_Take(props->id, "onChange");
     *value = taken != nullptr ? ECSValue_GetNumber(ECSValue_GetTableField(taken, "value"), *value) : *value;
-    Ui_SetNumber(Ui_Add(kind, props), "value", *value);
+    Ui_SetNumber(Ui_Add(type, props), "value", *value);
     return taken != nullptr;
 }
 
-/// @brief A selector, tabs or a dropdown: kind is "selector", "tabs" or "dropdown". The choices end with nullptr, and index is the chosen one's, from 0.
-static inline bool Ui_Choice(const char *kind, i32 *index, const char *const *choices, const UiProps *props)
+/// @brief A selector, tabs or a dropdown: type is "selector", "tabs" or "dropdown". The choices end with nullptr, and index is the chosen one's, from 0.
+static inline bool Ui_Choice(const char *type, i32 *index, const char *const *choices, const UiProps *props)
 {
     const ECSValue *taken = Ui_Take(props->id, "onChange");
     const char *chosen = taken == nullptr ? nullptr : ECSValue_GetString(ECSValue_GetTableField(taken, "value"), nullptr);
@@ -388,7 +388,7 @@ static inline bool Ui_Choice(const char *kind, i32 *index, const char *const *ch
         }
     }
 
-    ECSValue *description = Ui_Add(kind, props);
+    ECSValue *description = Ui_Add(type, props);
     Ui_SetString(description, "value", *index >= 0 && *index < count ? choices[*index] : "");
     ECSValue *list = Ui_Field(description, "choices");
 
@@ -410,12 +410,12 @@ static inline bool Ui_Choice(const char *kind, i32 *index, const char *const *ch
     return chosen != nullptr;
 }
 
-/// @brief A text field or a key element: kind is "field" or "key". The text is in a buffer of a capacity, which each edit changes.
+/// @brief A text field or a key element: type is "field" or "key". The text is in a buffer of a capacity, which each edit changes.
 /// @return Whether Return was pressed in a field, or the key changed.
-static inline bool Ui_Typed(const char *kind, char *buffer, usz capacity, const UiProps *props)
+static inline bool Ui_Typed(const char *type, char *buffer, usz capacity, const UiProps *props)
 {
     // each take ends the one before, so the text is copied at once
-    const char *const callbacks[] = {"onChange", strcmp(kind, "field") == 0 ? "onSubmit" : nullptr};
+    const char *const callbacks[] = {"onChange", strcmp(type, "field") == 0 ? "onSubmit" : nullptr};
     bool taken[2] = {false, false};
 
     for (usz i = 0; i < UI__COUNT(callbacks) && callbacks[i] != nullptr; i++)
@@ -434,7 +434,7 @@ static inline bool Ui_Typed(const char *kind, char *buffer, usz capacity, const 
         }
     }
 
-    Ui_SetString(Ui_Add(kind, props), "value", buffer);
+    Ui_SetString(Ui_Add(type, props), "value", buffer);
     return callbacks[1] != nullptr ? taken[1] : taken[0];
 }
 
