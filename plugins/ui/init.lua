@@ -813,7 +813,7 @@ local function selection(state)
   end
 end
 
--- the part of a rectangle inside a clip rectangle, if there is one
+-- the part of a rectangle inside a clip rectangle, if there is one; draw.clip clips the drawing the same way, and this tells where the pointer can hit
 local function intersect(rect, clip)
   if not clip then
     return rect
@@ -822,14 +822,6 @@ local function intersect(rect, clip)
   local right, bottom = math.min(rect.x + rect.w, clip.x + clip.w), math.min(rect.y + rect.h, clip.y + clip.h)
   local x, y = math.max(rect.x, clip.x), math.max(rect.y, clip.y)
   return { x = x, y = y, w = math.max(0, right - x), h = math.max(0, bottom - y) }
-end
-
-local function restoreClip(surface, clip)
-  if clip then
-    draw.clip(surface, clip.x, clip.y, clip.w, clip.h)
-  else
-    draw.unclip(surface)
-  end
 end
 
 -- the left edges and widths of a selector's choices, shared out over its width
@@ -916,27 +908,25 @@ local function paint(node, surface, state, clip)
     arrow(surface, node.x + node.w - size.paddingX - line / 4, node.y + node.h / 2, line / 4, "textDim")
   elseif node.kind == "selector" and node.look == "tabs" then
     -- a line under the whole row, and a thicker one in the accent colour under the chosen tab; tabs past the element's width are cut at its edge
-    local inner = intersect({ x = node.x, y = node.y, w = node.w, h = node.h }, clip)
-    draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
-    draw.fill(surface, node.x, node.y + node.h - 1, node.w, 1, "tabShown")
+    draw.clip(surface, node.x, node.y, node.w, node.h, function()
+      draw.fill(surface, node.x, node.y + node.h - 1, node.w, 1, "tabShown")
 
-    for i, rect in ipairs(segmentRects(node)) do
-      local choice = node.choices[i]
-      local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.w
+      for i, rect in ipairs(segmentRects(node)) do
+        local choice = node.choices[i]
+        local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.w
 
-      if over and choice ~= node.value then
-        draw.fill(surface, rect.x, node.y, rect.w, node.h - 1, "tab")
+        if over and choice ~= node.value then
+          draw.fill(surface, rect.x, node.y, rect.w, node.h - 1, "tab")
+        end
+
+        if choice == node.value then
+          draw.fill(surface, rect.x, node.y + node.h - 3, rect.w, 3, "accent")
+        end
+
+        local shown = fit(font, tostring(choice), textSize, rect.w - 2 * size.paddingX)
+        draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
       end
-
-      if choice == node.value then
-        draw.fill(surface, rect.x, node.y + node.h - 3, rect.w, 3, "accent")
-      end
-
-      local shown = fit(font, tostring(choice), textSize, rect.w - 2 * size.paddingX)
-      draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
-    end
-
-    restoreClip(surface, clip)
+    end)
   elseif node.kind == "selector" then
     for i, rect in ipairs(segmentRects(node)) do
       local choice = node.choices[i]
@@ -993,25 +983,24 @@ local function paint(node, surface, state, clip)
 
     -- the text moves left when the cursor would leave the field, so the cursor stays in view
     local textX = node.x + size.paddingX - ((focused and before > room) and before - room or 0)
-    local inner = intersect({ x = node.x + 1, y = node.y + 1, w = node.w - 2, h = node.h - 2 }, clip)
-    draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
-    local first, last = selection(state)
+    draw.clip(surface, node.x + 1, node.y + 1, node.w - 2, node.h - 2, function()
+      local first, last = selection(state)
 
-    if focused and node.kind == "field" and first then
-      local left = textX + measureText(font, text:sub(1, first - 1), textSize)
-      draw.fill(surface, left, textY, textX + measureText(font, text:sub(1, last - 1), textSize) - left, line, "selected")
-    end
+      if focused and node.kind == "field" and first then
+        local left = textX + measureText(font, text:sub(1, first - 1), textSize)
+        draw.fill(surface, left, textY, textX + measureText(font, text:sub(1, last - 1), textSize) - left, line, "selected")
+      end
 
-    draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
-      (focused and node.kind == "key") and "textDim" or node.color or "text")
+      draw.text(surface, font, (focused or width <= room) and text or fit(font, text, textSize, room), textX, textY, textSize,
+        (focused and node.kind == "key") and "textDim" or node.color or "text")
 
-    if focused and node.kind == "field" then
-      draw.fill(surface, textX + before, textY, 2, line, "accent")
-      state.cursor = { x = textX + before, y = textY, h = line }
-      state.textX = textX
-    end
+      if focused and node.kind == "field" then
+        draw.fill(surface, textX + before, textY, 2, line, "accent")
+        state.cursor = { x = textX + before, y = textY, h = line }
+        state.textX = textX
+      end
+    end)
 
-    restoreClip(surface, clip)
     -- a number element marks a typed text that is not a number
     local valid = node.valid ~= false and not (focused and node.change and tonumber(state.typed) == nil)
     draw.outline(surface, node.x, node.y, node.w, node.h, 1, not valid and INVALID or focused and "accent" or "tabShown")
@@ -1040,15 +1029,13 @@ local function paint(node, surface, state, clip)
     -- the children draw inside the scroll element only
     local inner = intersect({ x = node.x, y = node.y, w = node.w, h = node.h }, clip)
 
-    draw.clip(surface, inner.x, inner.y, inner.w, inner.h)
-
-    for _, child in ipairs(node.children) do
-      if child.y + child.h > node.y and child.y < node.y + node.h then
-        paint(child, surface, state, inner)
+    draw.clip(surface, node.x, node.y, node.w, node.h, function()
+      for _, child in ipairs(node.children) do
+        if child.y + child.h > node.y and child.y < node.y + node.h then
+          paint(child, surface, state, inner)
+        end
       end
-    end
-
-    restoreClip(surface, clip)
+    end)
 
     if node.total > node.shown then
       local start, length = thumb(node)
@@ -1751,10 +1738,8 @@ function services.show(panel, surface, root)
   state.pressed = state.pressed and byID(root, state.pressed.id) or nil
   state.root = root
 
-  draw.unclip(surface)
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state, nil)
-  draw.unclip(surface)
   paintTip(surface, state, width, height)
 
   if state.focus and state.cursor then
