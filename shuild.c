@@ -90,7 +90,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
     {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, {NULL}, false},
     {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", NULL}, false},
-    {"gltf", {"cgltf", NULL}, NULL, {NULL}, {NULL}, false},
+    {"gltf", {"cgltf", "cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {"crypt32", NULL}, true},
     {"gpu", {NULL}, NULL, {NULL}, {NULL}, true, {&GLSLANG, &SPIRV_CROSS, NULL}},
