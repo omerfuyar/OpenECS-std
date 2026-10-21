@@ -58,7 +58,7 @@ static struct
     usz clipCount;
     TTF_TextEngine *engine; // draws text into surfaces, and keeps the glyphs it drew
     bool ttfStarted;
-    char *coreFont; // the setting ecs.font when the "ui" font was opened; the core does not say when it changes
+    ECSSubscription settingChanged; // hears ecs.font change, the core's setting that the "ui" font follows
 } DRAW = {0};
 
 #pragma region Pixels
@@ -666,43 +666,10 @@ static DrawFont *DrawGetFontByName(const char *name)
     return font;
 }
 
-/// @brief Opens the "ui" font again when the setting ecs.font has changed since it was opened.
-static void DrawFollowCoreFont(DrawFont *font)
-{
-    if (SDL_strcmp(font->name, "ui") != 0)
-    {
-        return;
-    }
-
-    const char *setting = ECSValue_GetString(ECSSetting_Get("ecs.font"), "");
-
-    if (DRAW.coreFont != nullptr && SDL_strcmp(DRAW.coreFont, setting) == 0)
-    {
-        return;
-    }
-
-    char *copy = SDL_strdup(setting);
-    char *path = copy == nullptr ? nullptr : DrawFontPath(font->name);
-
-    // when out of memory, the font stays as it is, and the next call tries again
-    if (path == nullptr)
-    {
-        SDL_free(copy);
-        return;
-    }
-
-    DrawCloseSizes(font);
-    SDL_free(font->path);
-    font->path = path;
-    SDL_free(DRAW.coreFont);
-    DRAW.coreFont = copy;
-}
-
 /// @brief Gets a font at a size in pixels, opening it the first time.
 /// @return The font, or nullptr if it cannot be opened; the reason is logged.
 static TTF_Font *DrawGetSize(DrawFont *font, f32 pixels)
 {
-    DrawFollowCoreFont(font);
     i32 size = (i32)SDL_max(1.0f, SDL_roundf(pixels));
 
     for (usz i = 0; i < font->sizeCount; i++)
@@ -746,10 +713,20 @@ static void DrawFontsChanged(void *data)
     }
 }
 
+/// @brief Opens the fonts again when the core's font, which "ui" is, changes.
+static void DrawSettingChanged(void *data, const char *name, const ECSValue *value)
+{
+    (void)name;
+
+    if (SDL_strcmp(ECSValue_GetString(ECSValue_GetTableField(value, "name"), ""), "ecs.font") == 0)
+    {
+        DrawFontsChanged(data);
+    }
+}
+
 /// @brief Gives the file a font is read from, for plugins that draw text in other ways, such as gpu. A setting that names another file changes it.
 static const char *DrawFontFile(DrawFont *font)
 {
-    DrawFollowCoreFont(font);
     return font->path;
 }
 
@@ -792,40 +769,70 @@ static void DrawMeasure(DrawFont *font, const char *text, f32 size, f32 *retWidt
 
 #pragma region Clipping
 
-static void DrawSetClip(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height)
+/// @brief Finds the clip of a surface, or nullptr.
+static DrawClip *DrawFindClip(const ECSSurface *surface)
 {
-    SDL_Rect rect = DrawPixels(surface->scale, x, y, width, height);
-
     for (usz i = 0; i < DRAW.clipCount; i++)
     {
         if (DRAW.clips[i].surface == surface)
         {
-            DRAW.clips[i].rect = rect;
-            return;
+            return &DRAW.clips[i];
         }
     }
 
-    DrawClip *clips = SDL_realloc(DRAW.clips, (DRAW.clipCount + 1) * sizeof(DrawClip));
+    return nullptr;
+}
 
-    if (clips == nullptr)
+/// @brief Draws only inside a rectangle while a function runs, and inside the clip around it, if there is one. The clip before comes back when the function returns, also when it fails.
+static void DrawClipTo(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, void (*body)(void))
+{
+    if (body == nullptr)
     {
-        ECS_LogError(DRAW.plugin, "Cannot clip a surface: out of memory.");
         return;
     }
 
-    DRAW.clips = clips;
-    DRAW.clips[DRAW.clipCount++] = (DrawClip){.surface = surface, .rect = rect};
-}
+    DrawClip *outer = DrawFindClip(surface);
+    bool hadOuter = outer != nullptr;
+    SDL_Rect before = hadOuter ? outer->rect : (SDL_Rect){0, 0, surface->width, surface->height};
+    SDL_Rect rect = DrawPixels(surface->scale, x, y, width, height);
 
-static void DrawUnclip(ECSSurface *surface)
-{
-    for (usz i = 0; i < DRAW.clipCount; i++)
+    // an empty overlap leaves nothing to draw into
+    if (!SDL_GetRectIntersection(&rect, &before, &rect))
     {
-        if (DRAW.clips[i].surface == surface)
+        rect = (SDL_Rect){0};
+    }
+
+    if (hadOuter)
+    {
+        outer->rect = rect;
+    }
+    else
+    {
+        DrawClip *clips = SDL_realloc(DRAW.clips, (DRAW.clipCount + 1) * sizeof(DrawClip));
+
+        if (clips == nullptr)
         {
-            DRAW.clips[i] = DRAW.clips[--DRAW.clipCount];
+            ECS_LogError(DRAW.plugin, "Cannot clip a surface: out of memory.");
             return;
         }
+
+        DRAW.clips = clips;
+        DRAW.clips[DRAW.clipCount++] = (DrawClip){.surface = surface, .rect = rect};
+    }
+
+    // an error in the function is reported, and the clip still ends here
+    body();
+
+    // the function may have clipped the surface itself, which moved the clips, so the clip is found again
+    DrawClip *clip = DrawFindClip(surface);
+
+    if (clip != nullptr && hadOuter)
+    {
+        clip->rect = before;
+    }
+    else if (clip != nullptr)
+    {
+        *clip = DRAW.clips[--DRAW.clipCount];
     }
 }
 
@@ -844,7 +851,7 @@ static void DrawFree(void *data)
         SDL_free(DRAW.fonts[i]);
     }
 
-    SDL_free(DRAW.coreFont);
+    ECSEvent_Unsubscribe(&DRAW.settingChanged);
 
     if (DRAW.engine != nullptr)
     {
@@ -889,6 +896,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = DrawFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), DrawFree(nullptr););
     SHU_ReturnResult(ECSSetting_Declare(plugin, &monoFont), DrawFree(nullptr););
+    SHU_ReturnResult(ECSEvent_Subscribe(plugin, "ecs.settingChanged", &DRAW.settingChanged, DrawSettingChanged, nullptr), DrawFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "font", nullptr), DrawFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "image", DrawImageDestroy), DrawFree(nullptr););
 
@@ -1032,16 +1040,14 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param size The font size; the width and the line height are in the same units\n"
          "@param width Gets the text's width, or 0 if the font cannot be opened\n"
          "@param lineHeight Gets the font's line height, or 0 if the font cannot be opened"},
-        {"clip", (ECSFunction)DrawSetClip, "void(handle<ecs.surface> surface, float x, float y, float width, float height)",
-         "Limit later drawing into a surface to a rectangle\n"
-         "@param surface The panel's surface, as its Draw gives it; a new clip replaces its old one\n"
+        {"clip", (ECSFunction)DrawClipTo, "void(handle<ecs.surface> surface, float x, float y, float width, float height, fn<void()> body)",
+         "Draw only inside a rectangle while a function runs\n"
+         "@param surface The panel's surface, as its Draw gives it\n"
          "@param x The rectangle's left, in layout units\n"
          "@param y The rectangle's top, in layout units\n"
          "@param width The rectangle's width, in layout units\n"
-         "@param height The rectangle's height, in layout units"},
-        {"unclip", (ECSFunction)DrawUnclip, "void(handle<ecs.surface> surface)",
-         "Let drawing reach the whole surface again\n"
-         "@param surface The panel's surface, as its Draw gives it"},
+         "@param height The rectangle's height, in layout units\n"
+         "@param body Draws inside the rectangle, and inside a clip around this one; the clip ends when it returns, also when it fails, whose error is reported"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

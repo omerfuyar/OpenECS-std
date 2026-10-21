@@ -69,7 +69,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Positions and sizes are in layout units; draw multiplies them by the surface's scale. Colours have the type `color` (OpenECS DESIGN 10.2), and draw blends them by their alpha.
 - It is a native plugin. It draws shapes with its own small rasterizer, and calls SDL3 and SDL3_ttf for images and text (OpenECS DESIGN 17.2): it wraps the surface's pixels in an SDL surface, and draws text with one SDL3_ttf surface text engine, which keeps the glyphs it has drawn.
 - Lines, circles and rounded rectangles have smooth edges: each pixel at an edge gets the part of the pixel the shape covers, from its distance to the edge. Rectangles keep sharp edges on whole pixels, and triangles fill each pixel whose centre is inside them, so the triangles of a mesh meet without seams.
-- A surface can have a clip rectangle: drawing into the surface stays inside it until `unclip`. A plugin that clips unclips before its `Draw` returns.
+- `draw.clip(surface, x, y, width, height, body)` clips while `body` runs: drawing into the surface stays inside the rectangle, and inside a clip around it. The clip ends when `body` returns, also when it fails, whose error is reported (OpenECS DESIGN 10.4), so a failed draw never leaves a surface clipped.
 - Its functions:
 
   | Function                                   | Does                                                                                                                                       |
@@ -84,10 +84,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
   | `text`, `measure`                          | Draw text in a font at `x, y`, the top left of its line, in a size and a colour, and give its width; or give its width and line height.    |
   | `fontFile`                                 | Give the file a font is read from, for plugins that draw text in other ways, such as gpu (15). A setting that names another file changes it. |
-  | `clip`, `unclip`                           | Limit later drawing into the surface to a rectangle, or let it reach the whole surface again.                                              |
+  | `clip`                                     | Draw only inside a rectangle while a function runs.                                                                                        |
 
 - `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font draw ships with in its `fonts/` folder, Roboto Mono, under the SIL Open Font License, which is beside it.
-- A font is opened at each size asked for, and kept; a change of `ecs.font` or `draw.monoFont` opens the fonts again.
+- A font is opened at each size asked for, and kept; a change of `ecs.font`, which draw hears through the core's event `ecs.settingChanged`, or of `draw.monoFont` opens the fonts again.
 - Their signatures are in the plugin's code and its definition files (OpenECS DESIGN 10.10).
 
 ## 3. mixer
