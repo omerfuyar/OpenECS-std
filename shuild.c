@@ -234,7 +234,7 @@ static void SetBuildFlags(bool ownCode)
         {
             SHU_CompilerAddFlags(SHUM_FLAGS_WARNING_MID);
 
-            if (SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
+            if (SHU_CompilerGetFamily() == SHUCompiler_GCC)
             {
                 SHU_CompilerAddFlags(" -fanalyzer");
             }
@@ -353,7 +353,7 @@ static void BuildLibrary(const Library *library, const char *folder)
 /// @param gcc The tool's name for gcc. @param clang The tool's name for clang.
 static char *CompilerTool(const char *gcc, const char *clang)
 {
-    const char *name = SHU_CompilerGetIdentifier() == SHUCompiler_Clang ? "clang" : "gcc";
+    const char *name = SHU_CompilerGetFamily() == SHUCompiler_Clang ? "clang" : "gcc";
     const char *found = NULL;
 
     for (const char *c = strstr(CONFIG.compiler, name); c != NULL; c = strstr(c + 1, name))
@@ -367,7 +367,7 @@ static char *CompilerTool(const char *gcc, const char *clang)
 /// @brief The folder of a C++ library's build in the cache.
 static char *CMakeFolder(const CMakeLibrary *library)
 {
-    return SHU_UtilFormat("%s%scmake/%s/", SHU_UtilGetExecutablePath(), CONFIG.cache, library->name);
+    return SHU_UtilFormat("%s%scmake/%s/", SHU_UtilGetScriptDirectory(), CONFIG.cache, library->name);
 }
 
 /// @brief Builds a C++ library of dependencies/ with CMake, with OpenECS's compiler and its C++ compiler, into static archives in the cache, unless they
@@ -402,7 +402,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
     SHU_UtilRunLogged(SHU_UtilFormat("%sconfigure.log", logs),
                       "cmake -S \"%sdependencies/%s\" -B \"%s\" -G Ninja -DCMAKE_BUILD_TYPE=Release %s -DCMAKE_POSITION_INDEPENDENT_CODE=ON "
                       "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
-                      SHU_UtilGetExecutablePath(), library->name, folder, compilers, library->options);
+                      SHU_UtilGetScriptDirectory(), library->name, folder, compilers, library->options);
     SHU_UtilRunLogged(SHU_UtilFormat("%sbuild.log", logs), "cmake --build \"%s\" --parallel", folder);
     SHU_UtilLog(SHUM_LOG_NAME("%s") " (CMake): built", library->name);
 }
@@ -411,13 +411,13 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
 /// The C++ compiler gives its path, as OpenECS's C compiler may be another version than the C++ compiler that built the libraries.
 static char *CppLibrary(void)
 {
-    const char *file = CONFIG.windows && SHU_CompilerGetIdentifier() == SHUCompiler_Clang ? "libc++.a" : "libstdc++.a";
+    const char *file = CONFIG.windows && SHU_CompilerGetFamily() == SHUCompiler_Clang ? "libc++.a" : "libstdc++.a";
     char *log = SHU_UtilFormat("%scmake/library.log", CONFIG.cache);
     SHU_UtilCreateDirectory(SHU_UtilFormat("%scmake/", CONFIG.cache));
     SHU_UtilRunLogged(log, "%s -print-file-name=%s", CompilerTool("g++", "clang++"), file);
 
     char path[1024] = {0};
-    FILE *read = fopen(SHU_UtilFormat("%s%s", SHU_UtilGetExecutablePath(), log), "r");
+    FILE *read = fopen(SHU_UtilFormat("%s%s", SHU_UtilGetScriptDirectory(), log), "r");
 
     bool given = read != NULL && fgets(path, sizeof(path), read) != NULL;
 
@@ -479,14 +479,14 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
     // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
-    if (needs != NULL && !needs->analyze && SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
+    if (needs != NULL && !needs->analyze && SHU_CompilerGetFamily() == SHUCompiler_GCC)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }
 
     for (usz i = 0; needs != NULL && needs->includes[i] != NULL; i++)
     {
-        char *flag = SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->includes[i]);
+        char *flag = SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetScriptDirectory(), needs->includes[i]);
         SHU_CompilerAddFlags(flag);
 
         // shuild finds the headers a file includes in the module's folders, so the plugin is rebuilt when they change
@@ -499,7 +499,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
     {
         for (usz j = 0; needs->cmake[i]->includes[j] != NULL; j++)
         {
-            SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->cmake[i]->includes[j]));
+            SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetScriptDirectory(), needs->cmake[i]->includes[j]));
         }
 
         for (usz j = 0; needs->cmake[i]->built[j] != NULL; j++)
