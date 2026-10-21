@@ -517,6 +517,10 @@ static void BuildNative(const char *name, const char *root, const char *output)
     SHU_ModuleAddSourceFile("./");
     SHU_ModuleAddIncludeDirectory(include);
 
+    // stb_ds comes through OpenECS's glue header, stbSDL3.h, beside stb_ds.h in the build's include/stb/ (OpenECS DESIGN 1.7); a plugin compiles its
+    // implementation in, so the folder is a system one, which keeps stb_ds's warnings out
+    SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %s%sinclude/stb", SHU_UtilGetExecutablePath(), CONFIG.output));
+
     // the linker takes what the plugin uses of each library, in the order they are listed
     for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
     {
