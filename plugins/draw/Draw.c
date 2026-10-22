@@ -593,8 +593,7 @@ static SHUSlice DrawImagePixels(DrawImage *image)
 
 static void DrawFreeImage(DrawImage *image)
 {
-    ECSHandle_Forget(image);
-    DrawImageDestroy(image);
+    ECSHandle_Free(DRAW.plugin, "image", image);
 }
 
 /// @brief Wraps a surface's pixels in an SDL surface, clipped to what drawing reaches, for SDL and SDL_ttf to draw into. Free it with SDL_DestroySurface.
@@ -638,12 +637,12 @@ static char *DrawFontPath(const char *name)
     bool shipped = SDL_strcmp(name, "mono") == 0 && file[0] == '\0';
     char *path = nullptr;
 
-    if (SDL_asprintf(&path, "%s%s", shipped ? ECSPlugin_GetFolder(DRAW.plugin) : ECSPath_IsAbsolute(file) ? "" : SDL_GetBasePath(), shipped ? DRAW_MONO_FONT : file) < 0)
+    if (shipped)
     {
-        return nullptr;
+        return SDL_asprintf(&path, "%s%s", ECSPlugin_GetFolder(DRAW.plugin), DRAW_MONO_FONT) < 0 ? nullptr : path;
     }
 
-    return path;
+    return ECSPath_GetFull(&path, file) ? nullptr : path;
 }
 
 /// @brief Closes the sizes a font has open, such as when its file changes.

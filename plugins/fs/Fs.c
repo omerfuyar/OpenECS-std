@@ -70,14 +70,6 @@ static struct
     bool telling;      // the changes are being told, so stopped watches wait to be freed
 } FS = {.inotify = -1};
 
-/// @brief The full path of a file or folder: a relative path starts at the executable's folder, as the paths of the other standard plugins do. Free it with SDL_free.
-/// @return The path, or nullptr if out of memory.
-static char *FsFullPath(const char *path)
-{
-    char *fullPath = nullptr;
-    return SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : fullPath;
-}
-
 /// @brief The separator that a folder's path needs at its end: none if it has one, or /.
 static const char *FsMissingSeparator(const char *folder)
 {
@@ -103,21 +95,21 @@ static SHUResult FsFillInfo(ECSValue *retInfo, const SDL_PathInfo *info)
 {
     ECSValue *field = nullptr;
     ECSValue_SetTable(retInfo);
-    SHU_ReturnResult(ECSValue_TableSetField(retInfo, "type", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retInfo, "type", &field));
     SHU_ReturnResult(ECSValue_SetString(field, FsTypeName(info->type)));
-    SHU_ReturnResult(ECSValue_TableSetField(retInfo, "size", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retInfo, "size", &field));
     ECSValue_SetInteger(field, (i64)info->size);
-    SHU_ReturnResult(ECSValue_TableSetField(retInfo, "modified", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retInfo, "modified", &field));
     ECSValue_SetNumber(field, (f64)info->modify_time / (f64)SDL_NS_PER_SECOND);
     return SHUResult_Ok;
 }
 
 static void FsInfo(const char *path, ECSValue *retInfo)
 {
-    char *fullPath = FsFullPath(path);
+    char *fullPath = nullptr;
     SDL_PathInfo info = {0};
 
-    if (fullPath == nullptr || !SDL_GetPathInfo(fullPath, &info) || FsFillInfo(retInfo, &info) != SHUResult_Ok)
+    if (ECSPath_GetFull(&fullPath, path) || !SDL_GetPathInfo(fullPath, &info) || FsFillInfo(retInfo, &info) != SHUResult_Ok)
     {
         ECSValue_SetNil(retInfo);
     }
@@ -156,9 +148,9 @@ static SHUResult FsFillEntries(const char *folder, char **names, int count, ECSV
             continue;
         }
 
-        SHU_ReturnResult(ECSValue_ListAddItem(retEntries, &item));
+        SHU_ReturnResult(ECSValue_AddListItem(retEntries, &item));
         SHU_ReturnResult(FsFillInfo(item, &info));
-        SHU_ReturnResult(ECSValue_TableSetField(item, "name", &name));
+        SHU_ReturnResult(ECSValue_SetTableField(item, "name", &name));
         SHU_ReturnResult(ECSValue_SetString(name, names[i]));
     }
 
@@ -167,11 +159,11 @@ static SHUResult FsFillEntries(const char *folder, char **names, int count, ECSV
 
 static void FsList(const char *path, const char *pattern, ECSValue *retEntries)
 {
-    char *fullPath = FsFullPath(path);
+    char *fullPath = nullptr;
     int count = 0;
 
     // an empty pattern matches every name; a star stops at a slash, so the list holds the folder's own entries, not those of its folders
-    char **names = fullPath == nullptr ? nullptr : SDL_GlobDirectory(fullPath, pattern[0] == '\0' ? "*" : pattern, 0, &count);
+    char **names = ECSPath_GetFull(&fullPath, path) ? nullptr : SDL_GlobDirectory(fullPath, pattern[0] == '\0' ? "*" : pattern, 0, &count);
 
     if (names == nullptr || FsFillEntries(fullPath, names, count, retEntries) != SHUResult_Ok)
     {
@@ -184,17 +176,17 @@ static void FsList(const char *path, const char *pattern, ECSValue *retEntries)
 
 static bool FsMakeFolder(const char *path)
 {
-    char *fullPath = FsFullPath(path);
-    bool made = fullPath != nullptr && SDL_CreateDirectory(fullPath);
+    char *fullPath = nullptr;
+    bool made = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && SDL_CreateDirectory(fullPath);
     SDL_free(fullPath);
     return made;
 }
 
 static bool FsCopy(const char *from, const char *to)
 {
-    char *fullFrom = FsFullPath(from);
-    char *fullTo = FsFullPath(to);
-    bool copied = fullFrom != nullptr && fullTo != nullptr && SDL_CopyFile(fullFrom, fullTo);
+    char *fullFrom = nullptr;
+    char *fullTo = nullptr;
+    bool copied = ECSPath_GetFull(&fullFrom, from) == SHUResult_Ok && ECSPath_GetFull(&fullTo, to) == SHUResult_Ok && SDL_CopyFile(fullFrom, fullTo);
     SDL_free(fullFrom);
     SDL_free(fullTo);
     return copied;
@@ -611,8 +603,8 @@ static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     watch->descriptor = -1;
     watch->Changed = Changed;
     arrput(FS.watches, watch);
-    char *fullPath = FsFullPath(folder);
-    bool watching = fullPath != nullptr && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 && FsStartWatching(watch, fullPath) &&
+    char *fullPath = nullptr;
+    bool watching = ECSPath_GetFull(&fullPath, folder) == SHUResult_Ok && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 && FsStartWatching(watch, fullPath) &&
                     (FS.timer != nullptr || ECSTimer_Start(FS.plugin, &FS.timer, FS_READ_INTERVAL, true, FsReadChanges, nullptr) == SHUResult_Ok);
     SDL_free(fullPath);
 
@@ -635,8 +627,7 @@ static void FsWatchDestroy(void *object)
 /// @brief Stops a watch now, instead of when no one uses its handle.
 static void FsUnwatch(FsWatch *watch)
 {
-    ECSHandle_Forget(watch);
-    FsStop(watch);
+    ECSHandle_Free(FS.plugin, "watch", watch);
 }
 
 #pragma endregion Watches

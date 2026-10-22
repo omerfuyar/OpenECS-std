@@ -360,5 +360,5 @@ assert(ecs.service.register({
 
 -- default keys for the window; presets and the user's settings can change them
 for service, key in pairs({ previous = "Left", next = "Right" }) do
-  assert(ecs.input.bind("settings.window", key, "settings." .. service))
+  assert(ecs.key.bind("settings.window", key, "settings." .. service))
 end

@@ -111,14 +111,6 @@ static struct
     mbedtls_ctr_drbg_context random;
 } NET = {0};
 
-/// @brief The full path of a file: a relative path starts at the executable's folder, as the paths of the other standard plugins do. Free it with SDL_free.
-/// @return The path, or nullptr if out of memory.
-static char *NetFullPath(const char *path)
-{
-    char *fullPath = nullptr;
-    return SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : fullPath;
-}
-
 #pragma region TLS
 
 /// @brief Gives the system's file of trusted certificates, which TLS checks servers with: SSL_CERT_FILE, or the file of a known distribution.
@@ -230,10 +222,10 @@ static bool NetTlsStart(void)
 /// @brief Adds the certificates of a PEM file to the trusted ones, which later TLS connections check servers with.
 static bool NetTrust(const char *path)
 {
-    char *fullPath = NetFullPath(path);
+    char *fullPath = nullptr;
 
     // as with the system's file, the certificates that parse are trusted, and those that do not are reported
-    int failed = fullPath != nullptr && NetTlsStart() ? mbedtls_x509_crt_parse_file(&NET.certificates, fullPath) : -1;
+    int failed = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && NetTlsStart() ? mbedtls_x509_crt_parse_file(&NET.certificates, fullPath) : -1;
     bool trusted = failed >= 0;
 
     if (!trusted)
@@ -593,9 +585,10 @@ static bool NetAddServerTls(NetServer *server, const char *certificatePath, cons
 // a TLS server shows its certificate to the clients, and proves it with the certificate's key
 static NetServer *NetListenTls(i32 port, const char *certificate, const char *key)
 {
-    char *certificatePath = NetFullPath(certificate);
-    char *keyPath = NetFullPath(key);
-    NetServer *server = certificatePath != nullptr && keyPath != nullptr && NetTlsStart() ? NetListen(port) : nullptr;
+    char *certificatePath = nullptr;
+    char *keyPath = nullptr;
+    bool found = ECSPath_GetFull(&certificatePath, certificate) == SHUResult_Ok && ECSPath_GetFull(&keyPath, key) == SHUResult_Ok;
+    NetServer *server = found && NetTlsStart() ? NetListen(port) : nullptr;
 
     if (server != nullptr && !NetAddServerTls(server, certificatePath, keyPath))
     {

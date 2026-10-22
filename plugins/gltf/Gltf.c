@@ -66,7 +66,7 @@ static GltfModel *GltfLoad(const char *path)
     char *fullPath = nullptr;
 
     // a relative path starts at the executable's folder
-    if (SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
+    if (ECSPath_GetFull(&fullPath, path))
     {
         return nullptr;
     }
@@ -112,8 +112,7 @@ static void GltfModelDestroy(void *object)
 /// @brief Frees a model now, instead of when no one uses its handle.
 static void GltfFreeModel(GltfModel *model)
 {
-    ECSHandle_Forget(model);
-    GltfModelDestroy(model);
+    ECSHandle_Free(GLTF.plugin, "model", model);
 }
 
 #pragma region Describe
@@ -136,7 +135,7 @@ static SHUResult GltfSetFieldString(ECSValue *table, const char *name, const cha
 static SHUResult GltfSetFieldInteger(ECSValue *table, const char *name, i64 integer)
 {
     ECSValue *field = nullptr;
-    SHU_ReturnResult(ECSValue_TableSetField(table, name, &field));
+    SHU_ReturnResult(ECSValue_SetTableField(table, name, &field));
     ECSValue_SetInteger(field, integer);
     return SHUResult_Ok;
 }
@@ -144,7 +143,7 @@ static SHUResult GltfSetFieldInteger(ECSValue *table, const char *name, i64 inte
 /// @brief Sets a field of a table to an empty table, which it gives.
 static SHUResult GltfSetFieldTable(ECSValue *table, const char *name, ECSValue **retTable)
 {
-    SHU_ReturnResult(ECSValue_TableSetField(table, name, retTable));
+    SHU_ReturnResult(ECSValue_SetTableField(table, name, retTable));
     ECSValue_SetTable(*retTable);
     return SHUResult_Ok;
 }
@@ -169,7 +168,7 @@ static SHUResult GltfSetFieldNumbers(ECSValue *table, const char *name, const cg
 static SHUResult GltfAddItemInteger(ECSValue *list, i64 integer)
 {
     ECSValue *item = nullptr;
-    SHU_ReturnResult(ECSValue_ListAddItem(list, &item));
+    SHU_ReturnResult(ECSValue_AddListItem(list, &item));
     ECSValue_SetInteger(item, integer);
     return SHUResult_Ok;
 }
@@ -177,7 +176,7 @@ static SHUResult GltfAddItemInteger(ECSValue *list, i64 integer)
 /// @brief Adds an empty table at the end of a list, which it gives.
 static SHUResult GltfAddItemTable(ECSValue *list, ECSValue **retTable)
 {
-    SHU_ReturnResult(ECSValue_ListAddItem(list, retTable));
+    SHU_ReturnResult(ECSValue_AddListItem(list, retTable));
     ECSValue_SetTable(*retTable);
     return SHUResult_Ok;
 }
@@ -342,7 +341,7 @@ static SHUResult GltfDescribeAnimation(const cgltf_animation *animation, ECSValu
 {
     ECSValue *field = nullptr;
     SHU_ReturnResult(GltfSetFieldString(retAnimation, "name", animation->name));
-    SHU_ReturnResult(ECSValue_TableSetField(retAnimation, "duration", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retAnimation, "duration", &field));
     ECSValue_SetNumber(field, (f64)GltfDuration(animation));
     return SHUResult_Ok;
 }
@@ -836,7 +835,7 @@ static void *GltfReadDataUri(const char *uri, usz *retSize)
 /// @return The bytes, to free with SDL_free, or nullptr.
 static void *GltfReadImageFile(const GltfModel *model, const char *uri, usz *retSize)
 {
-    const char *slash = ECSPath_LastSeparator(model->path);
+    const char *slash = ECSPath_FindLastSeparator(model->path);
     int folderLength = slash == nullptr ? 0 : (int)(slash - model->path + 1);
     char *path = nullptr;
 

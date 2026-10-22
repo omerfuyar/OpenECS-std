@@ -159,14 +159,6 @@ static void *ImageMake(SDL_Surface *surface)
     return image;
 }
 
-/// @brief The full path of a file: a relative path starts at the executable's folder. Free it with SDL_free.
-/// @return The path, or nullptr if out of memory.
-static char *ImageFullPath(const char *path)
-{
-    char *fullPath = nullptr;
-    return SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : fullPath;
-}
-
 /// @brief Tells why an image cannot be read: stb_image's reason, or that it is not an image.
 static const char *ImageFailure(void)
 {
@@ -177,9 +169,9 @@ static const char *ImageFailure(void)
 /// @return The bytes, or empty if the file cannot be read, or is too large for stb_image; the reason is logged.
 static SHUSlice ImageReadFile(const char *path)
 {
-    char *fullPath = ImageFullPath(path);
+    char *fullPath = nullptr;
     usz size = 0;
-    void *file = fullPath == nullptr ? nullptr : SDL_LoadFile(fullPath, &size);
+    void *file = ECSPath_GetFull(&fullPath, path) ? nullptr : SDL_LoadFile(fullPath, &size);
 
     if (file == nullptr || size > (usz)SDL_MAX_SINT32)
     {
@@ -429,8 +421,8 @@ static bool ImageSave(void *image, const char *path)
 
     // stb_image_write takes the bytes red, green, blue and alpha, in that order
     u8 *rgba = SDL_malloc(argb.size);
-    char *fullPath = ImageFullPath(path);
-    bool written = rgba != nullptr && fullPath != nullptr &&
+    char *fullPath = nullptr;
+    bool written = rgba != nullptr && ECSPath_GetFull(&fullPath, path) == SHUResult_Ok &&
                    SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
                    ImageWrite(fullPath, formats[chosen].format, width, height, rgba);
 

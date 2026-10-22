@@ -109,14 +109,6 @@ static bool AudioEndsWith(const char *text, const char *suffix)
     return length >= suffixLength && SDL_strcasecmp(text + length - suffixLength, suffix) == 0;
 }
 
-/// @brief The full path of a file: a relative path starts at the executable's folder. Free it with SDL_free.
-/// @return The path, or nullptr if out of memory.
-static char *AudioFullPath(const char *path)
-{
-    char *fullPath = nullptr;
-    return SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : fullPath;
-}
-
 #pragma region Decoders
 
 /// @brief Opens a sound file's decoder, by the file's extension.
@@ -200,8 +192,8 @@ static u64 AudioReadFrames(AudioDecoder *decoder, u64 wanted, f32 *retSamples)
 /// @return false if the file cannot be read; the reason is logged, after what was being done.
 static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char *doing)
 {
-    char *fullPath = AudioFullPath(path);
-    bool opened = fullPath != nullptr && AudioOpenDecoder(retDecoder, fullPath);
+    char *fullPath = nullptr;
+    bool opened = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && AudioOpenDecoder(retDecoder, fullPath);
 
     if (opened && (retDecoder->channels == 0 || retDecoder->rate == 0))
     {

@@ -160,7 +160,7 @@ static inline ECSValue *Ui_AddItem(ECSValue *list)
 {
     ECSValue *item = nullptr;
 
-    if (list == nullptr || ECSValue_ListAddItem(list, &item))
+    if (list == nullptr || ECSValue_AddListItem(list, &item))
     {
         Ui_current->failed = true;
         return nullptr;
