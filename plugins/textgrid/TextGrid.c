@@ -100,6 +100,7 @@ static bool TextGridIsControl(u32 character)
 static i32 TextGridCharacterWidth(u32 character)
 {
     // the ranges of wide (W) and full-width (F) characters, from Unicode 15.1's East Asian Width property, in order; a range goes on over unassigned code points
+    // clang-format off
     static const u32 wide[][2] = {
         {0x1100, 0x115F},    {0x231A, 0x231B},    {0x2329, 0x232A},    {0x23E9, 0x23EC},    {0x23F0, 0x23F0},    {0x23F3, 0x23F3},    {0x25FD, 0x25FE},
         {0x2614, 0x2615},    {0x2648, 0x2653},    {0x267F, 0x267F},    {0x2693, 0x2693},    {0x26A1, 0x26A1},    {0x26AA, 0x26AB},    {0x26BD, 0x26BE},
@@ -114,6 +115,7 @@ static i32 TextGridCharacterWidth(u32 character)
         {0x1F6CC, 0x1F6CC},  {0x1F6D0, 0x1F6D2},  {0x1F6D5, 0x1F6DF},  {0x1F6EB, 0x1F6EC},  {0x1F6F4, 0x1F6FC},  {0x1F7E0, 0x1F7F0},  {0x1F90C, 0x1F93A},
         {0x1F93C, 0x1F945},  {0x1F947, 0x1F9FF},  {0x1FA70, 0x1FAF8},  {0x20000, 0x3FFFD},
     };
+    // clang-format on
 
     for (usz i = 0; i < (usz)SDL_arraysize(wide) && character >= wide[i][0]; i++)
     {

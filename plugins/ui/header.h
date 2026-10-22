@@ -89,10 +89,10 @@ typedef struct Ui
     ECSPlugin plugin;
     UiFunctions functions;
     ECSPanel panel;
-    ECSValue *root;                // a list that holds the element that UI_SHOW shows
-    ECSValue *children[UI_DEPTH];  // the children of each open container, the innermost last
+    ECSValue *root;               // a list that holds the element that UI_SHOW shows
+    ECSValue *children[UI_DEPTH]; // the children of each open container, the innermost last
     usz depth;
-    bool failed;                   // memory ran out, or containers are nested too deeply; nothing shows
+    bool failed; // memory ran out, or containers are nested too deeply; nothing shows
 } Ui;
 
 /// @brief The Ui that the current UI_SHOW describes into; the macros use it.

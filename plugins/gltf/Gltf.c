@@ -17,7 +17,7 @@
 typedef struct GltfModel
 {
     cgltf_data *data;
-    char *path;  // the full path of its file, which the files it names are relative to
+    char *path;   // the full path of its file, which the files it names are relative to
     void *result; // what attribute, indices, image, pose or skin gave last, kept until the next call
 } GltfModel;
 
@@ -213,7 +213,8 @@ static const cgltf_accessor *GltfFindAttributeNamed(const cgltf_primitive *primi
 static usz GltfIndexCount(const cgltf_primitive *primitive)
 {
     const cgltf_accessor *positions = GltfFindAttribute(primitive, cgltf_attribute_type_position);
-    return primitive->indices != nullptr ? primitive->indices->count : positions != nullptr ? positions->count : 0;
+    return primitive->indices != nullptr ? primitive->indices->count : positions != nullptr ? positions->count
+                                                                                            : 0;
 }
 
 static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primitive *primitive, ECSValue *retPrimitive)
@@ -416,7 +417,8 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *retInfo)
     }
 
     // the nodes the scene starts from: the file's scene, or its first one
-    const cgltf_scene *scene = data->scene != nullptr ? data->scene : data->scenes_count > 0 ? &data->scenes[0] : nullptr;
+    const cgltf_scene *scene = data->scene != nullptr ? data->scene : data->scenes_count > 0 ? &data->scenes[0]
+                                                                                             : nullptr;
 
     for (usz i = 0; scene != nullptr && i < scene->nodes_count; i++)
     {
@@ -541,7 +543,8 @@ static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, Gltf
     const cgltf_animation_sampler *sampler = channel->sampler;
     bool rotation = channel->target_path == cgltf_animation_path_type_rotation;
     usz components = rotation ? 4 : 3;
-    f32 *target = rotation ? transform->rotation : channel->target_path == cgltf_animation_path_type_translation ? transform->translation : transform->scale;
+    f32 *target = rotation ? transform->rotation : channel->target_path == cgltf_animation_path_type_translation ? transform->translation
+                                                                                                                 : transform->scale;
     usz previous = GltfFindKeyframe(sampler->input, seconds);
     f32 start = 0.0f;
     f32 end = 0.0f;
@@ -810,7 +813,8 @@ static void *GltfReadBufferImage(const cgltf_image *image, usz *retSize)
 static void *GltfReadDataUri(const char *uri, usz *retSize)
 {
     const char *comma = SDL_strchr(uri, ',');
-    const char *base64 = comma == nullptr ? nullptr : SDL_strstr(uri, ";base64,") == comma - 7 ? comma + 1 : nullptr;
+    const char *base64 = comma == nullptr ? nullptr : SDL_strstr(uri, ";base64,") == comma - 7 ? comma + 1
+                                                                                               : nullptr;
     usz length = base64 == nullptr ? 0 : SDL_strlen(base64);
 
     if (length < 4 || length % 4 != 0)

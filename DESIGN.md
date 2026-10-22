@@ -46,14 +46,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ### 1.2 Tests
 
 - The examples of OpenECS-examples are the tests of these plugins (OpenECS DESIGN 17.5): each plugin has an example that shows it, and that example's test checks it.
-- This repository's checks build OpenECS's `dev` with this repository in `std/` and the examples, and run the examples' tests.
+- This repository's checks build OpenECS's `dev` with this repository in `std/` and the examples, and run the examples' tests. The check `Format` also checks that clang-format leaves the plugins' C files as they are.
 - A test loads only the plugins its preset names (OpenECS DESIGN 17.5), so an example's preset names every plugin it uses, such as `settings` for the settings window.
 
 ### 1.3 Plugins
 
 - A plugin keeps C allocations in SDL's allocator, and gives its libraries SDL's allocator where they take one.
 - A C plugin keeps growing arrays in stb_ds (OpenECS DESIGN 1.7), through OpenECS's glue header `stbSDL3.h`, which the build gives the plugins from its `include/stb/` folder, as a system folder. Each plugin compiles stb_ds's code into itself, in one of its C files, after `#define STB_DS_IMPLEMENTATION`.
-- A C plugin's static functions are named `<Plugin><Verb><Object>`, such as `MixerFreeEcho`. The Destroy function of a handle type is `<Type>Destroy`, after the C type of the handle, such as `DrawImageDestroy`; the plugin's own Destroy is `<Plugin>Free`. A function that makes a handle is `<Plugin>New<Type>`, or the word of its service, such as `NetConnect` or `GltfLoad`. One that finds an object, and makes it the first time, is `<Plugin>FindOrAdd<Object>` or `<Plugin>FindOrOpen<Object>`. A flag that says whether a library started is `<library>Started`.
+- A C plugin's static functions are named `<Plugin><Verb><Object>`, such as `MixerFreeEcho`. The Destroy function of a handle type is `<Type>Destroy`, after the C type of the handle, such as `DrawImageDestroy`; the plugin's own Destroy is `<Plugin>Free`. A function that makes a handle is `<Plugin>New<Type>`, or the word of its service, such as `NetConnect` or `GltfLoad`. One that finds an object, and makes it the first time, is `<Plugin>FindOrAdd<Object>` or `<Plugin>FindOrOpen<Object>`. A flag that says whether a library started is `<library>Started`. clang-tidy checks these names as `.clang-tidy` says, and clang-format formats the code as `.clang-format` says, the same as OpenECS's.
 - A relative path that a plugin's function reads starts at the executable's folder; a plugin reads its own files by its folder (OpenECS DESIGN 11.3).
 - Lua plugins have Lua's standard libraries (OpenECS DESIGN 9.6): `io` reads and writes files, and `os` renames and removes them and gives the time. A standard plugin does not offer what they already do; fs (10) adds what they cannot.
 - An object that a plugin gives is a handle (OpenECS DESIGN 10.6): Lua's garbage collector frees it when no one uses it. A plugin whose objects hold much memory, such as images, sounds, models and grids, also has a `free` function, which frees one at once and makes its handles invalid.
