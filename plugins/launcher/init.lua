@@ -10,11 +10,8 @@ local function size(name)
   return ecs.setting.get("ui." .. name)
 end
 
--- the id of the list of entries
-local LIST = "list"
-
--- version of a list's saved state: the entry that was chosen
-local STATE_VERSION = 1
+-- version of a list's saved state: the entry that was chosen, by its type and name
+local STATE_VERSION = 2
 
 local lists = {} -- every open list's state, by its panel handle
 
@@ -45,19 +42,12 @@ local function readEntries()
   local entries = {}
 
   for _, preset in ipairs(presets) do
-    entries[#entries + 1] = { kind = "preset", name = preset.name, path = preset.path, title = preset.appName }
+    entries[#entries + 1] = { type = "preset", name = preset.name, path = preset.path, title = preset.appName }
   end
 
   for _, session in ipairs(sessions) do
     local saved = os.date("%Y-%m-%d %H:%M", session.saved)
-    entries[#entries + 1] = {
-      kind = "session",
-      name = session.name,
-      path = session.path,
-      title = session.appName,
-      detail =
-          session.name .. ", " .. saved
-    }
+    entries[#entries + 1] = { type = "session", name = session.name, path = session.path, title = session.appName, detail = session.name .. ", " .. saved }
   end
 
   return entries
@@ -70,7 +60,7 @@ local function refresh(list)
   list.selected = math.min(math.max(list.selected, 1), math.max(#list.entries, 1))
 
   for i, entry in ipairs(list.entries) do
-    if chosen and entry.kind == chosen.kind and entry.name == chosen.name then
+    if chosen and entry.type == chosen.type and entry.name == chosen.name then
       list.selected = i
     end
   end
@@ -86,7 +76,7 @@ local function open(entry)
 
   local ok, message
 
-  if entry.kind == "preset" then
+  if entry.type == "preset" then
     ok, message = ecs.session.openPreset(entry.path)
   else
     ok, message = ecs.session.open(entry.path)
@@ -97,24 +87,14 @@ local function open(entry)
   end
 end
 
-local function findList(panel)
-  local list = lists[panel]
-
-  if not list then
-    ecs.log.warn("That panel is not a launcher list.")
-  end
-
-  return list
-end
-
--- the list's elements: the title, then one row for each entry, which a click chooses and opens
-local function tree(list)
+-- the list's elements: the title, then one row for each entry, which a click, or Return on the chosen one, opens
+local function view(list)
   local rows = {}
 
   for _, entry in ipairs(list.entries) do
     rows[#rows + 1] = ui.row({ padding = size("rowPadding"), gap = size("margin") / 2 }, {
       ui.text(entry.title),
-      ui.text(entry.kind == "preset" and "preset" or entry.detail, { size = size("noteSize"), color = "textDim" }),
+      ui.text(entry.type == "preset" and "preset" or entry.detail, { size = size("noteSize"), color = "textDim" }),
     })
   end
 
@@ -125,7 +105,7 @@ local function tree(list)
   return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
     ui.text("OpenECS", { size = size("titleSize") }),
     ui.list({
-      id = LIST,
+      id = "list",
       selected = list.selected,
       onSelect = function(index)
         list.selected = index
@@ -150,7 +130,7 @@ ecs.panel.registerType({
     -- the entry chosen last time is chosen again
     if version == STATE_VERSION and saved and saved.selected then
       for i, entry in ipairs(list.entries) do
-        if entry.kind == saved.selected.kind and entry.name == saved.selected.name then
+        if entry.type == saved.selected.type and entry.name == saved.selected.name then
           list.selected = i
         end
       end
@@ -164,10 +144,10 @@ ecs.panel.registerType({
   end,
   saveState = function(list)
     local chosen = list.entries[list.selected]
-    return { selected = chosen and { kind = chosen.kind, name = chosen.name } or nil }
+    return { selected = chosen and { type = chosen.type, name = chosen.name } or nil }
   end,
   draw = function(list, surface)
-    ui.show(list.panel, surface, tree(list))
+    ui.show(list.panel, surface, view(list))
   end,
   event = function(list, event)
     if event.type == "shown" then
@@ -180,30 +160,12 @@ ecs.panel.registerType({
 
 local services = {}
 
-function services.up(panel)
-  if findList(panel) then
-    ui.move(panel, LIST, -1)
-  end
-end
-
-function services.down(panel)
-  if findList(panel) then
-    ui.move(panel, LIST, 1)
-  end
-end
-
-function services.start(panel)
-  if findList(panel) then
-    ui.activate(panel, LIST)
-  end
-end
-
 -- every tool loads the launcher, so the user can go to another tool from any of them; an open list gets the focus instead of a second one
 function services.open()
-  local open = next(lists)
+  local openList = next(lists)
 
-  if open then
-    ecs.layout.focus(open)
+  if openList then
+    ecs.layout.focus(openList)
     return
   end
 
@@ -215,25 +177,6 @@ function services.open()
 end
 
 assert(ecs.service.register({
-  up = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Choose the entry above\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
-    fn = services.up,
-  },
-  down = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Choose the entry below\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
-    fn = services.down,
-  },
-  start = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Start the chosen preset or session\n" .. "@param panel The launcher's list, as its keys pass the focused panel",
-    fn = services.start,
-  },
   open = { sig = "void()", doc = "Open launcher", fn = services.open },
 }))
 
--- default keys for the list; presets and the user's settings can change them
-for service, key in pairs({ up = "Up", down = "Down", start = "Return" }) do
-  assert(ecs.key.bind("launcher.list", key, "launcher." .. service))
-end

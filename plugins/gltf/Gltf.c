@@ -1,6 +1,6 @@
 // The gltf standard plugin: reads glTF 2.0 models, .gltf with their files or .glb, and gives their parts and their vertex data (DESIGN 8).
 // It is a loader: draw's triangles and lines draw the vertex data, once a plugin has placed it on the screen.
-// cgltf reads the files; a model's handle owns everything read, and frees it when the handle is gone.
+// cgltf reads the files; a model's handle owns everything read, and frees it when the handle is gone. cglm does the matrix and quaternion math.
 
 #include "OpenECS.h"
 
@@ -9,6 +9,8 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+#include "cglm/cglm.h"
+
 #pragma region Source Only
 
 /// @brief A model that a file was read into.
@@ -16,7 +18,7 @@ typedef struct GltfModel
 {
     cgltf_data *data;
     char *path;  // the full path of its file, which the files it names are relative to
-    void *given; // what attribute, indices or image gave last, kept until the next call
+    void *result; // what attribute, indices, image, pose or skin gave last, kept until the next call
 } GltfModel;
 
 static struct
@@ -24,13 +26,14 @@ static struct
     ECSPlugin plugin;
 } GLTF = {0};
 
+// cgltf allocates with SDL's allocator, as the plugin does
 static void *GltfAllocate(void *user, cgltf_size size)
 {
     (void)user;
     return SDL_malloc(size);
 }
 
-static void GltfRelease(void *user, void *pointer)
+static void GltfDeallocate(void *user, void *pointer)
 {
     (void)user;
     SDL_free(pointer);
@@ -60,21 +63,21 @@ static const char *GltfResultText(cgltf_result result)
 
 static GltfModel *GltfLoad(const char *path)
 {
-    char *full = nullptr;
+    char *fullPath = nullptr;
 
     // a relative path starts at the executable's folder
-    if (SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
+    if (SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
     {
         return nullptr;
     }
 
-    cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfRelease}};
+    cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfDeallocate}};
     cgltf_data *data = nullptr;
-    cgltf_result result = cgltf_parse_file(&options, full, &data);
+    cgltf_result result = cgltf_parse_file(&options, fullPath, &data);
 
     if (result == cgltf_result_success)
     {
-        result = cgltf_load_buffers(&options, data, full);
+        result = cgltf_load_buffers(&options, data, fullPath);
     }
 
     if (result == cgltf_result_success)
@@ -86,19 +89,37 @@ static GltfModel *GltfLoad(const char *path)
 
     if (model == nullptr)
     {
-        ECS_Log(GLTF.plugin, ECSLogLevel_Error, "Cannot read the model '%s': %s", full, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
+        ECS_LogError(GLTF.plugin, "Cannot read the model '%s': %s", fullPath, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
         cgltf_free(data);
-        SDL_free(full);
+        SDL_free(fullPath);
         return nullptr;
     }
 
     model->data = data;
-    model->path = full;
+    model->path = fullPath;
     return model;
 }
 
+static void GltfModelDestroy(void *object)
+{
+    GltfModel *model = object;
+    cgltf_free(model->data);
+    SDL_free(model->path);
+    SDL_free(model->result);
+    SDL_free(model);
+}
+
+/// @brief Frees a model now, instead of when no one uses its handle.
+static void GltfFreeModel(GltfModel *model)
+{
+    ECSHandle_Forget(model);
+    GltfModelDestroy(model);
+}
+
+#pragma region Describe
+
 /// @brief Sets a field of a table to a string; nullptr leaves it nil.
-static SHUResult GltfSetString(ECSValue *table, const char *name, const char *string)
+static SHUResult GltfSetFieldString(ECSValue *table, const char *name, const char *string)
 {
     ECSValue *field = nullptr;
 
@@ -111,28 +132,28 @@ static SHUResult GltfSetString(ECSValue *table, const char *name, const char *st
     return ECSValue_SetString(field, string);
 }
 
-/// @brief Sets a field of a table, or an item added to a list when the name is nullptr, to a whole number.
-static SHUResult GltfSetInteger(ECSValue *table, const char *name, i64 integer)
+/// @brief Sets a field of a table to a whole number.
+static SHUResult GltfSetFieldInteger(ECSValue *table, const char *name, i64 integer)
 {
     ECSValue *field = nullptr;
-    SHU_ReturnResult(name == nullptr ? ECSValue_AddListItem(table, &field) : ECSValue_SetTableField(table, name, &field));
+    SHU_ReturnResult(ECSValue_TableSetField(table, name, &field));
     ECSValue_SetInteger(field, integer);
     return SHUResult_Ok;
 }
 
-/// @brief Sets a field of a table, or an item added to a list when the name is nullptr, to an empty table.
-static SHUResult GltfSetTable(ECSValue *table, const char *name, ECSValue **retTable)
+/// @brief Sets a field of a table to an empty table, which it gives.
+static SHUResult GltfSetFieldTable(ECSValue *table, const char *name, ECSValue **retTable)
 {
-    SHU_ReturnResult(name == nullptr ? ECSValue_AddListItem(table, retTable) : ECSValue_SetTableField(table, name, retTable));
+    SHU_ReturnResult(ECSValue_TableSetField(table, name, retTable));
     ECSValue_SetTable(*retTable);
     return SHUResult_Ok;
 }
 
 /// @brief Sets a field of a table to a list of numbers.
-static SHUResult GltfSetNumbers(ECSValue *table, const char *name, const cgltf_float *numbers, usz count)
+static SHUResult GltfSetFieldNumbers(ECSValue *table, const char *name, const cgltf_float *numbers, usz count)
 {
     ECSValue *list = nullptr;
-    SHU_ReturnResult(GltfSetTable(table, name, &list));
+    SHU_ReturnResult(GltfSetFieldTable(table, name, &list));
 
     for (usz i = 0; i < count; i++)
     {
@@ -144,105 +165,155 @@ static SHUResult GltfSetNumbers(ECSValue *table, const char *name, const cgltf_f
     return SHUResult_Ok;
 }
 
-static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primitive *primitive, ECSValue *part)
+/// @brief Adds a whole number at the end of a list.
+static SHUResult GltfAddItemInteger(ECSValue *list, i64 integer)
+{
+    ECSValue *item = nullptr;
+    SHU_ReturnResult(ECSValue_ListAddItem(list, &item));
+    ECSValue_SetInteger(item, integer);
+    return SHUResult_Ok;
+}
+
+/// @brief Adds an empty table at the end of a list, which it gives.
+static SHUResult GltfAddItemTable(ECSValue *list, ECSValue **retTable)
+{
+    SHU_ReturnResult(ECSValue_ListAddItem(list, retTable));
+    ECSValue_SetTable(*retTable);
+    return SHUResult_Ok;
+}
+
+/// @brief Finds a primitive's first attribute of a type, such as its positions, or nullptr.
+static const cgltf_accessor *GltfFindAttribute(const cgltf_primitive *primitive, cgltf_attribute_type type)
+{
+    for (usz i = 0; primitive != nullptr && i < primitive->attributes_count; i++)
+    {
+        if (primitive->attributes[i].type == type && primitive->attributes[i].index == 0)
+        {
+            return primitive->attributes[i].data;
+        }
+    }
+
+    return nullptr;
+}
+
+/// @brief Finds a primitive's attribute by its name, such as POSITION or TEXCOORD_0, or nullptr.
+static const cgltf_accessor *GltfFindAttributeNamed(const cgltf_primitive *primitive, const char *name)
+{
+    for (usz i = 0; primitive != nullptr && i < primitive->attributes_count; i++)
+    {
+        if (SDL_strcmp(primitive->attributes[i].name, name) == 0)
+        {
+            return primitive->attributes[i].data;
+        }
+    }
+
+    return nullptr;
+}
+
+/// @brief How many indices a primitive draws: its indices, or, without them, its vertices in order.
+static usz GltfIndexCount(const cgltf_primitive *primitive)
+{
+    const cgltf_accessor *positions = GltfFindAttribute(primitive, cgltf_attribute_type_position);
+    return primitive->indices != nullptr ? primitive->indices->count : positions != nullptr ? positions->count : 0;
+}
+
+static SHUResult GltfDescribePrimitive(const cgltf_data *data, const cgltf_primitive *primitive, ECSValue *retPrimitive)
 {
     // how the indices make shapes, as cgltf orders its primitive types
     static const char *const modes[] = {"triangles", "points", "lines", "lineLoop", "lineStrip", "triangles", "triangleStrip", "triangleFan"};
-    SHU_ReturnResult(GltfSetString(part, "mode", (usz)primitive->type < SDL_arraysize(modes) ? modes[primitive->type] : "triangles"));
+    SHU_ReturnResult(GltfSetFieldString(retPrimitive, "mode", (usz)primitive->type < SDL_arraysize(modes) ? modes[primitive->type] : "triangles"));
 
     if (primitive->material != nullptr)
     {
-        SHU_ReturnResult(GltfSetInteger(part, "material", (i64)cgltf_material_index(data, primitive->material) + 1));
+        SHU_ReturnResult(GltfSetFieldInteger(retPrimitive, "material", (i64)cgltf_material_index(data, primitive->material) + 1));
     }
 
-    const cgltf_accessor *position = nullptr;
     ECSValue *attributes = nullptr;
-    SHU_ReturnResult(GltfSetTable(part, "attributes", &attributes));
+    SHU_ReturnResult(GltfSetFieldTable(retPrimitive, "attributes", &attributes));
 
     for (usz i = 0; i < primitive->attributes_count; i++)
     {
         ECSValue *name = nullptr;
         SHU_ReturnResult(ECSValue_AddListItem(attributes, &name));
         SHU_ReturnResult(ECSValue_SetString(name, primitive->attributes[i].name));
-
-        if (primitive->attributes[i].type == cgltf_attribute_type_position)
-        {
-            position = primitive->attributes[i].data;
-        }
     }
 
-    // a primitive without indices draws its vertices in order
-    i64 vertices = position == nullptr ? 0 : (i64)position->count;
-    SHU_ReturnResult(GltfSetInteger(part, "vertices", vertices));
-    return GltfSetInteger(part, "indices", primitive->indices != nullptr ? (i64)primitive->indices->count : vertices);
+    const cgltf_accessor *positions = GltfFindAttribute(primitive, cgltf_attribute_type_position);
+    SHU_ReturnResult(GltfSetFieldInteger(retPrimitive, "vertices", positions == nullptr ? 0 : (i64)positions->count));
+    return GltfSetFieldInteger(retPrimitive, "indices", (i64)GltfIndexCount(primitive));
 }
 
-static SHUResult GltfDescribeMesh(const cgltf_data *data, const cgltf_mesh *mesh, ECSValue *item)
+static SHUResult GltfDescribeMesh(const cgltf_data *data, const cgltf_mesh *mesh, ECSValue *retMesh)
 {
     ECSValue *primitives = nullptr;
-    SHU_ReturnResult(GltfSetString(item, "name", mesh->name));
-    SHU_ReturnResult(GltfSetTable(item, "primitives", &primitives));
+    SHU_ReturnResult(GltfSetFieldString(retMesh, "name", mesh->name));
+    SHU_ReturnResult(GltfSetFieldTable(retMesh, "primitives", &primitives));
 
     for (usz i = 0; i < mesh->primitives_count; i++)
     {
-        ECSValue *part = nullptr;
-        SHU_ReturnResult(GltfSetTable(primitives, nullptr, &part));
-        SHU_ReturnResult(GltfDescribePrimitive(data, &mesh->primitives[i], part));
+        ECSValue *primitive = nullptr;
+        SHU_ReturnResult(GltfAddItemTable(primitives, &primitive));
+        SHU_ReturnResult(GltfDescribePrimitive(data, &mesh->primitives[i], primitive));
     }
 
     return SHUResult_Ok;
 }
 
-static SHUResult GltfDescribeMaterial(const cgltf_data *data, const cgltf_material *material, ECSValue *item)
+/// @brief The URI of a file, or nullptr for the data of a URI, which is not a file.
+static const char *GltfFileUri(const char *uri)
+{
+    return uri != nullptr && SDL_strncmp(uri, "data:", 5) != 0 ? uri : nullptr;
+}
+
+static SHUResult GltfDescribeMaterial(const cgltf_data *data, const cgltf_material *material, ECSValue *retMaterial)
 {
     const cgltf_pbr_metallic_roughness *pbr = &material->pbr_metallic_roughness;
     const cgltf_texture *texture = pbr->base_color_texture.texture;
-    SHU_ReturnResult(GltfSetString(item, "name", material->name));
-    SHU_ReturnResult(GltfSetNumbers(item, "color", pbr->base_color_factor, 4));
+    SHU_ReturnResult(GltfSetFieldString(retMaterial, "name", material->name));
+    SHU_ReturnResult(GltfSetFieldNumbers(retMaterial, "color", pbr->base_color_factor, 4));
 
-    // a texture inside a .glb has no file of its own, so only a texture in a file is named; image names any by its number, which gltf.image reads
-    if (texture != nullptr && texture->image != nullptr)
+    if (texture == nullptr || texture->image == nullptr)
     {
-        SHU_ReturnResult(GltfSetInteger(item, "image", (i64)cgltf_image_index(data, texture->image) + 1));
+        return SHUResult_Ok;
     }
 
-    const char *uri = texture != nullptr && texture->image != nullptr ? texture->image->uri : nullptr;
-    return GltfSetString(item, "texture", uri != nullptr && SDL_strncmp(uri, "data:", 5) != 0 ? uri : nullptr);
+    // a texture inside a .glb has no file of its own, so only a texture in a file is named; image names any by its number, which gltf.image reads
+    SHU_ReturnResult(GltfSetFieldInteger(retMaterial, "image", (i64)cgltf_image_index(data, texture->image) + 1));
+    return GltfSetFieldString(retMaterial, "texture", GltfFileUri(texture->image->uri));
 }
 
-static SHUResult GltfDescribeImage(const cgltf_image *image, ECSValue *item)
+static SHUResult GltfDescribeImage(const cgltf_image *image, ECSValue *retImage)
 {
-    SHU_ReturnResult(GltfSetString(item, "name", image->name));
-    SHU_ReturnResult(GltfSetString(item, "mimeType", image->mime_type));
+    SHU_ReturnResult(GltfSetFieldString(retImage, "name", image->name));
+    SHU_ReturnResult(GltfSetFieldString(retImage, "mimeType", image->mime_type));
 
     // an image is in a file, in the data of a URI, or in a buffer, as in a .glb
-    const char *uri = image->uri;
-    return GltfSetString(item, "file", uri != nullptr && SDL_strncmp(uri, "data:", 5) != 0 ? uri : nullptr);
+    return GltfSetFieldString(retImage, "file", GltfFileUri(image->uri));
 }
 
-static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node, ECSValue *item)
+static SHUResult GltfDescribeNode(const cgltf_data *data, const cgltf_node *node, ECSValue *retNode)
 {
     cgltf_float matrix[16];
     cgltf_node_transform_local(node, matrix);
-    SHU_ReturnResult(GltfSetString(item, "name", node->name));
-    SHU_ReturnResult(GltfSetNumbers(item, "matrix", matrix, 16));
+    SHU_ReturnResult(GltfSetFieldString(retNode, "name", node->name));
+    SHU_ReturnResult(GltfSetFieldNumbers(retNode, "matrix", matrix, 16));
 
     if (node->mesh != nullptr)
     {
-        SHU_ReturnResult(GltfSetInteger(item, "mesh", (i64)cgltf_mesh_index(data, node->mesh) + 1));
+        SHU_ReturnResult(GltfSetFieldInteger(retNode, "mesh", (i64)cgltf_mesh_index(data, node->mesh) + 1));
     }
 
     if (node->skin != nullptr)
     {
-        SHU_ReturnResult(GltfSetInteger(item, "skin", (i64)cgltf_skin_index(data, node->skin) + 1));
+        SHU_ReturnResult(GltfSetFieldInteger(retNode, "skin", (i64)cgltf_skin_index(data, node->skin) + 1));
     }
 
     ECSValue *children = nullptr;
-    SHU_ReturnResult(GltfSetTable(item, "children", &children));
+    SHU_ReturnResult(GltfSetFieldTable(retNode, "children", &children));
 
     for (usz i = 0; i < node->children_count; i++)
     {
-        SHU_ReturnResult(GltfSetInteger(children, nullptr, (i64)cgltf_node_index(data, node->children[i]) + 1));
+        SHU_ReturnResult(GltfAddItemInteger(children, (i64)cgltf_node_index(data, node->children[i]) + 1));
     }
 
     return SHUResult_Ok;
@@ -267,7 +338,30 @@ static f32 GltfDuration(const cgltf_animation *animation)
     return duration;
 }
 
-static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
+static SHUResult GltfDescribeAnimation(const cgltf_animation *animation, ECSValue *retAnimation)
+{
+    ECSValue *field = nullptr;
+    SHU_ReturnResult(GltfSetFieldString(retAnimation, "name", animation->name));
+    SHU_ReturnResult(ECSValue_TableSetField(retAnimation, "duration", &field));
+    ECSValue_SetNumber(field, (f64)GltfDuration(animation));
+    return SHUResult_Ok;
+}
+
+static SHUResult GltfDescribeSkin(const cgltf_data *data, const cgltf_skin *skin, ECSValue *retSkin)
+{
+    ECSValue *joints = nullptr;
+    SHU_ReturnResult(GltfSetFieldString(retSkin, "name", skin->name));
+    SHU_ReturnResult(GltfSetFieldTable(retSkin, "joints", &joints));
+
+    for (usz i = 0; i < skin->joints_count; i++)
+    {
+        SHU_ReturnResult(GltfAddItemInteger(joints, (i64)cgltf_node_index(data, skin->joints[i]) + 1));
+    }
+
+    return SHUResult_Ok;
+}
+
+static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *retInfo)
 {
     ECSValue *meshes = nullptr;
     ECSValue *materials = nullptr;
@@ -277,68 +371,57 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *info)
     ECSValue *animations = nullptr;
     ECSValue *skins = nullptr;
     ECSValue *item = nullptr;
-    ECSValue_SetTable(info);
-    SHU_ReturnResult(GltfSetTable(info, "meshes", &meshes));
-    SHU_ReturnResult(GltfSetTable(info, "materials", &materials));
-    SHU_ReturnResult(GltfSetTable(info, "nodes", &nodes));
-    SHU_ReturnResult(GltfSetTable(info, "roots", &roots));
-    SHU_ReturnResult(GltfSetTable(info, "images", &images));
-    SHU_ReturnResult(GltfSetTable(info, "animations", &animations));
-    SHU_ReturnResult(GltfSetTable(info, "skins", &skins));
+    ECSValue_SetTable(retInfo);
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "meshes", &meshes));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "materials", &materials));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "nodes", &nodes));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "roots", &roots));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "images", &images));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "animations", &animations));
+    SHU_ReturnResult(GltfSetFieldTable(retInfo, "skins", &skins));
 
     for (usz i = 0; i < data->meshes_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(meshes, nullptr, &item));
+        SHU_ReturnResult(GltfAddItemTable(meshes, &item));
         SHU_ReturnResult(GltfDescribeMesh(data, &data->meshes[i], item));
     }
 
     for (usz i = 0; i < data->materials_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(materials, nullptr, &item));
+        SHU_ReturnResult(GltfAddItemTable(materials, &item));
         SHU_ReturnResult(GltfDescribeMaterial(data, &data->materials[i], item));
     }
 
     for (usz i = 0; i < data->images_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(images, nullptr, &item));
+        SHU_ReturnResult(GltfAddItemTable(images, &item));
         SHU_ReturnResult(GltfDescribeImage(&data->images[i], item));
     }
 
     for (usz i = 0; i < data->animations_count; i++)
     {
-        ECSValue *field = nullptr;
-        SHU_ReturnResult(GltfSetTable(animations, nullptr, &item));
-        SHU_ReturnResult(GltfSetString(item, "name", data->animations[i].name));
-        SHU_ReturnResult(ECSValue_SetTableField(item, "duration", &field));
-        ECSValue_SetNumber(field, (f64)GltfDuration(&data->animations[i]));
+        SHU_ReturnResult(GltfAddItemTable(animations, &item));
+        SHU_ReturnResult(GltfDescribeAnimation(&data->animations[i], item));
     }
 
     for (usz i = 0; i < data->skins_count; i++)
     {
-        ECSValue *list = nullptr;
-        SHU_ReturnResult(GltfSetTable(skins, nullptr, &item));
-        SHU_ReturnResult(GltfSetString(item, "name", data->skins[i].name));
-        SHU_ReturnResult(GltfSetTable(item, "joints", &list));
-
-        for (usz j = 0; j < data->skins[i].joints_count; j++)
-        {
-            SHU_ReturnResult(GltfSetInteger(list, nullptr, (i64)cgltf_node_index(data, data->skins[i].joints[j]) + 1));
-        }
+        SHU_ReturnResult(GltfAddItemTable(skins, &item));
+        SHU_ReturnResult(GltfDescribeSkin(data, &data->skins[i], item));
     }
 
     for (usz i = 0; i < data->nodes_count; i++)
     {
-        SHU_ReturnResult(GltfSetTable(nodes, nullptr, &item));
+        SHU_ReturnResult(GltfAddItemTable(nodes, &item));
         SHU_ReturnResult(GltfDescribeNode(data, &data->nodes[i], item));
     }
 
     // the nodes the scene starts from: the file's scene, or its first one
-    const cgltf_scene *scene = data->scene != nullptr ? data->scene : data->scenes_count > 0 ? &data->scenes[0]
-                                                                                          : nullptr;
+    const cgltf_scene *scene = data->scene != nullptr ? data->scene : data->scenes_count > 0 ? &data->scenes[0] : nullptr;
 
     for (usz i = 0; scene != nullptr && i < scene->nodes_count; i++)
     {
-        SHU_ReturnResult(GltfSetInteger(roots, nullptr, (i64)cgltf_node_index(data, scene->nodes[i]) + 1));
+        SHU_ReturnResult(GltfAddItemInteger(roots, (i64)cgltf_node_index(data, scene->nodes[i]) + 1));
     }
 
     return SHUResult_Ok;
@@ -349,10 +432,14 @@ static void GltfDescribe(GltfModel *model, ECSValue *retInfo)
 {
     if (GltfDescribeModel(model->data, retInfo) != SHUResult_Ok)
     {
-        ECS_Log(GLTF.plugin, ECSLogLevel_Error, "Out of memory while describing a model");
+        ECS_LogError(GLTF.plugin, "Out of memory while describing a model");
         ECSValue_SetNil(retInfo);
     }
 }
+
+#pragma endregion Describe
+
+#pragma region Vertex data
 
 /// @brief Finds a primitive by the 1-based numbers of its mesh and of itself in the mesh.
 static const cgltf_primitive *GltfFindPrimitive(const GltfModel *model, i32 mesh, i32 primitive)
@@ -366,37 +453,27 @@ static const cgltf_primitive *GltfFindPrimitive(const GltfModel *model, i32 mesh
 }
 
 /// @brief The bytes of a number of values of a size each, or 0 if they would not fit in memory, as a hostile file may ask for.
-static usz GltfBytes(usz count, usz each)
+static usz GltfCheckedSize(usz count, usz each)
 {
     usz bytes = 0;
     return SDL_size_mul_check_overflow(count, each, &bytes) ? bytes : 0;
 }
 
-/// @brief Keeps what the model gives, freeing what it gave last.
-static SHUSlice GltfGive(GltfModel *model, void *data, usz size)
+/// @brief Keeps what the model gives, freeing what it gave last, and gives it.
+static SHUSlice GltfKeepResult(GltfModel *model, void *data, usz size)
 {
-    SDL_free(model->given);
-    model->given = data;
-    return (SHUSlice){.data = data, .size = data == nullptr ? 0 : size};
+    SDL_free(model->result);
+    model->result = data;
+    return cs(data, data == nullptr ? 0 : size);
 }
 
 static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const char *name)
 {
-    const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
-    const cgltf_accessor *accessor = nullptr;
-
-    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
-    {
-        if (SDL_strcmp(part->attributes[i].name, name) == 0)
-        {
-            accessor = part->attributes[i].data;
-        }
-    }
+    const cgltf_accessor *accessor = GltfFindAttributeNamed(GltfFindPrimitive(model, mesh, primitive), name);
 
     // sparse and normalized data are unpacked to plain floats
-    usz count = accessor == nullptr ? 0 : GltfBytes(accessor->count, cgltf_num_components(accessor->type));
-    count = GltfBytes(count, sizeof(f32)) == 0 ? 0 : count;
-    f32 *floats = count == 0 ? nullptr : SDL_malloc(count * sizeof(f32));
+    usz count = accessor == nullptr ? 0 : GltfCheckedSize(accessor->count, cgltf_num_components(accessor->type));
+    f32 *floats = count == 0 || GltfCheckedSize(count, sizeof(f32)) == 0 ? nullptr : SDL_malloc(count * sizeof(f32));
 
     if (floats != nullptr && cgltf_accessor_unpack_floats(accessor, floats, count) != count)
     {
@@ -404,189 +481,132 @@ static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const c
         floats = nullptr;
     }
 
-    return GltfGive(model, floats, count * sizeof(f32));
+    return GltfKeepResult(model, floats, count * sizeof(f32));
 }
 
 static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
 {
-    const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
-    const cgltf_accessor *position = nullptr;
-
-    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
-    {
-        if (part->attributes[i].type == cgltf_attribute_type_position)
-        {
-            position = part->attributes[i].data;
-        }
-    }
+    const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
+    usz count = found == nullptr ? 0 : GltfIndexCount(found);
+    u32 *indices = count == 0 || GltfCheckedSize(count, sizeof(u32)) == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
 
     // a primitive without indices draws its vertices in order
-    usz count = part == nullptr ? 0 : part->indices != nullptr ? part->indices->count
-                               : position != nullptr        ? position->count
-                                                         : 0;
-    count = GltfBytes(count, sizeof(u32)) == 0 ? 0 : count;
-    u32 *indices = count == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
-
     for (usz i = 0; indices != nullptr && i < count; i++)
     {
-        indices[i] = (u32)(part->indices != nullptr ? cgltf_accessor_read_index(part->indices, i) : i);
+        indices[i] = (u32)(found->indices != nullptr ? cgltf_accessor_read_index(found->indices, i) : i);
     }
 
-    return GltfGive(model, indices, count * sizeof(u32));
+    return GltfKeepResult(model, indices, count * sizeof(u32));
 }
+
+#pragma endregion Vertex data
+
+#pragma region Animation
 
 /// @brief A node's translation, rotation as a quaternion x, y, z, w, and scale.
 typedef struct GltfTransform
 {
-    f32 translation[3];
-    f32 rotation[4];
-    f32 scale[3];
+    vec3 translation;
+    versor rotation;
+    vec3 scale;
 } GltfTransform;
 
-/// @brief The matrix of a transform, column by column: the translation of the rotation of the scale.
-static void GltfMatrix(const GltfTransform *transform, f32 *matrix)
-{
-    f32 x = transform->rotation[0], y = transform->rotation[1], z = transform->rotation[2], w = transform->rotation[3];
-    const f32 *s = transform->scale;
-    const f32 *t = transform->translation;
-    const f32 columns[16] = {
-        (1.0f - 2.0f * (y * y + z * z)) * s[0], 2.0f * (x * y + z * w) * s[0], 2.0f * (x * z - y * w) * s[0], 0.0f,
-        2.0f * (x * y - z * w) * s[1], (1.0f - 2.0f * (x * x + z * z)) * s[1], 2.0f * (y * z + x * w) * s[1], 0.0f,
-        2.0f * (x * z + y * w) * s[2], 2.0f * (y * z - x * w) * s[2], (1.0f - 2.0f * (x * x + y * y)) * s[2], 0.0f,
-        t[0], t[1], t[2], 1.0f,
-    };
-    SDL_memcpy(matrix, columns, sizeof(columns));
-}
-
-/// @brief Makes a quaternion one unit long, as a rotation must be.
-static void GltfNormalize(f32 *quaternion)
-{
-    f32 length = SDL_sqrtf(quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] + quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
-
-    for (usz i = 0; length > 0.0f && i < 4; i++)
-    {
-        quaternion[i] /= length;
-    }
-}
-
-/// @brief Turns from one rotation toward another by a share from 0 to 1, along the shorter way: spherical linear interpolation.
-static void GltfSlerp(const f32 *from, const f32 *to, f32 share, f32 *result)
-{
-    f32 dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2] + from[3] * to[3];
-    f32 sign = dot < 0.0f ? -1.0f : 1.0f;
-    dot *= sign;
-    f32 a = 1.0f - share;
-    f32 b = share;
-
-    // nearly the same rotations are mixed straight, as the sine below would be about 0
-    if (dot < 0.9995f)
-    {
-        f32 angle = SDL_acosf(dot);
-        a = SDL_sinf(a * angle) / SDL_sinf(angle);
-        b = SDL_sinf(b * angle) / SDL_sinf(angle);
-    }
-
-    for (usz i = 0; i < 4; i++)
-    {
-        result[i] = a * from[i] + b * sign * to[i];
-    }
-
-    GltfNormalize(result);
-}
-
-/// @brief Reads a key's value from a sampler's output: one element, or the middle of its three for a cubic spline, whose others are its tangents.
-static void GltfKey(const cgltf_animation_sampler *sampler, usz key, usz part, f32 *value, usz components)
+/// @brief Reads a keyframe's value from a sampler's output: one element, or for a cubic spline one of its three, the in-tangent, the value and the out-tangent.
+static void GltfReadKeyframe(const cgltf_animation_sampler *sampler, usz keyframe, usz element, f32 *retValue, usz components)
 {
     bool cubic = sampler->interpolation == cgltf_interpolation_type_cubic_spline;
-    (void)cgltf_accessor_read_float(sampler->output, cubic ? key * 3 + part : key, value, components);
+    (void)cgltf_accessor_read_float(sampler->output, cubic ? keyframe * 3 + element : keyframe, retValue, components);
 }
 
-/// @brief Sets the part of a transform that a channel animates to its value at a time: before the first key the first, after the last the last.
-static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, GltfTransform *transform)
+/// @brief The keyframe at or before a time, found by halves, as the keyframes' times rise.
+static usz GltfFindKeyframe(const cgltf_accessor *input, f32 seconds)
 {
-    const cgltf_animation_sampler *sampler = channel->sampler;
-    usz keys = sampler->input->count;
-    bool rotation = channel->target_path == cgltf_animation_path_type_rotation;
-    usz components = rotation ? 4 : 3;
-    f32 *target = rotation ? transform->rotation : channel->target_path == cgltf_animation_path_type_translation ? transform->translation : transform->scale;
-
-    // the key before the time, found by halves, as the keys' times rise
     usz low = 0;
-    usz high = keys;
+    usz high = input->count;
 
     while (high - low > 1)
     {
         usz middle = (low + high) / 2;
         f32 time = 0.0f;
-        (void)cgltf_accessor_read_float(sampler->input, middle, &time, 1);
+        (void)cgltf_accessor_read_float(input, middle, &time, 1);
         low = time <= seconds ? middle : low;
         high = time <= seconds ? high : middle;
     }
 
+    return low;
+}
+
+/// @brief Sets the part of a transform that a channel animates to its value at a time: before the first keyframe the first, after the last the last.
+static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, GltfTransform *transform)
+{
+    const cgltf_animation_sampler *sampler = channel->sampler;
+    bool rotation = channel->target_path == cgltf_animation_path_type_rotation;
+    usz components = rotation ? 4 : 3;
+    f32 *target = rotation ? transform->rotation : channel->target_path == cgltf_animation_path_type_translation ? transform->translation : transform->scale;
+    usz previous = GltfFindKeyframe(sampler->input, seconds);
     f32 start = 0.0f;
     f32 end = 0.0f;
-    (void)cgltf_accessor_read_float(sampler->input, low, &start, 1);
+    (void)cgltf_accessor_read_float(sampler->input, previous, &start, 1);
 
-    if (low + 1 >= keys || seconds <= start || sampler->interpolation == cgltf_interpolation_type_step)
+    if (previous + 1 >= sampler->input->count || seconds <= start || sampler->interpolation == cgltf_interpolation_type_step)
     {
-        GltfKey(sampler, seconds < start ? 0 : low, 1, target, components);
+        GltfReadKeyframe(sampler, seconds < start ? 0 : previous, 1, target, components);
         return;
     }
 
-    (void)cgltf_accessor_read_float(sampler->input, low + 1, &end, 1);
+    (void)cgltf_accessor_read_float(sampler->input, previous + 1, &end, 1);
     f32 span = end - start;
-    f32 share = span > 0.0f ? (seconds - start) / span : 0.0f;
-    f32 from[4] = {0};
-    f32 to[4] = {0};
-    GltfKey(sampler, low, 1, from, components);
-    GltfKey(sampler, low + 1, 1, to, components);
+    f32 progress = span > 0.0f ? (seconds - start) / span : 0.0f;
+    versor from = {0};
+    versor to = {0};
+    GltfReadKeyframe(sampler, previous, 1, from, components);
+    GltfReadKeyframe(sampler, previous + 1, 1, to, components);
+
+    if (sampler->interpolation == cgltf_interpolation_type_linear && rotation)
+    {
+        glm_quat_slerp(from, to, progress, target);
+        glm_quat_normalize(target);
+        return;
+    }
 
     if (sampler->interpolation == cgltf_interpolation_type_linear)
     {
-        if (rotation)
-        {
-            GltfSlerp(from, to, share, target);
-            return;
-        }
-
-        for (usz i = 0; i < components; i++)
-        {
-            target[i] = from[i] + (to[i] - from[i]) * share;
-        }
-
+        glm_vec3_lerp(from, to, progress, target);
         return;
     }
 
-    // a cubic Hermite spline between the two keys, with the first key's out-tangent and the second's in-tangent, scaled by the time between them
-    f32 out[4] = {0};
-    f32 in[4] = {0};
-    GltfKey(sampler, low, 2, out, components);
-    GltfKey(sampler, low + 1, 0, in, components);
-    f32 s2 = share * share;
-    f32 s3 = s2 * share;
+    // a cubic Hermite spline between the two keyframes, with the first one's out-tangent and the second one's in-tangent, scaled by the time between them
+    versor outTangent = {0};
+    versor inTangent = {0};
+    GltfReadKeyframe(sampler, previous, 2, outTangent, components);
+    GltfReadKeyframe(sampler, previous + 1, 0, inTangent, components);
+    f32 squared = progress * progress;
+    f32 cubed = squared * progress;
 
     for (usz i = 0; i < components; i++)
     {
-        target[i] = (2.0f * s3 - 3.0f * s2 + 1.0f) * from[i] + (s3 - 2.0f * s2 + share) * span * out[i] + (-2.0f * s3 + 3.0f * s2) * to[i] + (s3 - s2) * span * in[i];
+        target[i] = (2.0f * cubed - 3.0f * squared + 1.0f) * from[i] + (cubed - 2.0f * squared + progress) * span * outTangent[i] + (-2.0f * cubed + 3.0f * squared) * to[i] +
+                    (cubed - squared) * span * inTangent[i];
     }
 
     if (rotation)
     {
-        GltfNormalize(target);
+        glm_quat_normalize(target);
     }
 }
 
-/// @brief Gives each node's matrix in its parent at a time of an animation, 16 floats each, column by column; animation 0 gives the nodes' own matrices.
+/// @brief Gives each node's matrix in its parent at a time of an animation; animation 0 gives the nodes' own matrices.
 /// @return The matrices, to free with SDL_free, or nullptr if out of memory or the model has no nodes.
-static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds)
+static mat4 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds)
 {
     usz count = data->nodes_count;
     GltfTransform *transforms = count == 0 ? nullptr : SDL_malloc(count * sizeof(GltfTransform));
-    f32 *matrices = transforms == nullptr ? nullptr : SDL_malloc(count * 16 * sizeof(f32));
+    mat4 *matrices = count == 0 ? nullptr : SDL_malloc(count * sizeof(mat4));
 
-    if (matrices == nullptr)
+    if (transforms == nullptr || matrices == nullptr)
     {
         SDL_free(transforms);
+        SDL_free(matrices);
         return nullptr;
     }
 
@@ -594,7 +614,7 @@ static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds
     {
         const cgltf_node *node = &data->nodes[i];
         GltfTransform *transform = &transforms[i];
-        *transform = (GltfTransform){.rotation = {0.0f, 0.0f, 0.0f, 1.0f}, .scale = {1.0f, 1.0f, 1.0f}};
+        *transform = (GltfTransform){.rotation = GLM_QUAT_IDENTITY_INIT, .scale = {1.0f, 1.0f, 1.0f}};
         SDL_memcpy(transform->translation, node->translation, node->has_translation ? sizeof(transform->translation) : 0);
         SDL_memcpy(transform->rotation, node->rotation, node->has_rotation ? sizeof(transform->rotation) : 0);
         SDL_memcpy(transform->scale, node->scale, node->has_scale ? sizeof(transform->scale) : 0);
@@ -603,11 +623,11 @@ static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds
     // a node that glTF animates has no matrix of its own, so its parts change; morph weights are not part of a matrix
     if (animation >= 1 && (usz)animation <= data->animations_count)
     {
-        const cgltf_animation *clip = &data->animations[animation - 1];
+        const cgltf_animation *played = &data->animations[animation - 1];
 
-        for (usz i = 0; i < clip->channels_count; i++)
+        for (usz i = 0; i < played->channels_count; i++)
         {
-            const cgltf_animation_channel *channel = &clip->channels[i];
+            const cgltf_animation_channel *channel = &played->channels[i];
 
             if (channel->target_node != nullptr && !channel->target_node->has_matrix && channel->target_path != cgltf_animation_path_type_weights && channel->sampler->input->count > 0)
             {
@@ -616,16 +636,18 @@ static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds
         }
     }
 
+    // a matrix is the translation of the rotation of the scale
     for (usz i = 0; i < count; i++)
     {
         if (data->nodes[i].has_matrix)
         {
-            SDL_memcpy(matrices + i * 16, data->nodes[i].matrix, 16 * sizeof(f32));
+            SDL_memcpy(matrices[i], data->nodes[i].matrix, sizeof(mat4));
+            continue;
         }
-        else
-        {
-            GltfMatrix(&transforms[i], matrices + i * 16);
-        }
+
+        glm_translate_make(matrices[i], transforms[i].translation);
+        glm_quat_rotate(matrices[i], transforms[i].rotation, matrices[i]);
+        glm_scale(matrices[i], transforms[i].scale);
     }
 
     SDL_free(transforms);
@@ -634,31 +656,12 @@ static f32 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 seconds
 
 static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
 {
-    f32 *matrices = GltfLocalMatrices(model->data, animation, seconds);
-    return GltfGive(model, matrices, model->data->nodes_count * 16 * sizeof(f32));
-}
-
-/// @brief Multiplies two matrices of 16 floats, column by column: result = a times b; result may not be a or b.
-static void GltfMultiply(const f32 *a, const f32 *b, f32 *result)
-{
-    for (usz column = 0; column < 4; column++)
-    {
-        for (usz row = 0; row < 4; row++)
-        {
-            f32 sum = 0.0f;
-
-            for (usz k = 0; k < 4; k++)
-            {
-                sum += a[k * 4 + row] * b[column * 4 + k];
-            }
-
-            result[column * 4 + row] = sum;
-        }
-    }
+    mat4 *matrices = GltfLocalMatrices(model->data, animation, seconds);
+    return GltfKeepResult(model, matrices, model->data->nodes_count * sizeof(mat4));
 }
 
 /// @brief Sets a node's matrix in the model's space from its matrix in its parent, the parent's first; done marks the nodes whose matrix is set.
-static void GltfWorld(const cgltf_data *data, const f32 *locals, usz node, f32 *worlds, bool *done)
+static void GltfWorldMatrix(const cgltf_data *data, mat4 *locals, usz node, mat4 *worlds, bool *done)
 {
     if (done[node])
     {
@@ -669,191 +672,212 @@ static void GltfWorld(const cgltf_data *data, const f32 *locals, usz node, f32 *
 
     if (parent == nullptr)
     {
-        SDL_memcpy(worlds + node * 16, locals + node * 16, 16 * sizeof(f32));
+        glm_mat4_copy(locals[node], worlds[node]);
     }
     else
     {
         usz index = cgltf_node_index(data, parent);
-        GltfWorld(data, locals, index, worlds, done);
-        GltfMultiply(worlds + index * 16, locals + node * 16, worlds + node * 16);
+        GltfWorldMatrix(data, locals, index, worlds, done);
+        glm_mat4_mul(worlds[index], locals[node], worlds[node]);
     }
 
     done[node] = true;
 }
 
-/// @brief Finds a primitive's attribute of a type, such as its positions, or nullptr.
-static const cgltf_accessor *GltfFindAttribute(const cgltf_primitive *part, cgltf_attribute_type type)
+/// @brief Gives each joint's matrix of a skin at a time of an animation: where its node is now, after the inverse of where it was when the mesh was bound to it.
+/// @return The matrices, to free with SDL_free, or nullptr if out of memory.
+static mat4 *GltfJointMatrices(const cgltf_data *data, const cgltf_skin *skin, i32 animation, f32 seconds)
 {
-    for (usz i = 0; part != nullptr && i < part->attributes_count; i++)
+    mat4 *locals = GltfLocalMatrices(data, animation, seconds);
+    mat4 *worlds = SDL_malloc(data->nodes_count * sizeof(mat4));
+    bool *done = SDL_calloc(data->nodes_count, sizeof(bool));
+    mat4 *joints = SDL_malloc(skin->joints_count * sizeof(mat4));
+
+    if (locals == nullptr || worlds == nullptr || done == nullptr || joints == nullptr)
     {
-        if (part->attributes[i].type == type && part->attributes[i].index == 0)
-        {
-            return part->attributes[i].data;
-        }
+        SDL_free(joints);
+        joints = nullptr;
     }
 
-    return nullptr;
+    for (usz i = 0; joints != nullptr && i < skin->joints_count; i++)
+    {
+        usz node = cgltf_node_index(data, skin->joints[i]);
+        mat4 inverse = GLM_MAT4_IDENTITY_INIT;
+
+        // glTF asks for a matrix for each joint, but nothing checks it, so a joint past the matrices keeps the identity
+        if (skin->inverse_bind_matrices != nullptr && i < skin->inverse_bind_matrices->count)
+        {
+            (void)cgltf_accessor_read_float(skin->inverse_bind_matrices, i, (f32 *)inverse, 16);
+        }
+
+        GltfWorldMatrix(data, locals, node, worlds, done);
+        glm_mat4_mul(worlds[node], inverse, joints[i]);
+    }
+
+    SDL_free(done);
+    SDL_free(worlds);
+    SDL_free(locals);
+    return joints;
 }
 
 /// @brief Gives a primitive's positions moved by a skin's joints at a time of an animation, three floats each, in the model's space, as glTF skins them:
-/// each vertex goes through the joints that JOINTS_0 names, by the shares that WEIGHTS_0 gives. A primitive without them, or a missing skin, gives its positions as they are.
-static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skin, i32 animation, f32 seconds)
+/// each vertex goes through the joints that JOINTS_0 names, by the weights that WEIGHTS_0 gives. A primitive without them, or a missing skin, gives its positions as they are.
+static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skinNumber, i32 animation, f32 seconds)
 {
     const cgltf_data *data = model->data;
-    const cgltf_primitive *part = GltfFindPrimitive(model, mesh, primitive);
-    const cgltf_accessor *positions = GltfFindAttribute(part, cgltf_attribute_type_position);
-    const cgltf_accessor *joints = GltfFindAttribute(part, cgltf_attribute_type_joints);
-    const cgltf_accessor *weights = GltfFindAttribute(part, cgltf_attribute_type_weights);
-    const cgltf_skin *bones = skin >= 1 && (usz)skin <= data->skins_count ? &data->skins[skin - 1] : nullptr;
-    usz count = positions == nullptr || GltfBytes(positions->count, 3 * sizeof(f32)) == 0 ? 0 : positions->count;
-    f32 *out = count == 0 ? nullptr : SDL_malloc(count * 3 * sizeof(f32));
+    const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
+    const cgltf_accessor *positions = GltfFindAttribute(found, cgltf_attribute_type_position);
+    const cgltf_accessor *jointsOfVertices = GltfFindAttribute(found, cgltf_attribute_type_joints);
+    const cgltf_accessor *weightsOfVertices = GltfFindAttribute(found, cgltf_attribute_type_weights);
+    const cgltf_skin *skin = skinNumber >= 1 && (usz)skinNumber <= data->skins_count ? &data->skins[skinNumber - 1] : nullptr;
+    usz count = positions == nullptr || GltfCheckedSize(positions->count, sizeof(vec3)) == 0 ? 0 : positions->count;
+    vec3 *vertices = count == 0 ? nullptr : SDL_malloc(count * sizeof(vec3));
 
-    if (out == nullptr || cgltf_accessor_unpack_floats(positions, out, count * 3) != count * 3)
+    if (vertices == nullptr || cgltf_accessor_unpack_floats(positions, (f32 *)vertices, count * 3) != count * 3)
     {
-        SDL_free(out);
-        return GltfGive(model, nullptr, 0);
+        SDL_free(vertices);
+        return GltfKeepResult(model, nullptr, 0);
     }
 
-    if (bones == nullptr || joints == nullptr || weights == nullptr || bones->joints_count == 0)
+    if (skin == nullptr || jointsOfVertices == nullptr || weightsOfVertices == nullptr || skin->joints_count == 0)
     {
-        return GltfGive(model, out, count * 3 * sizeof(f32));
+        return GltfKeepResult(model, vertices, count * sizeof(vec3));
     }
 
-    // each joint's matrix: where its node is now, after the inverse of where it was when the mesh was bound to it
-    f32 *locals = GltfLocalMatrices(data, animation, seconds);
-    f32 *worlds = locals == nullptr ? nullptr : SDL_malloc(data->nodes_count * 16 * sizeof(f32));
-    bool *done = worlds == nullptr ? nullptr : SDL_calloc(data->nodes_count, sizeof(bool));
-    f32 *matrices = done == nullptr ? nullptr : SDL_malloc(bones->joints_count * 16 * sizeof(f32));
+    mat4 *joints = GltfJointMatrices(data, skin, animation, seconds);
 
-    for (usz i = 0; matrices != nullptr && i < bones->joints_count; i++)
+    if (joints == nullptr)
     {
-        usz node = cgltf_node_index(data, bones->joints[i]);
-        f32 inverse[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-
-        // glTF asks for a matrix for each joint, but nothing checks it, so a joint past the matrices keeps the identity
-        if (bones->inverse_bind_matrices != nullptr && i < bones->inverse_bind_matrices->count)
-        {
-            (void)cgltf_accessor_read_float(bones->inverse_bind_matrices, i, inverse, 16);
-        }
-
-        GltfWorld(data, locals, node, worlds, done);
-        GltfMultiply(worlds + node * 16, inverse, matrices + i * 16);
+        ECS_LogError(GLTF.plugin, "Out of memory while skinning a primitive of the model '%s'", model->path);
+        return GltfKeepResult(model, vertices, count * sizeof(vec3));
     }
 
-    for (usz v = 0; matrices != nullptr && v < count; v++)
+    for (usz vertex = 0; vertex < count; vertex++)
     {
-        cgltf_uint index[4] = {0};
-        f32 share[4] = {0};
-        f32 *p = out + v * 3;
-        f32 x = p[0], y = p[1], z = p[2];
-        f32 sum[3] = {0};
+        cgltf_uint jointIndices[4] = {0};
+        f32 weights[4] = {0};
+        vec3 sum = GLM_VEC3_ZERO_INIT;
         f32 total = 0.0f;
-        (void)cgltf_accessor_read_uint(joints, v, index, 4);
-        (void)cgltf_accessor_read_float(weights, v, share, 4);
+        (void)cgltf_accessor_read_uint(jointsOfVertices, vertex, jointIndices, 4);
+        (void)cgltf_accessor_read_float(weightsOfVertices, vertex, weights, 4);
 
-        for (usz k = 0; k < 4; k++)
+        for (usz i = 0; i < 4; i++)
         {
-            if (share[k] == 0.0f || index[k] >= bones->joints_count)
+            if (weights[i] == 0.0f || jointIndices[i] >= skin->joints_count)
             {
                 continue;
             }
 
-            const f32 *m = matrices + (usz)index[k] * 16;
-            sum[0] += share[k] * (m[0] * x + m[4] * y + m[8] * z + m[12]);
-            sum[1] += share[k] * (m[1] * x + m[5] * y + m[9] * z + m[13]);
-            sum[2] += share[k] * (m[2] * x + m[6] * y + m[10] * z + m[14]);
-            total += share[k];
+            vec3 moved;
+            glm_mat4_mulv3(joints[jointIndices[i]], vertices[vertex], 1.0f, moved);
+            glm_vec3_muladds(moved, weights[i], sum);
+            total += weights[i];
         }
 
         // a vertex that no joint moves stays
         if (total > 0.0f)
         {
-            p[0] = sum[0] / total;
-            p[1] = sum[1] / total;
-            p[2] = sum[2] / total;
+            glm_vec3_divs(sum, total, vertices[vertex]);
         }
     }
 
-    if (matrices == nullptr)
+    SDL_free(joints);
+    return GltfKeepResult(model, vertices, count * sizeof(vec3));
+}
+
+#pragma endregion Animation
+
+#pragma region Images
+
+/// @brief Copies the bytes of an image in a buffer, as in a .glb.
+/// @return The bytes, to free with SDL_free, or nullptr.
+static void *GltfReadBufferImage(const cgltf_image *image, usz *retSize)
+{
+    const u8 *bytes = cgltf_buffer_view_data(image->buffer_view);
+    void *copy = bytes == nullptr ? nullptr : SDL_malloc(SDL_max(image->buffer_view->size, 1));
+
+    if (copy == nullptr)
     {
-        ECS_LogError(GLTF.plugin, "Out of memory while skinning a primitive of the model '%s'", model->path);
+        return nullptr;
     }
 
-    SDL_free(matrices);
-    SDL_free(done);
-    SDL_free(worlds);
-    SDL_free(locals);
-    return GltfGive(model, out, count * 3 * sizeof(f32));
+    SDL_memcpy(copy, bytes, image->buffer_view->size);
+    *retSize = image->buffer_view->size;
+    return copy;
+}
+
+/// @brief Decodes the bytes of a data URI, which holds them in base64 after its comma: four letters for three bytes, less the padding.
+/// @return The bytes, to free with SDL_free, or nullptr.
+static void *GltfReadDataUri(const char *uri, usz *retSize)
+{
+    const char *comma = SDL_strchr(uri, ',');
+    const char *base64 = comma == nullptr ? nullptr : SDL_strstr(uri, ";base64,") == comma - 7 ? comma + 1 : nullptr;
+    usz length = base64 == nullptr ? 0 : SDL_strlen(base64);
+
+    if (length < 4 || length % 4 != 0)
+    {
+        return nullptr;
+    }
+
+    usz size = length / 4 * 3 - (base64[length - 1] == '=' ? 1 : 0) - (base64[length - 2] == '=' ? 1 : 0);
+    void *bytes = nullptr;
+    cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfDeallocate}};
+
+    if (cgltf_load_buffer_base64(&options, size, base64, &bytes) != cgltf_result_success)
+    {
+        return nullptr;
+    }
+
+    *retSize = size;
+    return bytes;
+}
+
+/// @brief Reads an image's file, whose URI is relative to the model's folder, and may escape characters, such as %20 for a space.
+/// @return The bytes, to free with SDL_free, or nullptr.
+static void *GltfReadImageFile(const GltfModel *model, const char *uri, usz *retSize)
+{
+    const char *slash = ECSPath_LastSeparator(model->path);
+    int folderLength = slash == nullptr ? 0 : (int)(slash - model->path + 1);
+    char *path = nullptr;
+
+    if (SDL_asprintf(&path, "%.*s%s", folderLength, model->path, uri) < 0)
+    {
+        return nullptr;
+    }
+
+    cgltf_decode_uri(path + folderLength);
+    void *bytes = SDL_LoadFile(path, retSize);
+    SDL_free(path);
+    return bytes;
 }
 
 /// @brief Reads the bytes of an image: from its buffer, as in a .glb, from the data of its URI, or from its file, next to the model's.
-/// @return The bytes, to free with SDL_free, or nullptr; size is set.
+/// @return The bytes, to free with SDL_free, or nullptr.
 static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz *retSize)
 {
-    *retSize = 0;
-
     if (image->buffer_view != nullptr)
     {
-        const u8 *bytes = cgltf_buffer_view_data(image->buffer_view);
-        void *copy = bytes == nullptr ? nullptr : SDL_malloc(SDL_max(image->buffer_view->size, 1));
-
-        if (copy != nullptr)
-        {
-            SDL_memcpy(copy, bytes, image->buffer_view->size);
-            *retSize = image->buffer_view->size;
-        }
-
-        return copy;
+        return GltfReadBufferImage(image, retSize);
     }
 
-    const char *uri = image->uri;
-
-    if (uri == nullptr)
+    if (image->uri == nullptr)
     {
         return nullptr;
     }
 
-    // a data URI holds the bytes in base64 after its comma: four letters for three bytes, less the padding
-    if (SDL_strncmp(uri, "data:", 5) == 0)
+    if (GltfFileUri(image->uri) == nullptr)
     {
-        const char *comma = SDL_strchr(uri, ',');
-        const char *base64 = comma == nullptr ? nullptr : SDL_strstr(uri, ";base64,") == comma - 7 ? comma + 1 : nullptr;
-        usz length = base64 == nullptr ? 0 : SDL_strlen(base64);
-        usz size = length / 4 * 3 - (length >= 1 && base64[length - 1] == '=' ? 1 : 0) - (length >= 2 && base64[length - 2] == '=' ? 1 : 0);
-        void *bytes = nullptr;
-        cgltf_options options = {.memory = {.alloc_func = GltfAllocate, .free_func = GltfRelease}};
-
-        if (length < 4 || length % 4 != 0 || cgltf_load_buffer_base64(&options, size, base64, &bytes) != cgltf_result_success)
-        {
-            return nullptr;
-        }
-
-        *retSize = size;
-        return bytes;
+        return GltfReadDataUri(image->uri, retSize);
     }
 
-    // a file's URI is relative to the model's folder, and may escape characters, such as %20 for a space
-    const char *slash = ECSPath_FindLastSeparator(model->path);
-    char *path = nullptr;
-
-    if (SDL_asprintf(&path, "%.*s%s", slash == nullptr ? 0 : (int)(slash - model->path + 1), model->path, uri) < 0)
-    {
-        return nullptr;
-    }
-
-    cgltf_decode_uri(path + (slash == nullptr ? 0 : slash - model->path + 1));
-    usz size = 0;
-    void *bytes = SDL_LoadFile(path, &size);
-    SDL_free(path);
-    *retSize = bytes == nullptr ? 0 : size;
-    return bytes;
+    return GltfReadImageFile(model, image->uri, retSize);
 }
 
 static SHUSlice GltfImage(GltfModel *model, i32 image)
 {
     if (image < 1 || (usz)image > model->data->images_count)
     {
-        return GltfGive(model, nullptr, 0);
+        return GltfKeepResult(model, nullptr, 0);
     }
 
     usz size = 0;
@@ -864,31 +888,17 @@ static SHUSlice GltfImage(GltfModel *model, i32 image)
         ECS_LogWarn(GLTF.plugin, "Cannot read image %d of the model '%s'", (int)image, model->path);
     }
 
-    return GltfGive(model, bytes, size);
+    return GltfKeepResult(model, bytes, size);
 }
 
-static void GltfDestroy(void *object)
-{
-    GltfModel *model = object;
-    cgltf_free(model->data);
-    SDL_free(model->path);
-    SDL_free(model->given);
-    SDL_free(model);
-}
-
-/// @brief Frees a model now, instead of when no one uses its handle.
-static void GltfFree(void *object)
-{
-    ECSHandle_Forget(object);
-    GltfDestroy(object);
-}
+#pragma endregion Images
 
 #pragma endregion Source Only
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     GLTF.plugin = plugin;
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "model", GltfDestroy));
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "model", GltfModelDestroy));
 
     const struct
     {
@@ -901,7 +911,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read\n"
          "@param path The file's path; a relative path starts at the executable's folder, and the files a .gltf names are relative to its own folder\n"
          "@return A new model, which owns all that was read, or nothing if the file cannot be read or is not valid glTF; the reason is logged"},
-        {"free", (ECSFunction)GltfFree, "void(handle<gltf.model> model)",
+        {"free", (ECSFunction)GltfFreeModel, "void(handle<gltf.model> model)",
          "Free a model now, instead of when no one uses its handle\n"
          "@param model The model, which is not used again after this"},
         {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info)",

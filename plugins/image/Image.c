@@ -58,34 +58,33 @@ static bool ImageEndsWith(const char *text, const char *suffix)
 
 /// @brief Draws a parsed SVG image at a scale of its own size, and frees it.
 /// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if there is no image.
-static SDL_Surface *ImageDrawSVG(NSVGimage *svg, f32 scale)
+static SDL_Surface *ImageDrawSvg(NSVGimage *svg, f32 scale)
 {
-    i32 width = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->width * scale);
-    i32 height = svg == nullptr ? 0 : (i32)SDL_ceilf(svg->height * scale);
+    if (svg == nullptr)
+    {
+        return nullptr;
+    }
+
+    i32 width = (i32)SDL_ceilf(svg->width * scale);
+    i32 height = (i32)SDL_ceilf(svg->height * scale);
     SDL_Surface *rgba = width > 0 && height > 0 ? SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32) : nullptr;
+    SDL_Surface *argb = nullptr;
 
     if (rgba != nullptr)
     {
         SDL_memset(rgba->pixels, 0, (usz)rgba->pitch * (usz)height);
         nsvgRasterize(IMAGE.rasterizer, svg, 0.0f, 0.0f, scale, rgba->pixels, width, height, rgba->pitch);
+        argb = SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
+        SDL_DestroySurface(rgba);
     }
 
-    SDL_Surface *argb = rgba == nullptr ? nullptr : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
-    SDL_DestroySurface(rgba);
     nsvgDelete(svg);
     return argb;
 }
 
-/// @brief Reads an SVG file and draws it at a scale of its own size.
-/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
-static SDL_Surface *ImageReadSVG(const char *path, f32 scale)
-{
-    return ImageDrawSVG(nsvgParseFromFile(path, "px", IMAGE_SVG_DPI), scale);
-}
-
 /// @brief Converts pixels of red, green, blue and alpha bytes, stretched by a scale.
 /// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if out of memory.
-static SDL_Surface *ImageFromBytes(void *pixels, i32 width, i32 height, f32 scale)
+static SDL_Surface *ImageFromRgbaPixels(void *pixels, i32 width, i32 height, f32 scale)
 {
     SDL_Surface *rgba = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_RGBA32, pixels, width * 4);
     SDL_Surface *argb = rgba == nullptr ? nullptr : SDL_ConvertSurface(rgba, SDL_PIXELFORMAT_ARGB8888);
@@ -101,24 +100,54 @@ static SDL_Surface *ImageFromBytes(void *pixels, i32 width, i32 height, f32 scal
     return scaled;
 }
 
-/// @brief Reads a raster image file, stretched by a scale.
-/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the file cannot be read.
-static SDL_Surface *ImageReadRaster(const char *path, f32 scale)
+/// @brief Reads the bytes of an image file at a scale of its own size; bytes that start with < after any spaces are an SVG file, which is text.
+/// @return The pixels, ARGB, to free with SDL_DestroySurface, or nullptr if the bytes are not an image.
+static SDL_Surface *ImageReadBytes(SHUSlice bytes, f32 scale)
 {
+    const u8 *data = bytes.data;
+    usz first = 0;
+
+    while (first < bytes.size && SDL_isspace(data[first]))
+    {
+        first++;
+    }
+
+    if (first < bytes.size && data[first] == '<')
+    {
+        // nanosvg changes the text it parses, so it gets a copy that ends with a zero
+        char *text = SDL_malloc(bytes.size + 1);
+
+        if (text == nullptr)
+        {
+            return nullptr;
+        }
+
+        SDL_memcpy(text, bytes.data, bytes.size);
+        text[bytes.size] = '\0';
+        SDL_Surface *surface = ImageDrawSvg(nsvgParse(text, "px", IMAGE_SVG_DPI), scale);
+        SDL_free(text);
+        return surface;
+    }
+
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc *pixels = stbi_load(path, &width, &height, &channels, 4);
-    SDL_Surface *argb = pixels == nullptr ? nullptr : ImageFromBytes(pixels, width, height, scale);
+    stbi_uc *pixels = stbi_load_from_memory(bytes.data, (int)bytes.size, &width, &height, &channels, 4);
+    SDL_Surface *surface = pixels == nullptr ? nullptr : ImageFromRgbaPixels(pixels, width, height, scale);
     stbi_image_free(pixels);
-    return argb;
+    return surface;
 }
 
 /// @brief Makes an image of draw from a surface's pixels, and destroys the surface.
 static void *ImageMake(SDL_Surface *surface)
 {
+    if (surface == nullptr)
+    {
+        return nullptr;
+    }
+
     // draw takes the pixels row after row, without the surface's padding
-    SDL_Surface *packed = surface == nullptr || surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
+    SDL_Surface *packed = surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
     void *image = packed == nullptr ? nullptr : IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4));
 
     if (packed != surface)
@@ -130,34 +159,71 @@ static void *ImageMake(SDL_Surface *surface)
     return image;
 }
 
-/// @brief The full path of a file to read at a scale: a relative path starts at the executable's folder. Free it with SDL_free.
-/// @return The path, or nullptr for a scale that is not above 0; the reason is logged.
-static char *ImageFullPath(const char *path, f32 scale)
+/// @brief The full path of a file: a relative path starts at the executable's folder. Free it with SDL_free.
+/// @return The path, or nullptr if out of memory.
+static char *ImageFullPath(const char *path)
 {
-    char *full = nullptr;
+    char *fullPath = nullptr;
+    return SDL_asprintf(&fullPath, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0 ? nullptr : fullPath;
+}
 
-    if (scale <= 0.0f || SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) < 0)
+/// @brief Tells why an image cannot be read: stb_image's reason, or that it is not an image.
+static const char *ImageFailure(void)
+{
+    return stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image";
+}
+
+/// @brief Reads a whole file, from a path whose relative form starts at the executable's folder. Free it with SDL_free.
+/// @return The bytes, or empty if the file cannot be read, or is too large for stb_image; the reason is logged.
+static SHUSlice ImageReadFile(const char *path)
+{
+    char *fullPath = ImageFullPath(path);
+    usz size = 0;
+    void *file = fullPath == nullptr ? nullptr : SDL_LoadFile(fullPath, &size);
+
+    if (file == nullptr || size > (usz)SDL_MAX_SINT32)
     {
-        ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
-        return nullptr;
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", fullPath != nullptr ? fullPath : path, file == nullptr ? SDL_GetError() : "the file is too large");
+        SDL_free(file);
+        SDL_free(fullPath);
+        return cs(nullptr, 0);
     }
 
-    return full;
+    SDL_free(fullPath);
+    return cs(file, size);
+}
+
+/// @brief Checks that an image is read at a scale above 0; the reason it is not is logged.
+static bool ImageCheckScale(f32 scale)
+{
+    if (scale <= 0.0f)
+    {
+        ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
+        return false;
+    }
+
+    return true;
 }
 
 /// @brief Reads an image file into a new image of the draw plugin.
 /// @return The image, or nullptr if the file cannot be read; the reason is logged.
 static void *ImageLoad(const char *path, f32 scale)
 {
-    char *full = ImageFullPath(path, scale);
-    SDL_Surface *surface = full == nullptr ? nullptr : ImageEndsWith(full, ".svg") ? ImageReadSVG(full, scale) : ImageReadRaster(full, scale);
+    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path) : cs(nullptr, 0);
 
-    if (full != nullptr && surface == nullptr)
+    if (file.data == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
+        return nullptr;
     }
 
-    SDL_free(full);
+    SDL_Surface *surface = ImageReadBytes(file, scale);
+    SDL_free(file.data);
+
+    if (surface == nullptr)
+    {
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", path, ImageFailure());
+    }
+
     return ImageMake(surface);
 }
 
@@ -171,44 +237,11 @@ static void *ImageDecode(SHUSlice bytes, f32 scale)
         return nullptr;
     }
 
-    // an SVG file is text, which starts with < after any spaces; nanosvg changes the text it parses, so it gets a copy that ends with a zero
-    usz first = 0;
-
-    while (first < bytes.size && SDL_isspace(((const u8 *)bytes.data)[first]))
-    {
-        first++;
-    }
-
-    SDL_Surface *surface = nullptr;
-
-    if (first < bytes.size && ((const u8 *)bytes.data)[first] == '<')
-    {
-        char *text = SDL_malloc(bytes.size + 1);
-        NSVGimage *svg = nullptr;
-
-        if (text != nullptr)
-        {
-            SDL_memcpy(text, bytes.data, bytes.size);
-            text[bytes.size] = '\0';
-            svg = nsvgParse(text, "px", IMAGE_SVG_DPI);
-        }
-
-        surface = ImageDrawSVG(svg, scale);
-        SDL_free(text);
-    }
-    else
-    {
-        int width = 0;
-        int height = 0;
-        int channels = 0;
-        stbi_uc *pixels = stbi_load_from_memory(bytes.data, (int)bytes.size, &width, &height, &channels, 4);
-        surface = pixels == nullptr ? nullptr : ImageFromBytes(pixels, width, height, scale);
-        stbi_image_free(pixels);
-    }
+    SDL_Surface *surface = ImageReadBytes(bytes, scale);
 
     if (surface == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read an image from bytes: %s", stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
+        ECS_LogError(IMAGE.plugin, "Cannot read an image from bytes: %s", ImageFailure());
     }
 
     return ImageMake(surface);
@@ -230,7 +263,7 @@ static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
 
 /// @brief Skips a GIF's sub-blocks: each starts with its size, and an empty one ends them.
 /// @return Where the sub-blocks end, or size if the data ends first.
-static usz ImageGIFSkipBlocks(const u8 *data, usz size, usz at)
+static usz ImageGifSkipBlocks(const u8 *data, usz size, usz at)
 {
     while (at < size && data[at] != 0)
     {
@@ -243,7 +276,7 @@ static usz ImageGIFSkipBlocks(const u8 *data, usz size, usz at)
 /// @brief Makes every frame of a GIF that restores the frame before it restore the background instead, in place.
 /// stb_image reads the frame two back from before its buffer for that disposal, so a file could make it read memory it does not own;
 /// for stb, restoring the background means restoring what showed before the frame, which is the same.
-static void ImageGIFAvoidPrevious(u8 *data, usz size)
+static void ImageGifAvoidPrevious(u8 *data, usz size)
 {
     // the header, then the logical screen, with the global colour table if its flag is set
     if (size < 13 || SDL_memcmp(data, "GIF", 3) != 0)
@@ -263,14 +296,14 @@ static void ImageGIFAvoidPrevious(u8 *data, usz size)
                 data[at + 3] = (u8)((data[at + 3] & ~0x1C) | (2 << 2));
             }
 
-            at = ImageGIFSkipBlocks(data, size, at + 2);
+            at = ImageGifSkipBlocks(data, size, at + 2);
         }
         else if (data[at] == 0x2C && at + 10 < size)
         {
             // an image: its descriptor, its local colour table if its flag is set, the size of its codes, then its data
             u8 flags = data[at + 9];
             at += 10 + ((flags & 0x80) != 0 ? 3 * ((usz)2 << (flags & 0x07)) : 0) + 1;
-            at = ImageGIFSkipBlocks(data, size, at);
+            at = ImageGifSkipBlocks(data, size, at);
         }
         else
         {
@@ -285,16 +318,9 @@ static void ImageGIFAvoidPrevious(u8 *data, usz size)
 static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
 {
     ECSValue_SetNil(retFrames);
-    char *full = ImageFullPath(path, scale);
 
-    if (full == nullptr)
+    if (!ImageEndsWith(path, ".gif"))
     {
-        return;
-    }
-
-    if (!ImageEndsWith(full, ".gif"))
-    {
-        SDL_free(full);
         void *image = ImageLoad(path, scale);
         ECSValue_SetTable(retFrames);
 
@@ -306,27 +332,25 @@ static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
         return;
     }
 
-    usz size = 0;
-    void *file = SDL_LoadFile(full, &size);
+    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path) : cs(nullptr, 0);
+
+    if (file.data == nullptr)
+    {
+        return;
+    }
+
     int *delays = nullptr;
     int width = 0;
     int height = 0;
     int count = 0;
     int channels = 0;
-    bool read = file != nullptr && size <= (usz)SDL_MAX_SINT32;
-
-    if (read)
-    {
-        ImageGIFAvoidPrevious(file, size);
-    }
-
-    stbi_uc *pixels = read ? stbi_load_gif_from_memory(file, (int)size, &delays, &width, &height, &count, &channels, 4) : nullptr;
-    SDL_free(file);
+    ImageGifAvoidPrevious(file.data, file.size);
+    stbi_uc *pixels = stbi_load_gif_from_memory(file.data, (int)file.size, &delays, &width, &height, &count, &channels, 4);
+    SDL_free(file.data);
 
     if (pixels == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", full, file == nullptr ? SDL_GetError() : !read ? "the file is too large" : stbi_failure_reason() != nullptr ? stbi_failure_reason() : "not an image");
-        SDL_free(full);
+        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", path, ImageFailure());
         return;
     }
 
@@ -335,18 +359,45 @@ static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
 
     for (int i = 0; i < count; i++)
     {
-        void *image = ImageMake(ImageFromBytes(pixels + (usz)i * (usz)width * (usz)height * 4, width, height, scale));
+        void *image = ImageMake(ImageFromRgbaPixels(pixels + (usz)i * (usz)width * (usz)height * 4, width, height, scale));
 
         if (image == nullptr || ImageAddFrame(retFrames, image, delays == nullptr ? 0.0 : (f64)delays[i] / 1000.0) != SHUResult_Ok)
         {
-            ECS_LogError(IMAGE.plugin, "Cannot make frame %d of the image '%s': out of memory", i + 1, full);
+            ECS_LogError(IMAGE.plugin, "Cannot make frame %d of the image '%s': out of memory", i + 1, path);
             break;
         }
     }
 
     stbi_image_free(delays);
     stbi_image_free(pixels);
-    SDL_free(full);
+}
+
+/// @brief The file formats image writes.
+typedef enum ImageFormat
+{
+    ImageFormat_Png,
+    ImageFormat_Jpg,
+    ImageFormat_Bmp,
+    ImageFormat_Tga,
+} ImageFormat;
+
+/// @brief Writes pixels of red, green, blue and alpha bytes to a file in a format.
+/// @return Whether the file was written.
+static bool ImageWrite(const char *fullPath, ImageFormat format, i32 width, i32 height, const u8 *rgba)
+{
+    switch (format)
+    {
+    case ImageFormat_Png:
+        return stbi_write_png(fullPath, width, height, 4, rgba, width * 4) != 0;
+    case ImageFormat_Jpg:
+        return stbi_write_jpg(fullPath, width, height, 4, rgba, IMAGE_JPG_QUALITY) != 0;
+    case ImageFormat_Bmp:
+        return stbi_write_bmp(fullPath, width, height, 4, rgba) != 0;
+    case ImageFormat_Tga:
+        return stbi_write_tga(fullPath, width, height, 4, rgba) != 0;
+    }
+
+    return false;
 }
 
 /// @brief Writes an image of draw to a file, in the format its extension names: .png, .jpg or .jpeg, .bmp or .tga.
@@ -356,45 +407,39 @@ static bool ImageSave(void *image, const char *path)
     const struct
     {
         const char *extension;
-        u8 format;
-    } formats[] = {{".png", 0}, {".jpg", 1}, {".jpeg", 1}, {".bmp", 2}, {".tga", 3}};
-    i32 format = -1;
+        ImageFormat format;
+    } formats[] = {{".png", ImageFormat_Png}, {".jpg", ImageFormat_Jpg}, {".jpeg", ImageFormat_Jpg}, {".bmp", ImageFormat_Bmp}, {".tga", ImageFormat_Tga}};
+    usz chosen = 0;
 
-    for (usz i = 0; i < (usz)SDL_arraysize(formats); i++)
+    while (chosen < SDL_arraysize(formats) && !ImageEndsWith(path, formats[chosen].extension))
     {
-        format = format < 0 && ImageEndsWith(path, formats[i].extension) ? formats[i].format : format;
+        chosen++;
     }
 
-    if (format < 0)
+    if (chosen == SDL_arraysize(formats))
     {
         ECS_LogWarn(IMAGE.plugin, "An image is written to a .png, .jpg, .jpeg, .bmp or .tga file, not '%s'.", path);
         return false;
     }
 
-    char *full = nullptr;
     i32 width = 0;
     i32 height = 0;
     IMAGE.ImageSize(image, &width, &height);
     SHUSlice argb = IMAGE.ImagePixels(image);
+
     // stb_image_write takes the bytes red, green, blue and alpha, in that order
     u8 *rgba = SDL_malloc(argb.size);
-    bool written = false;
-
-    if (rgba != nullptr && SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
-        SDL_asprintf(&full, "%s%s", ECSPath_IsAbsolute(path) ? "" : SDL_GetBasePath(), path) >= 0)
-    {
-        written = format == 0 ? stbi_write_png(full, width, height, 4, rgba, width * 4) != 0
-                  : format == 1 ? stbi_write_jpg(full, width, height, 4, rgba, IMAGE_JPG_QUALITY) != 0
-                  : format == 2 ? stbi_write_bmp(full, width, height, 4, rgba) != 0
-                                : stbi_write_tga(full, width, height, 4, rgba) != 0;
-    }
+    char *fullPath = ImageFullPath(path);
+    bool written = rgba != nullptr && fullPath != nullptr &&
+                   SDL_ConvertPixels(width, height, SDL_PIXELFORMAT_ARGB8888, argb.data, width * 4, SDL_PIXELFORMAT_RGBA32, rgba, width * 4) &&
+                   ImageWrite(fullPath, formats[chosen].format, width, height, rgba);
 
     if (!written)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", full != nullptr ? full : path);
+        ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", fullPath != nullptr ? fullPath : path);
     }
 
-    SDL_free(full);
+    SDL_free(fullPath);
     SDL_free(rgba);
     return written;
 }
