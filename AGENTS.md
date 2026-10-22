@@ -13,16 +13,16 @@ This repository is part of OpenECS. OpenECS's [AGENTS.md](https://github.com/ome
 
 OpenECS's OVERVIEW.md holds the product decisions for these plugins too, and OpenECS's [TODO.md](https://github.com/omerfuyar/OpenECS/blob/dev/TODO.md) their open questions and pending tasks, in its section Standard plugins. Before you propose or change anything, read the Contents of it, of OpenECS's DESIGN.md and of this DESIGN.md, then every section the task touches. Read OpenECS's DESIGN.md section 1 and this DESIGN.md section 1 before you write code.
 
-| Path            | What it holds                                                                             |
-| --------------- | ----------------------------------------------------------------------------------------- |
-| `plugins/`      | The plugins, one folder each (DESIGN.md, section 1).                                      |
-| `presets/`      | First-party presets.                                                                      |
-| `shuild.c`      | The build of this repository, which OpenECS's build compiles and runs.                    |
-| `.github/`      | Checks, rulesets and the agents' check script.                                            |
-| `.clang-format` | How clang-format formats the C code, as OpenECS's does.                                   |
-| `.clang-tidy`   | What clang-tidy checks in the C code: names (DESIGN.md, section 1.3) and common bugs.     |
-| `.claude/`      | Claude Code's settings: it formats each C file it edits, and never edits `dependencies/`. |
-| `LICENSE.md`    | The license, zlib.                                                                        |
+| Path            | What it holds                                                                                                                                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plugins/`      | The plugins, one folder each (DESIGN.md, section 1).                                                                                                                                                       |
+| `presets/`      | First-party presets.                                                                                                                                                                                       |
+| `shuild.c`      | The build of this repository, which OpenECS's build compiles and runs.                                                                                                                                     |
+| `.github/`      | Checks, rulesets and the agents' check script.                                                                                                                                                             |
+| `.clang-format` | How clang-format formats the C code, as OpenECS's does.                                                                                                                                                    |
+| `.clang-tidy`   | What clang-tidy checks in the C code: names (DESIGN.md, section 1.3) and common bugs.                                                                                                                      |
+| `.claude/`      | Claude Code's settings and notes: it formats each C file it edits and never edits `dependencies/`; `notes.md` says why the tools are set up as they are. OpenECS's `.claude/skills/` holds the procedures. |
+| `LICENSE.md`    | The license, zlib.                                                                                                                                                                                         |
 
 ## Differences
 
