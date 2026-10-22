@@ -46,7 +46,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ### 1.2 Tests
 
 - The examples of OpenECS-examples are the tests of these plugins (OpenECS DESIGN 17.5): each plugin has an example that shows it, and that example's test checks it.
-- This repository's checks build OpenECS's `dev` with this repository in `std/` and the examples, and run the examples' tests.
+- This repository's checks build OpenECS's `dev` with this repository in `std/` and the examples, and run the examples' tests. The check `Format` also checks that clang-format leaves the plugins' C files as they are.
 - A test loads only the plugins its preset names (OpenECS DESIGN 17.5), so an example's preset names every plugin it uses, such as `settings` for the settings window.
 
 ### 1.3 Plugins
