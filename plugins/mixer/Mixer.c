@@ -362,8 +362,8 @@ static void MixerFilter(MixerVoice *voice, f32 *frames, u64 count)
 
         for (i32 channel = 0; channel < channels; channel++)
         {
-            MixerTuneLowpass(&voice->filters[2 * channel], lowpass, voice->sound->spec.freq);
-            MixerTuneHighpass(&voice->filters[2 * channel + 1], highpass, voice->sound->spec.freq);
+            MixerTuneLowpass(&voice->filters[2 * (usz)channel], lowpass, voice->sound->spec.freq);
+            MixerTuneHighpass(&voice->filters[2 * (usz)channel + 1], highpass, voice->sound->spec.freq);
         }
 
         voice->tunedLowpass = lowpass;

@@ -47,11 +47,11 @@ typedef struct FsEntry
 /// @brief A watched folder. Its handle is fs.watch.
 typedef struct FsWatch
 {
-    char *folder;    // as it was given, ending with a separator
-    int descriptor;  // inotify's watch, which watches of the same folder share, or -1
+    char *folder;   // as it was given, ending with a separator
+    int descriptor; // inotify's watch, which watches of the same folder share, or -1
     FsChangedFunction Changed;
-    bool stopped;    // stopped while changes were being told; freed after them
-    char *fullPath;  // the folder's full path, ending with a separator, which is read again where there is no inotify
+    bool stopped;     // stopped while changes were being told; freed after them
+    char *fullPath;   // the folder's full path, ending with a separator, which is read again where there is no inotify
     FsEntry *entries; // stb_ds array of its entries as they were last read, sorted by name, where there is no inotify
 #ifdef _WIN32
     HANDLE directory;      // the folder, opened for ReadDirectoryChangesW, or nullptr
@@ -199,8 +199,14 @@ static const char *FsFolder(const char *name)
         const char *name;
         SDL_Folder folder;
     } folders[] = {
-        {"home", SDL_FOLDER_HOME},           {"desktop", SDL_FOLDER_DESKTOP}, {"documents", SDL_FOLDER_DOCUMENTS}, {"downloads", SDL_FOLDER_DOWNLOADS},
-        {"music", SDL_FOLDER_MUSIC},         {"pictures", SDL_FOLDER_PICTURES}, {"videos", SDL_FOLDER_VIDEOS},     {"screenshots", SDL_FOLDER_SCREENSHOTS},
+        {"home", SDL_FOLDER_HOME},
+        {"desktop", SDL_FOLDER_DESKTOP},
+        {"documents", SDL_FOLDER_DOCUMENTS},
+        {"downloads", SDL_FOLDER_DOWNLOADS},
+        {"music", SDL_FOLDER_MUSIC},
+        {"pictures", SDL_FOLDER_PICTURES},
+        {"videos", SDL_FOLDER_VIDEOS},
+        {"screenshots", SDL_FOLDER_SCREENSHOTS},
         {"templates", SDL_FOLDER_TEMPLATES},
     };
 
@@ -338,7 +344,9 @@ static void FsReadChanges(void *data)
         for (char *at = buffer; at < buffer + length;)
         {
             const struct inotify_event *event = (const struct inotify_event *)(void *)at;
-            const char *change = event->mask & (IN_CREATE | IN_MOVED_TO) ? "added" : event->mask & (IN_DELETE | IN_MOVED_FROM) ? "removed" : event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB) ? "changed" : nullptr;
+            const char *change = event->mask & (IN_CREATE | IN_MOVED_TO) ? "added" : event->mask & (IN_DELETE | IN_MOVED_FROM)            ? "removed"
+                                                                                 : event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB) ? "changed"
+                                                                                                                                          : nullptr;
 
             // the watches may change while they are told, so they are counted again each time
             for (usz i = 0; change != nullptr && event->len > 0 && i < arrlenu(FS.watches); i++)
@@ -541,9 +549,12 @@ static void FsTellChanges(FsWatch *watch, const FsEntry *old, const FsEntry *ent
 
     for (usz oldAt = 0, at = 0; oldAt < oldCount || at < count;)
     {
-        int order = oldAt == oldCount ? 1 : at == count ? -1 : SDL_strcmp(old[oldAt].name, entries[at].name);
+        int order = oldAt == oldCount ? 1 : at == count ? -1
+                                                        : SDL_strcmp(old[oldAt].name, entries[at].name);
         const char *name = order < 0 ? old[oldAt].name : entries[at].name;
-        const char *change = order < 0 ? "removed" : order > 0 ? "added" : old[oldAt].modified != entries[at].modified || old[oldAt].size != entries[at].size ? "changed" : nullptr;
+        const char *change = order < 0 ? "removed" : order > 0                                                                        ? "added"
+                                                 : old[oldAt].modified != entries[at].modified || old[oldAt].size != entries[at].size ? "changed"
+                                                                                                                                      : nullptr;
 
         if (change != nullptr && !watch->stopped)
         {

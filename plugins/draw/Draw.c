@@ -26,8 +26,8 @@ typedef struct DrawFontSize
 /// @brief A font: a TrueType file, opened at each size asked for. Its handle, draw.font, lives as long as the plugin.
 typedef struct DrawFont
 {
-    char *name; // the name it was asked by: "ui", "mono" or a path
-    char *path; // the file
+    char *name;          // the name it was asked by: "ui", "mono" or a path
+    char *path;          // the file
     DrawFontSize *sizes; // stb_ds array of the sizes opened so far
 } DrawFont;
 
@@ -633,7 +633,8 @@ static void DrawDrawImage(ECSSurface *surface, DrawImage *image, f32 x, f32 y, f
 /// @return The path, to free with SDL_free, or nullptr if out of memory.
 static char *DrawFontPath(const char *name)
 {
-    const char *file = SDL_strcmp(name, "ui") == 0 ? ECSValue_GetString(ECSSetting_Get("ecs.font"), "") : SDL_strcmp(name, "mono") == 0 ? ECSValue_GetString(ECSSetting_Get("draw.monoFont"), "") : name;
+    const char *file = SDL_strcmp(name, "ui") == 0 ? ECSValue_GetString(ECSSetting_Get("ecs.font"), "") : SDL_strcmp(name, "mono") == 0 ? ECSValue_GetString(ECSSetting_Get("draw.monoFont"), "")
+                                                                                                                                        : name;
     bool shipped = SDL_strcmp(name, "mono") == 0 && file[0] == '\0';
     char *path = nullptr;
 
