@@ -7,7 +7,7 @@ local ui = require("ui")
 
 -- a size of the ui plugin's settings, in layout units, which every first-party view shares
 local function size(name)
-  return ecs.settings.get("ui." .. name)
+  return ecs.setting.get("ui." .. name)
 end
 
 -- version of a list's saved state: the panel type that was chosen
@@ -20,7 +20,7 @@ local target -- the panel that had the focus when the list was opened; a chosen 
 local function readTypes()
   local types = {}
 
-  for _, entry in ipairs(ecs.panel.types()) do
+  for _, entry in ipairs(ecs.panel.listTypes()) do
     if entry.name ~= "panels.list" then
       types[#types + 1] = entry
     end

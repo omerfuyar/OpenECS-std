@@ -25,12 +25,12 @@ local size = {}
 
 local function readSizes()
   for _, entry in ipairs(SIZES) do
-    size[entry[1]] = ecs.settings.get("ui." .. entry[1]) or entry[2]
+    size[entry[1]] = ecs.setting.get("ui." .. entry[1]) or entry[2]
   end
 end
 
 for _, entry in ipairs(SIZES) do
-  assert(ecs.settings.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] }))
+  assert(ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] }))
 end
 
 readSizes()
@@ -63,7 +63,7 @@ local function panelState(panel)
 end
 
 local function fontSize()
-  return ecs.settings.get("ecs.fontSize") or 14
+  return ecs.setting.get("ecs.fontSize") or 14
 end
 
 -- the fonts of the current show, by name; draw keeps the fonts themselves
@@ -1891,7 +1891,7 @@ local function handleEvent(panel, event)
     local scroll = find(state.root, x, y, scrollable)
 
     if scroll then
-      state.scroll[scroll.id] = (state.scroll[scroll.id] or 0) - event.wheelY * size.wheelStep
+      state.scroll[scroll.id] = (state.scroll[scroll.id] or 0) - event.scrollY * size.wheelStep
       panel:redraw()
       return true
     end

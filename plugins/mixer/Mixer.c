@@ -230,8 +230,7 @@ static void MixerKeepSound(MixerSound *sound)
 /// @brief Lets go of a sound now; it is freed once the voices that play it end.
 static void MixerFreeSound(MixerSound *sound)
 {
-    ECSHandle_Forget(sound);
-    MixerReleaseSound(sound);
+    ECSHandle_Free(MIXER.plugin, "sound", sound);
 }
 
 #pragma endregion Sounds

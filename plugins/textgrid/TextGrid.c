@@ -656,8 +656,7 @@ static void TextGridDraw(ECSSurface *surface, TextGrid *grid, f32 x, f32 y, f32 
 /// @brief Frees a grid now, instead of when no one uses its handle.
 static void TextGridFree(TextGrid *grid)
 {
-    ECSHandle_Forget(grid);
-    TextGridDestroy(grid);
+    ECSHandle_Free(TEXTGRID.plugin, "grid", grid);
 }
 
 #pragma endregion Source Only
