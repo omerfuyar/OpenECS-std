@@ -15,7 +15,6 @@
 #include <windows.h>
 #endif
 
-
 #define STB_DS_IMPLEMENTATION
 #include "stbSDL3.h"
 
