@@ -12,9 +12,6 @@ end
 -- version of a window's saved state: the setting that was chosen
 local STATE_VERSION = 1
 
--- the id of the list of settings, which scrolls
-local LIST = "list"
-
 local windows = {} -- every open window's state, by its panel handle
 
 -- the core's settings first, then each plugin's, each by name
@@ -110,16 +107,6 @@ local function read(setting, typed)
   end
 
   return typed
-end
-
-local function findWindow(panel)
-  local window = windows[panel]
-
-  if not window then
-    ecs.log.warn("That panel is not a settings window.")
-  end
-
-  return window
 end
 
 local function refresh(window)
@@ -223,35 +210,6 @@ local function settingRow(window, setting)
   })
 end
 
-local function tree(window)
-  local rows, owner = {}, nil
-
-  for _, setting in ipairs(window.settings) do
-    if setting.owner ~= owner then
-      owner = setting.owner
-      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { size = size("noteSize"), color = "accent", selectable = false })
-    end
-
-    rows[#rows + 1] = settingRow(window, setting)
-  end
-
-  -- a press on a row chooses its setting, and the row's control gets the press too
-  local list = ui.list({
-    id = LIST,
-    gap = 4,
-    selected = window.selected,
-    onSelect = function(index)
-      window.selected = index
-      window.panel:redraw()
-    end,
-  }, rows)
-
-  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
-    ui.text("Settings", { size = size("titleSize") }),
-    list,
-  })
-end
-
 -- changes the chosen setting one step, in the user's settings file
 local function change(window, direction)
   local setting = window.settings[window.selected]
@@ -273,6 +231,36 @@ local function edit(window)
   else
     ui.edit(window.panel, "value:" .. setting.name)
   end
+end
+
+-- the window's elements: the title, then the settings, each owner's under its name
+local function view(window)
+  local rows, owner = {}, nil
+
+  for _, setting in ipairs(window.settings) do
+    if setting.owner ~= owner then
+      owner = setting.owner
+      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { size = size("noteSize"), color = "accent", selectable = false })
+    end
+
+    rows[#rows + 1] = settingRow(window, setting)
+  end
+
+  -- a press on a row chooses its setting, and the row's control gets the press too; Up and Down choose a setting
+  local list = ui.list({
+    id = "list",
+    gap = 4,
+    selected = window.selected,
+    onSelect = function(index)
+      window.selected = index
+      window.panel:redraw()
+    end,
+  }, rows)
+
+  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
+    ui.text("Settings", { size = size("titleSize") }),
+    list,
+  })
 end
 
 ecs.panel.registerType({
@@ -303,14 +291,17 @@ ecs.panel.registerType({
     return { selected = chosen and chosen.name or nil }
   end,
   draw = function(window, surface)
-    ui.show(window.panel, surface, tree(window))
+    ui.show(window.panel, surface, view(window))
   end,
   event = function(window, event)
     if event.type == "shown" then
       refresh(window)
     end
 
-    ui.event(window.panel, event)
+    -- Return edits the chosen setting, when no element of the window takes it
+    if not ui.event(window.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #window.settings > 0 then
+      edit(window)
+    end
   end,
 })
 
@@ -318,10 +309,10 @@ local services = {}
 
 -- opens the settings window, or shows the one that is open
 function services.open()
-  local open = next(windows)
+  local openWindow = next(windows)
 
-  if open then
-    ecs.layout.focus(open)
+  if openWindow then
+    ecs.layout.focus(openWindow)
     return
   end
 
@@ -335,21 +326,13 @@ end
 -- each function acts on the settings window it gets, unless one of its fields has the keys
 local function forWindow(act)
   return function(panel)
-    local window = findWindow(panel)
+    local window = windows[panel]
 
     if window and #window.settings > 0 and not ui.focus(panel) then
       act(window)
     end
   end
 end
-
-services.up = forWindow(function(window)
-  ui.move(window.panel, LIST, -1)
-end)
-
-services.down = forWindow(function(window)
-  ui.move(window.panel, LIST, 1)
-end)
 
 services.previous = forWindow(function(window)
   change(window, -1)
@@ -359,31 +342,8 @@ services.next = forWindow(function(window)
   change(window, 1)
 end)
 
--- while a field has the keys, the key of edit saves what is typed, as Return does in the field
-function services.edit(panel)
-  local window = findWindow(panel)
-
-  if window and ui.focus(panel) then
-    ui.event(panel, { type = "keyDown", key = "Return", shift = false, ctrl = false, alt = false, super = false })
-  elseif window and #window.settings > 0 then
-    edit(window)
-  end
-end
-
 assert(ecs.service.register({
   open = { sig = "void()", doc = "Open settings", fn = services.open },
-  up = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Choose the setting above\n"
-        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
-    fn = services.up,
-  },
-  down = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Choose the setting below\n"
-        .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
-    fn = services.down,
-  },
   previous = {
     sig = "void(handle<ecs.panel> panel)",
     doc = "Change the chosen setting one step back\n"
@@ -396,15 +356,9 @@ assert(ecs.service.register({
         .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
     fn = services.next,
   },
-  edit = {
-    sig = "void(handle<ecs.panel> panel)",
-    doc = "Toggle or cycle the chosen setting, or type its value\n"
-        .. "@param panel The settings window, as its keys pass the focused panel; while one of its fields has the keys, what is typed is saved",
-    fn = services.edit,
-  },
 }))
 
 -- default keys for the window; presets and the user's settings can change them
-for service, key in pairs({ up = "Up", down = "Down", previous = "Left", next = "Right", edit = "Return" }) do
+for service, key in pairs({ previous = "Left", next = "Right" }) do
   assert(ecs.input.bind("settings.window", key, "settings." .. service))
 end

@@ -16,6 +16,9 @@
 #include <wincrypt.h>
 #endif
 
+#define STB_DS_IMPLEMENTATION
+#include "stbSDL3.h"
+
 #pragma region Source Only
 
 /// @brief The most redirects a request follows.
@@ -26,14 +29,11 @@
 
 struct WebRequest;
 
-/// @brief A WebSocket message, in a list.
+/// @brief A WebSocket message.
 typedef struct WebMessage
 {
-    u8 *data;
-    usz size;
-    usz capacity;
+    u8 *data; // stb_ds array of its bytes
     bool text;
-    struct WebMessage *next;
 } WebMessage;
 
 /// @brief The function that gets a request once it is done: void(handle<web.request>). It is a kept callback (OpenECS DESIGN 10.4).
@@ -46,96 +46,90 @@ typedef struct WebRequest
     CURL *easy;
     struct curl_slist *headers;
     char error[CURL_ERROR_SIZE];
-    u8 *body; // what has arrived
-    usz size;
-    usz capacity;
+    u8 *body;   // stb_ds array of what has arrived
     i32 status; // the HTTP status once done, or -1 if it failed
     bool done;
-    bool forgotten;  // freed by its owner while it runs; the plugin's thread frees it
-    bool running;    // given to the multi handle, on the plugin's thread
-    struct WebRequest *next;      // in the queue of new requests
-    struct WebRequest *forgottenNext; // in the queue of forgotten requests; apart from next, which the plugin's thread may still read after it took the queue
-    WebDoneFunction Done;     // main thread: the function to call once it is done, or nullptr once called
-    struct WebRequest *after; // main thread: in the list of every request that is not freed
+    bool forgotten;       // freed by its owner while it runs; the plugin's thread frees it
+    bool running;         // given to the multi handle, on the plugin's thread
+    WebDoneFunction Done; // main thread: the function to call once it is done, or nullptr once called
 
     // a WebSocket connection's; the lock guards open and the lists, and the rest belongs to the thread that the note names
     bool socket;
-    bool open;                    // the server took the connection
-    WebMessage *inbox;            // the messages that arrived, oldest first
-    WebMessage *outbox;           // the messages to send, oldest first
-    bool waking;                  // in the queue of connections with messages to send
-    struct WebRequest *wakeNext;  // in that queue
-    bool paused;                  // plugin's thread: nothing was left to send, so curl waits until it is woken
-    WebMessage *partial;          // plugin's thread: the message that is arriving
-    WebMessage *sending;          // plugin's thread: the message that is going out
-    usz sent;                     // plugin's thread: how much of it went
-    WebMessage *taken;            // main thread: the message that the last receive gave, kept until the next one
+    bool open;            // the server took the connection
+    WebMessage **inbox;   // stb_ds array of the messages that arrived, oldest first
+    WebMessage **outbox;  // stb_ds array of the messages to send, oldest first
+    bool waking;          // in the list of connections with messages to send
+    bool paused;          // plugin's thread: nothing was left to send, so curl waits until it is woken
+    WebMessage *partial;  // plugin's thread: the message that is arriving
+    WebMessage *sending;  // plugin's thread: the message that is going out
+    usz sent;             // plugin's thread: how much of it went
+    WebMessage *taken;    // main thread: the message that the last receive gave, kept until the next one
 } WebRequest;
 
 static struct
 {
     ECSPlugin plugin;
-    bool curl;           // curl_global_init worked
-    CURLM *multi;        // used only on the plugin's thread, except to wake it
-    SDL_Thread *thread;  // started by the first request
+    bool curlStarted;           // curl_global_init worked
+    CURLM *multi;               // used only on the plugin's thread, except to wake it
+    SDL_Thread *thread;         // started by the first request
     SDL_Mutex *lock;
-    WebRequest *added;     // waiting for the plugin's thread
-    WebRequest *forgotten; // running, freed by their owner
-    WebRequest *wake;      // connections with messages to send
+    WebRequest **added;         // stb_ds array of the requests waiting for the plugin's thread
+    WebRequest **forgotten;     // stb_ds array of the running requests that their owner freed
+    WebRequest **waking;        // stb_ds array of the connections with messages to send
     bool quit;
-    const char *certificates; // the system's file of trusted certificates, or nullptr
-    char *storeCertificates;  // on Windows without such a file, the certificates of its store as PEM text that ends with a zero, or nullptr
-    usz storeLength;          // of storeCertificates, with its zero
-    WebRequest *all;          // main thread: every request that is not freed
-    ECSTimer timer;           // main thread: calls the functions of the requests that are done, while some wait
+    const char *certificates;   // the system's file of trusted certificates, or nullptr
+    char *storeCertificates;    // on Windows without such a file, stb_ds array of the certificates of its store as PEM text that ends with a zero, or nullptr
+    WebRequest **all;           // main thread: stb_ds array of every request that is not freed, oldest first
+    ECSTimer timer;             // main thread: calls the functions of the requests that are done, while some wait
 } WEB = {0};
+
+/// @brief Removes a request from a list, an stb_ds array, if it is there.
+static void WebRemove(WebRequest ***list, WebRequest *request)
+{
+    for (usz i = 0; i < arrlenu(*list); i++)
+    {
+        if ((*list)[i] == request)
+        {
+            arrdel(*list, i);
+            return;
+        }
+    }
+}
+
+/// @brief Adds bytes at the end of an stb_ds array.
+static void WebAppendBytes(u8 **bytes, const void *data, usz size)
+{
+    if (size > 0)
+    {
+        SDL_memcpy(arraddnptr(*bytes, size), data, size);
+    }
+}
+
+static void WebFreeMessage(WebMessage *message)
+{
+    if (message != nullptr)
+    {
+        arrfree(message->data);
+        SDL_free(message);
+    }
+}
+
+static void WebFreeMessages(WebMessage **messages)
+{
+    for (usz i = 0; i < arrlenu(messages); i++)
+    {
+        WebFreeMessage(messages[i]);
+    }
+
+    arrfree(messages);
+}
 
 /// @brief Keeps what arrives, on the plugin's thread.
 static size_t WebWrite(char *data, size_t size, size_t count, void *user)
 {
     WebRequest *request = user;
-    usz length = size * count;
-
-    if (request->size + length > request->capacity)
-    {
-        usz capacity = SDL_max(request->capacity * 2, request->size + length);
-        u8 *body = SDL_realloc(request->body, capacity);
-
-        if (body == nullptr)
-        {
-            return CURL_WRITEFUNC_ERROR;
-        }
-
-        request->body = body;
-        request->capacity = capacity;
-    }
-
-    SDL_memcpy(request->body + request->size, data, length);
-    request->size += length;
-    return length;
-}
-
-/// @brief Frees a list of messages.
-static void WebFreeMessages(WebMessage *message)
-{
-    while (message != nullptr)
-    {
-        WebMessage *next = message->next;
-        SDL_free(message->data);
-        SDL_free(message);
-        message = next;
-    }
-}
-
-/// @brief Adds a message at the end of a list.
-static void WebAppend(WebMessage **list, WebMessage *message)
-{
-    while (*list != nullptr)
-    {
-        list = &(*list)->next;
-    }
-
-    *list = message;
+    WebAppendBytes(&request->body, data, size * count);
+    return size * count;
 }
 
 /// @brief Keeps a piece of a WebSocket message that arrives, on the plugin's thread; a whole message goes to the inbox.
@@ -151,45 +145,27 @@ static size_t WebSocketWrite(char *data, size_t size, size_t count, void *user)
         return length;
     }
 
-    WebMessage *message = request->partial;
-
-    if (message == nullptr)
+    if (request->partial == nullptr)
     {
-        message = SDL_calloc(1, sizeof(WebMessage));
+        request->partial = SDL_calloc(1, sizeof(WebMessage));
 
-        if (message == nullptr)
+        if (request->partial == nullptr)
         {
             return CURL_WRITEFUNC_ERROR;
         }
 
-        message->text = (frame->flags & CURLWS_TEXT) != 0;
-        request->partial = message;
+        request->partial->text = (frame->flags & CURLWS_TEXT) != 0;
     }
 
-    if (message->size + length > message->capacity)
-    {
-        usz capacity = SDL_max(message->capacity * 2, message->size + length);
-        u8 *bytes = SDL_realloc(message->data, capacity);
-
-        if (bytes == nullptr)
-        {
-            return CURL_WRITEFUNC_ERROR;
-        }
-
-        message->data = bytes;
-        message->capacity = capacity;
-    }
-
-    SDL_memcpy(message->data + message->size, data, length);
-    message->size += length;
+    WebAppendBytes(&request->partial->data, data, length);
 
     // the last piece of the last frame of a message ends it; CURLWS_CONT marks every frame but the last
     if (frame->bytesleft == 0 && (frame->flags & CURLWS_CONT) == 0)
     {
-        request->partial = nullptr;
         SDL_LockMutex(WEB.lock);
-        WebAppend(&request->inbox, message);
+        arrput(request->inbox, request->partial);
         SDL_UnlockMutex(WEB.lock);
+        request->partial = nullptr;
     }
 
     return length;
@@ -205,11 +181,10 @@ static size_t WebSocketRead(char *buffer, size_t size, size_t count, void *user)
     SDL_LockMutex(WEB.lock);
     request->open = true;
 
-    if (request->sending == nullptr && request->outbox != nullptr)
+    if (request->sending == nullptr && arrlenu(request->outbox) > 0)
     {
-        request->sending = request->outbox;
-        request->outbox = request->outbox->next;
-        request->sending->next = nullptr;
+        request->sending = request->outbox[0];
+        arrdel(request->outbox, 0);
         request->sent = 0;
     }
 
@@ -223,18 +198,20 @@ static size_t WebSocketRead(char *buffer, size_t size, size_t count, void *user)
     }
 
     // a message is one frame, which starts with its first piece; an empty one is the frame's head alone
-    if (request->sent == 0 && curl_ws_start_frame(request->easy, message->text ? CURLWS_TEXT : CURLWS_BINARY, (curl_off_t)message->size) != CURLE_OK)
+    usz messageSize = arrlenu(message->data);
+
+    if (request->sent == 0 && curl_ws_start_frame(request->easy, message->text ? CURLWS_TEXT : CURLWS_BINARY, (curl_off_t)messageSize) != CURLE_OK)
     {
         return CURL_READFUNC_ABORT;
     }
 
-    usz length = SDL_min(room, message->size - request->sent);
+    usz length = SDL_min(room, messageSize - request->sent);
     SDL_memcpy(buffer, message->data + request->sent, length);
     request->sent += length;
 
-    if (request->sent == message->size)
+    if (request->sent == messageSize)
     {
-        WebFreeMessages(message);
+        WebFreeMessage(message);
         request->sending = nullptr;
     }
 
@@ -246,60 +223,35 @@ static void WebFreeMemory(WebRequest *request)
 {
     WebFreeMessages(request->inbox);
     WebFreeMessages(request->outbox);
-    WebFreeMessages(request->partial);
-    WebFreeMessages(request->sending);
-    WebFreeMessages(request->taken);
+    WebFreeMessage(request->partial);
+    WebFreeMessage(request->sending);
+    WebFreeMessage(request->taken);
     curl_easy_cleanup(request->easy);
     curl_slist_free_all(request->headers);
-    SDL_free(request->body);
+    arrfree(request->body);
     SDL_free(request);
 }
 
-/// @brief Frees a request on the main thread: it leaves the list, its function is released without a call, and one that runs stops.
+/// @brief Frees a request on the main thread: it leaves the lists, its function is released without a call, and one that runs stops.
 static void WebDelete(WebRequest *request)
 {
-    for (WebRequest **link = &WEB.all; *link != nullptr; link = &(*link)->after)
-    {
-        if (*link == request)
-        {
-            *link = request->after;
-            break;
-        }
-    }
-
+    WebRemove(&WEB.all, request);
     ECSService_ReleaseCallback((ECSFunction)request->Done);
     request->Done = nullptr;
 
-    // a request that runs is freed by the plugin's thread, which is the one that may touch it now
+    // a request that runs is freed by the plugin's thread, which is the one that may touch it now; one that waits in the queue leaves it,
+    // and so does a connection that waits to be woken
     SDL_LockMutex(WEB.lock);
     bool running = request->running && !request->done;
 
     if (running)
     {
         request->forgotten = true;
-        request->forgottenNext = WEB.forgotten;
-        WEB.forgotten = request;
+        arrput(WEB.forgotten, request);
     }
 
-    // a request that waits in the queue leaves it, and so does a connection that waits to be woken
-    for (WebRequest **link = &WEB.added; *link != nullptr; link = &(*link)->next)
-    {
-        if (*link == request)
-        {
-            *link = request->next;
-            break;
-        }
-    }
-
-    for (WebRequest **link = &WEB.wake; *link != nullptr; link = &(*link)->wakeNext)
-    {
-        if (*link == request)
-        {
-            *link = request->wakeNext;
-            break;
-        }
-    }
-
+    WebRemove(&WEB.added, request);
+    WebRemove(&WEB.waking, request);
     SDL_UnlockMutex(WEB.lock);
 
     if (running)
@@ -311,8 +263,8 @@ static void WebDelete(WebRequest *request)
     WebFreeMemory(request);
 }
 
-/// @brief The destructor of a request's handle. A request whose function waits goes on, and its function gets it in a new handle.
-static void WebDestroy(void *object)
+/// @brief The Destroy function of the handle types web.request and web.socket. A request whose function waits goes on, and its function gets it in a new handle.
+static void WebRequestDestroy(void *object)
 {
     WebRequest *request = object;
 
@@ -327,23 +279,22 @@ static void WebDestroy(void *object)
 static bool WebTakeQueues(void)
 {
     SDL_LockMutex(WEB.lock);
-    WebRequest *added = WEB.added;
-    WebRequest *forgotten = WEB.forgotten;
-    WebRequest *wake = WEB.wake;
+    WebRequest **added = WEB.added;
+    WebRequest **forgotten = WEB.forgotten;
     bool quit = WEB.quit;
     WEB.added = nullptr;
     WEB.forgotten = nullptr;
-    WEB.wake = nullptr;
 
-    for (WebRequest *request = added; request != nullptr; request = request->next)
+    for (usz i = 0; i < arrlenu(added); i++)
     {
-        request->running = true;
+        added[i]->running = true;
     }
 
     // a connection is woken only by the thread that runs it; one that is not paused sends its messages anyway, and one that ended has nothing to wake
     // the lock stays held, so the main thread cannot free one of them meanwhile; SDL's mutexes are recursive, so curl's callbacks still take it
-    for (WebRequest *request = wake; request != nullptr; request = request->wakeNext)
+    for (usz i = 0; i < arrlenu(WEB.waking); i++)
     {
+        WebRequest *request = WEB.waking[i];
         request->waking = false;
 
         if (request->paused && request->running && !request->done)
@@ -353,32 +304,29 @@ static bool WebTakeQueues(void)
         }
     }
 
+    arrfree(WEB.waking);
     SDL_UnlockMutex(WEB.lock);
 
-    while (added != nullptr)
+    for (usz i = 0; i < arrlenu(added); i++)
     {
-        WebRequest *next = added->next;
-
-        if (curl_multi_add_handle(WEB.multi, added->easy) != CURLM_OK)
+        if (curl_multi_add_handle(WEB.multi, added[i]->easy) != CURLM_OK)
         {
             SDL_LockMutex(WEB.lock);
-            SDL_strlcpy(added->error, "The request cannot start", sizeof(added->error));
-            added->status = -1;
-            added->done = true;
+            SDL_strlcpy(added[i]->error, "The request cannot start", sizeof(added[i]->error));
+            added[i]->status = -1;
+            added[i]->done = true;
             SDL_UnlockMutex(WEB.lock);
         }
-
-        added = next;
     }
 
-    while (forgotten != nullptr)
+    for (usz i = 0; i < arrlenu(forgotten); i++)
     {
-        WebRequest *next = forgotten->forgottenNext;
-        curl_multi_remove_handle(WEB.multi, forgotten->easy);
-        WebFreeMemory(forgotten);
-        forgotten = next;
+        curl_multi_remove_handle(WEB.multi, forgotten[i]->easy);
+        WebFreeMemory(forgotten[i]);
     }
 
+    arrfree(added);
+    arrfree(forgotten);
     return !quit;
 }
 
@@ -435,7 +383,7 @@ static int WebRun(void *data)
 }
 
 /// @brief Starts the plugin's thread, once.
-static bool WebStart(void)
+static bool WebStartThread(void)
 {
     if (WEB.thread == nullptr)
     {
@@ -473,12 +421,12 @@ static const char *WebFindCertificates(void)
 }
 
 #if defined(SDL_PLATFORM_WINDOWS)
-/// @brief Gives the certificates of Windows' store of trusted root certificates as PEM text that ends with a zero, which libcurl takes as a blob, or nullptr. Free it with SDL_free.
-static char *WebReadWindowsCertificates(usz *retLength)
+/// @brief Gives the certificates of Windows' store of trusted root certificates as PEM text that ends with a zero, which libcurl takes as a blob, in
+/// an stb_ds array, or nullptr. Free it with arrfree.
+static char *WebReadWindowsCertificates(void)
 {
     HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
     char *text = nullptr;
-    usz length = 0;
 
     if (store == nullptr)
     {
@@ -486,42 +434,30 @@ static char *WebReadWindowsCertificates(usz *retLength)
     }
 
     // each call frees the certificate it is given, and the last one gives nullptr
-    PCCERT_CONTEXT certificate = nullptr;
-
-    while ((certificate = CertEnumCertificatesInStore(store, certificate)) != nullptr)
+    for (PCCERT_CONTEXT certificate = CertEnumCertificatesInStore(store, nullptr); certificate != nullptr; certificate = CertEnumCertificatesInStore(store, certificate))
     {
         // the first call gives the size with the zero; the second writes the text, between BEGIN and END CERTIFICATE lines, and gives its size without it
         DWORD size = 0;
 
         if (CryptBinaryToStringA(certificate->pbCertEncoded, certificate->cbCertEncoded, CRYPT_STRING_BASE64HEADER, nullptr, &size))
         {
-            char *more = SDL_realloc(text, length + size + 1);
-
-            if (more == nullptr)
-            {
-                CertFreeCertificateContext(certificate);
-                break;
-            }
-
-            text = more;
-
-            if (CryptBinaryToStringA(certificate->pbCertEncoded, certificate->cbCertEncoded, CRYPT_STRING_BASE64HEADER, text + length, &size))
-            {
-                length += size;
-            }
+            usz length = arrlenu(text);
+            char *room = arraddnptr(text, (usz)size);
+            DWORD written = size;
+            bool converted = CryptBinaryToStringA(certificate->pbCertEncoded, certificate->cbCertEncoded, CRYPT_STRING_BASE64HEADER, room, &written);
+            arrsetlen(text, length + (converted ? (usz)written : 0));
         }
     }
 
     CertCloseStore(store, 0);
 
-    if (text == nullptr || length == 0)
+    if (arrlenu(text) == 0)
     {
-        SDL_free(text);
+        arrfree(text);
         return nullptr;
     }
 
-    text[length] = '\0';
-    *retLength = length + 1;
+    arrput(text, '\0');
     return text;
 }
 #endif
@@ -531,7 +467,7 @@ static bool WebSetCertificates(CURL *easy)
 {
     if (WEB.storeCertificates != nullptr)
     {
-        struct curl_blob blob = {.data = WEB.storeCertificates, .len = WEB.storeLength, .flags = CURL_BLOB_NOCOPY};
+        struct curl_blob blob = {.data = WEB.storeCertificates, .len = arrlenu(WEB.storeCertificates), .flags = CURL_BLOB_NOCOPY};
         return curl_easy_setopt(easy, CURLOPT_CAINFO_BLOB, &blob) == CURLE_OK;
     }
 
@@ -563,6 +499,72 @@ static bool WebSetMethod(CURL *easy, const char *method, SHUSlice body)
     return ok && curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method) == CURLE_OK;
 }
 
+/// @brief The timeout of the setting web.timeout, in milliseconds.
+static long WebTimeout(void)
+{
+    f64 timeout = ECSValue_GetNumber(ECSSetting_Get("web.timeout"), 30.0);
+    return (long)(SDL_max(timeout, 0.0) * 1000.0);
+}
+
+/// @brief Makes a request or a WebSocket connection to a URL, with headers, a list of texts, and what every one of them sets: where its answer goes,
+/// its error, its user agent and the trusted certificates. The caller sets the rest, and queues it.
+/// @return The request, or nullptr if it cannot be made.
+static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl_write_callback Write)
+{
+    WebRequest *request = SDL_calloc(1, sizeof(WebRequest));
+
+    if (request == nullptr)
+    {
+        return nullptr;
+    }
+
+    request->easy = curl_easy_init();
+
+    if (request->easy == nullptr || !WebStartThread())
+    {
+        WebFreeMemory(request);
+        return nullptr;
+    }
+
+    for (usz i = 0; i < ECSValue_GetListCount(headers); i++)
+    {
+        struct curl_slist *list = curl_slist_append(request->headers, ECSValue_GetString(ECSValue_GetListItem(headers, i), ""));
+
+        if (list == nullptr)
+        {
+            WebFreeMemory(request);
+            return nullptr;
+        }
+
+        request->headers = list;
+    }
+
+    CURL *easy = request->easy;
+    bool ok = curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, Write) == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_WRITEDATA, request) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK && WebSetCertificates(easy) &&
+              curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
+
+    if (!ok)
+    {
+        WebFreeMemory(request);
+        return nullptr;
+    }
+
+    return request;
+}
+
+/// @brief Gives a request to the plugin's thread, which runs it.
+static void WebQueue(WebRequest *request)
+{
+    arrput(WEB.all, request);
+    SDL_LockMutex(WEB.lock);
+    arrput(WEB.added, request);
+    SDL_UnlockMutex(WEB.lock);
+    curl_multi_wakeup(WEB.multi);
+}
+
 static bool WebDone(WebRequest *request);
 
 /// @brief Calls the functions of the requests that are done, one at a time, because a function may free requests.
@@ -573,13 +575,13 @@ static void WebCallDone(void *data)
 
     while (waiting)
     {
-        WebRequest *request = WEB.all;
+        WebRequest *request = nullptr;
         waiting = false;
 
-        while (request != nullptr && (request->Done == nullptr || !WebDone(request)))
+        for (usz i = 0; request == nullptr && i < arrlenu(WEB.all); i++)
         {
-            waiting = waiting || request->Done != nullptr;
-            request = request->after;
+            waiting = waiting || WEB.all[i]->Done != nullptr;
+            request = WEB.all[i]->Done != nullptr && WebDone(WEB.all[i]) ? WEB.all[i] : nullptr;
         }
 
         if (request == nullptr)
@@ -601,53 +603,22 @@ static void WebCallDone(void *data)
     }
 }
 
-static WebRequest *WebRequestNew(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
+static WebRequest *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
 {
-    WebRequest *request = SDL_calloc(1, sizeof(WebRequest));
-    CURL *easy = request == nullptr ? nullptr : curl_easy_init();
+    WebRequest *request = WebNewTransfer(url, headers, WebWrite);
 
-    if (easy == nullptr || !WebStart())
+    if (request == nullptr)
     {
-        SDL_free(request);
-        curl_easy_cleanup(easy);
+        ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
         ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
     }
 
-    request->easy = easy;
-    f64 timeout = ECSValue_GetNumber(ECSSetting_Get("web.timeout"), 30.0);
-
-    // the headers are a list of texts, such as "Accept: text/html"
-    bool ok = true;
-
-    for (usz i = 0; ok && i < ECSValue_GetListCount(headers); i++)
-    {
-        struct curl_slist *list = curl_slist_append(request->headers, ECSValue_GetString(ECSValue_GetListItem(headers, i), ""));
-        ok = list != nullptr;
-        request->headers = ok ? list : request->headers;
-    }
-
-    ok = ok && curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, WebWrite) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_WRITEDATA, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, (long)(SDL_max(timeout, 0.0) * 1000.0)) == CURLE_OK &&
-              WebSetCertificates(easy) &&
-              WebSetMethod(easy, method, body);
-
-    ok = ok && curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
-
-    if (Done != nullptr && WEB.timer == nullptr)
-    {
-        ok = ok && ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok;
-    }
+    CURL *easy = request->easy;
+    bool ok = curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, WebTimeout()) == CURLE_OK && WebSetMethod(easy, method, body) &&
+              (Done == nullptr || WEB.timer != nullptr || ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok);
 
     if (!ok)
     {
@@ -658,20 +629,13 @@ static WebRequest *WebRequestNew(const char *method, const char *url, const ECSV
     }
 
     request->Done = Done;
-    request->after = WEB.all;
-    WEB.all = request;
-
-    SDL_LockMutex(WEB.lock);
-    request->next = WEB.added;
-    WEB.added = request;
-    SDL_UnlockMutex(WEB.lock);
-    curl_multi_wakeup(WEB.multi);
+    WebQueue(request);
     return request;
 }
 
 static WebRequest *WebGet(const char *url, WebDoneFunction Done)
 {
-    return WebRequestNew("GET", url, nullptr, (SHUSlice){0}, Done);
+    return WebNewRequest("GET", url, nullptr, cs(nullptr, 0), Done);
 }
 
 static i32 WebStatus(WebRequest *request)
@@ -689,7 +653,7 @@ static bool WebDone(WebRequest *request)
 
 static SHUSlice WebBody(WebRequest *request)
 {
-    return WebDone(request) ? (SHUSlice){.data = request->body, .size = request->size} : (SHUSlice){0};
+    return WebDone(request) ? cs(request->body, arrlenu(request->body)) : cs(nullptr, 0);
 }
 
 static const char *WebHeader(WebRequest *request, const char *name)
@@ -711,53 +675,29 @@ static const char *WebError(WebRequest *request)
 }
 
 /// @brief Frees a request now, instead of when no one uses its handle; one that runs stops, and its function is not called.
-static void WebFree(WebRequest *request)
+static void WebFreeRequest(WebRequest *request)
 {
     ECSHandle_Forget(request);
     WebDelete(request);
 }
 
 /// @brief Starts a WebSocket connection to a ws:// or wss:// URL, with headers, a list of texts.
-static WebRequest *WebSocketOpen(const char *url, const ECSValue *headers)
+static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
 {
-    WebRequest *request = SDL_calloc(1, sizeof(WebRequest));
-    CURL *easy = request == nullptr ? nullptr : curl_easy_init();
+    // the connection goes on until one side closes it, so the timeout limits only how long it takes to connect;
+    // curl asks the read function for messages to send, as for an upload
+    WebRequest *request = WebNewTransfer(url, headers, WebSocketWrite);
 
-    if (easy == nullptr || !WebStart())
+    if (request == nullptr)
     {
-        SDL_free(request);
-        curl_easy_cleanup(easy);
+        ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
         return nullptr;
     }
 
-    request->easy = easy;
-    request->socket = true;
-    f64 timeout = ECSValue_GetNumber(ECSSetting_Get("web.timeout"), 30.0);
-    bool ok = true;
-
-    for (usz i = 0; ok && i < ECSValue_GetListCount(headers); i++)
-    {
-        struct curl_slist *list = curl_slist_append(request->headers, ECSValue_GetString(ECSValue_GetListItem(headers, i), ""));
-        ok = list != nullptr;
-        request->headers = ok ? list : request->headers;
-    }
-
-    // the connection goes on until one side closes it, so the timeout limits only how long it takes to connect;
-    // curl asks the read function for messages to send, as for an upload
-    ok = ok && curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, WebSocketWrite) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_WRITEDATA, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_UPLOAD, 1L) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, (long)(SDL_max(timeout, 0.0) * 1000.0)) == CURLE_OK &&
-              WebSetCertificates(easy) &&
-              curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
+    CURL *easy = request->easy;
+    bool ok = curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_UPLOAD, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
+              curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, WebTimeout()) == CURLE_OK;
 
     if (!ok)
     {
@@ -766,14 +706,8 @@ static WebRequest *WebSocketOpen(const char *url, const ECSValue *headers)
         return nullptr;
     }
 
-    request->after = WEB.all;
-    WEB.all = request;
-
-    SDL_LockMutex(WEB.lock);
-    request->next = WEB.added;
-    WEB.added = request;
-    SDL_UnlockMutex(WEB.lock);
-    curl_multi_wakeup(WEB.multi);
+    request->socket = true;
+    WebQueue(request);
     return request;
 }
 
@@ -789,28 +723,29 @@ static i32 WebSocketStatus(WebRequest *socket)
 /// @return false if the connection failed or closed, or memory runs out.
 static bool WebSocketSend(WebRequest *socket, SHUSlice data, bool text)
 {
-    WebMessage *message = SDL_calloc(1, sizeof(WebMessage));
-    u8 *bytes = message == nullptr ? nullptr : SDL_malloc(SDL_max(data.size, (usz)1));
-
-    if (bytes == nullptr || WebSocketStatus(socket) < 0)
+    if (WebSocketStatus(socket) < 0)
     {
-        SDL_free(message);
-        SDL_free(bytes);
         return false;
     }
 
-    SDL_memcpy(bytes, data.data, data.size);
-    *message = (WebMessage){.data = bytes, .size = data.size, .capacity = data.size, .text = text};
+    WebMessage *message = SDL_calloc(1, sizeof(WebMessage));
+
+    if (message == nullptr)
+    {
+        return false;
+    }
+
+    message->text = text;
+    WebAppendBytes(&message->data, data.data, data.size);
 
     // the plugin's thread wakes the connection, since curl wants it woken from the thread that runs it
     SDL_LockMutex(WEB.lock);
-    WebAppend(&socket->outbox, message);
+    arrput(socket->outbox, message);
 
     if (!socket->waking)
     {
         socket->waking = true;
-        socket->wakeNext = WEB.wake;
-        WEB.wake = socket;
+        arrput(WEB.waking, socket);
     }
 
     SDL_UnlockMutex(WEB.lock);
@@ -819,26 +754,29 @@ static bool WebSocketSend(WebRequest *socket, SHUSlice data, bool text)
 }
 
 /// @brief Takes the oldest message that arrived, and whether it is "text" or "binary"; nothing if none waits. The message is kept until the next receive.
-static SHUSlice WebSocketReceive(WebRequest *socket, const char **retKind)
+static SHUSlice WebSocketReceive(WebRequest *socket, const char **retType)
 {
-    WebFreeMessages(socket->taken);
+    WebFreeMessage(socket->taken);
+    socket->taken = nullptr;
+    *retType = nullptr;
 
     SDL_LockMutex(WEB.lock);
-    WebMessage *message = socket->inbox;
-    socket->inbox = message == nullptr ? nullptr : message->next;
-    SDL_UnlockMutex(WEB.lock);
 
-    socket->taken = message;
-
-    if (message == nullptr)
+    if (arrlenu(socket->inbox) > 0)
     {
-        *retKind = nullptr;
-        return (SHUSlice){0};
+        socket->taken = socket->inbox[0];
+        arrdel(socket->inbox, 0);
     }
 
-    message->next = nullptr;
-    *retKind = message->text ? "text" : "binary";
-    return (SHUSlice){.data = message->data, .size = message->size};
+    SDL_UnlockMutex(WEB.lock);
+
+    if (socket->taken == nullptr)
+    {
+        return cs(nullptr, 0);
+    }
+
+    *retType = socket->taken->text ? "text" : "binary";
+    return cs(socket->taken->data, arrlenu(socket->taken->data));
 }
 
 static const char *WebSocketError(WebRequest *socket)
@@ -846,7 +784,8 @@ static const char *WebSocketError(WebRequest *socket)
     return WebSocketStatus(socket) < 0 ? socket->error : "";
 }
 
-static void WebQuit(void *data)
+/// @brief Stops the plugin's thread and frees the requests left; the Destroy function of the plugin.
+static void WebFree(void *data)
 {
     (void)data;
 
@@ -865,24 +804,26 @@ static void WebQuit(void *data)
         ECSTimer_Stop(&WEB.timer);
     }
 
-    while (WEB.all != nullptr)
+    for (usz i = 0; i < arrlenu(WEB.all); i++)
     {
-        WebRequest *request = WEB.all;
-        WEB.all = request->after;
-        ECSService_ReleaseCallback((ECSFunction)request->Done);
-        curl_multi_remove_handle(WEB.multi, request->easy);
-        WebFreeMemory(request);
+        ECSService_ReleaseCallback((ECSFunction)WEB.all[i]->Done);
+        curl_multi_remove_handle(WEB.multi, WEB.all[i]->easy);
+        WebFreeMemory(WEB.all[i]);
     }
 
     curl_multi_cleanup(WEB.multi);
 
-    if (WEB.curl)
+    if (WEB.curlStarted)
     {
         curl_global_cleanup();
     }
 
     SDL_DestroyMutex(WEB.lock);
-    SDL_free(WEB.storeCertificates);
+    arrfree(WEB.all);
+    arrfree(WEB.added);
+    arrfree(WEB.forgotten);
+    arrfree(WEB.waking);
+    arrfree(WEB.storeCertificates);
     SDL_zero(WEB);
 }
 
@@ -894,14 +835,14 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     // curl and mbedTLS take memory from SDL's allocator, as the core does
     mbedtls_platform_set_calloc_free(SDL_calloc, SDL_free);
-    WEB.curl = curl_global_init_mem(CURL_GLOBAL_DEFAULT, SDL_malloc, SDL_free, SDL_realloc, SDL_strdup, SDL_calloc) == CURLE_OK;
-    WEB.multi = WEB.curl ? curl_multi_init() : nullptr;
+    WEB.curlStarted = curl_global_init_mem(CURL_GLOBAL_DEFAULT, SDL_malloc, SDL_free, SDL_realloc, SDL_strdup, SDL_calloc) == CURLE_OK;
+    WEB.multi = WEB.curlStarted ? curl_multi_init() : nullptr;
     WEB.lock = SDL_CreateMutex();
 
     if (WEB.multi == nullptr || WEB.lock == nullptr)
     {
         ECS_LogError(plugin, "Cannot start libcurl");
-        WebQuit(nullptr);
+        WebFree(nullptr);
         return SHUResult_ErrInternal;
     }
 
@@ -909,7 +850,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     WEB.certificates = WebFindCertificates();
 
 #if defined(SDL_PLATFORM_WINDOWS)
-    WEB.storeCertificates = WEB.certificates == nullptr ? WebReadWindowsCertificates(&WEB.storeLength) : nullptr;
+    WEB.storeCertificates = WEB.certificates == nullptr ? WebReadWindowsCertificates() : nullptr;
 #endif
 
     if (WEB.certificates == nullptr && WEB.storeCertificates == nullptr)
@@ -936,7 +877,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param url The URL, http:// or https://; one with another scheme fails\n"
          "@param done Called once, on the main thread, when the request is done or failed; its request is the request, in a new handle if the first was dropped; not called if the request is freed first; nothing for no call\n"
          "@return The request, or nothing if it cannot be made"},
-        {"request", (ECSFunction)WebRequestNew, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)",
+        {"request", (ECSFunction)WebNewRequest, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)",
          "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done\n"
          "@param method The method, such as \"GET\", \"POST\" or \"HEAD\"\n"
          "@param url The URL, http:// or https://; one with another scheme fails\n"
@@ -961,10 +902,10 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Give why a request failed\n"
          "@param request The request\n"
          "@return Why it failed; empty while it runs or if it did not fail"},
-        {"free", (ECSFunction)WebFree, "void(handle<web.request> request)",
+        {"free", (ECSFunction)WebFreeRequest, "void(handle<web.request> request)",
          "Free a request now; one that runs stops\n"
          "@param request The request; its handle must not be used after, and its done is not called"},
-        {"socket", (ECSFunction)WebSocketOpen, "handle<web.socket>(string url, value<string[]?> headers)",
+        {"socket", (ECSFunction)WebOpenSocket, "handle<web.socket>(string url, value<string[]?> headers)",
          "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")\n"
          "@param url The URL, ws:// or wss://\n"
          "@param headers The headers, each a text such as \"Origin: http://localhost\"; nothing for none\n"
@@ -979,30 +920,30 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param data The message, copied; it goes in one frame\n"
          "@param text True: it goes as text; false: as bytes\n"
          "@return False if the connection failed or closed"},
-        {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string kind)",
-         "Take the oldest message that arrived, and its kind, \"text\" or \"binary\"; nothing if none has\n"
+        {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string type)",
+         "Take the oldest message that arrived, and its type, \"text\" or \"binary\"; nothing if none has\n"
          "@param socket The connection\n"
-         "@param kind The message's kind, \"text\" or \"binary\"; nothing if no message waits\n"
+         "@param type The message's type, \"text\" or \"binary\"; nothing if no message waits\n"
          "@return The message, whole, kept until the next receive on the connection; empty if none waits"},
         {"socketError", (ECSFunction)WebSocketError, "string(handle<web.socket> socket)",
          "Give why a connection failed or closed\n"
          "@param socket The connection\n"
          "@return Why it failed or closed; empty while it connects or is open"},
-        {"socketClose", (ECSFunction)WebFree, "void(handle<web.socket> socket)",
+        {"socketClose", (ECSFunction)WebFreeRequest, "void(handle<web.socket> socket)",
          "Close a connection and free it now\n"
          "@param socket The connection; its handle must not be used after"},
     };
 
     // a plugin whose Init fails is not destroyed, so it cleans up here
-    const ECSPluginDesc desc = {.Destroy = WebQuit};
-    SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), WebQuit(nullptr););
-    SHU_ReturnResult(ECSSetting_Declare(plugin, &timeout), WebQuit(nullptr););
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "request", WebDestroy), WebQuit(nullptr););
-    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "socket", WebDestroy), WebQuit(nullptr););
+    const ECSPluginDesc desc = {.Destroy = WebFree};
+    SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), WebFree(nullptr););
+    SHU_ReturnResult(ECSSetting_Declare(plugin, &timeout), WebFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "request", WebRequestDestroy), WebFree(nullptr););
+    SHU_ReturnResult(ECSHandle_RegisterType(plugin, "socket", WebRequestDestroy), WebFree(nullptr););
 
     for (usz i = 0; i < (usz)SDL_arraysize(functions); i++)
     {
-        SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), WebQuit(nullptr););
+        SHU_ReturnResult(ECSService_RegisterFunction(plugin, functions[i].name, functions[i].function, functions[i].signature, functions[i].description), WebFree(nullptr););
     }
 
     // Lua calls these on a handle, such as handle:status(...); C calls the functions themselves (OpenECS DESIGN 10.6)
@@ -1026,7 +967,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     for (usz i = 0; i < SDL_arraysize(methods); i++)
     {
-        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), WebQuit(nullptr););
+        SHU_ReturnResult(ECSHandle_AddMethod(plugin, methods[i].type, methods[i].method, methods[i].function), WebFree(nullptr););
     }
 
     return SHUResult_Ok;

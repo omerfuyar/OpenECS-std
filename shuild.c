@@ -16,7 +16,9 @@ typedef enum BuildType
 } BuildType;
 
 static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"};
-#define BuildType_String(buildType) BUILD_TYPE_STRINGS[(buildType)]
+
+/// @brief The number of items of an array.
+#define COUNT(array) (sizeof(array) / sizeof(*(array)))
 
 /// @brief What the flags choose.
 static struct
@@ -90,7 +92,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
     {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, {NULL}, false},
     {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", NULL}, false},
-    {"gltf", {"cgltf", NULL}, NULL, {NULL}, {NULL}, false},
+    {"gltf", {"cgltf", "cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {"crypt32", NULL}, true},
     {"gpu", {NULL}, NULL, {NULL}, {NULL}, true, {&GLSLANG, &SPIRV_CROSS, NULL}},
@@ -107,25 +109,8 @@ static void BuildPlugin(const char *path, const char *name);
 
 #pragma endregion Declarations
 
-/// @brief The compiler that the flags name, or gcc.
-static const char *CompilerArgument(int argc, char **argv)
-{
-    for (int i = 1; i + 1 < argc; i++)
-    {
-        if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--compiler"))
-        {
-            return argv[i + 1];
-        }
-    }
-
-    return CONFIG.compiler;
-}
-
 int main(int argc, char **argv)
 {
-    CONFIG.compiler = CompilerArgument(argc, argv);
-    SHU_CompilerConfigureTry(CONFIG.compiler);
-    CONFIG.windows = SHU_CompilerGetTarget() == SHUPlatform_Windows;
     SetupConfiguration(argc, argv);
 
     // cglm's headers go to OpenECS's include/, beside SDL's, so C plugins get cglm through the cglm plugin's header (DESIGN 16)
@@ -171,12 +156,12 @@ static void SetupConfiguration(int argc, char **argv)
             const char *name = i + 1 < argc ? argv[++i] : "";
             usz type = 0;
 
-            while (type < sizeof(BUILD_TYPE_STRINGS) / sizeof(*BUILD_TYPE_STRINGS) && strcasecmp(name, BuildType_String(type)) != 0)
+            while (type < COUNT(BUILD_TYPE_STRINGS) && strcasecmp(name, BUILD_TYPE_STRINGS[type]) != 0)
             {
                 type++;
             }
 
-            if (type == sizeof(BUILD_TYPE_STRINGS) / sizeof(*BUILD_TYPE_STRINGS))
+            if (type == COUNT(BUILD_TYPE_STRINGS))
             {
                 Refuse("Unknown build type", name);
             }
@@ -189,8 +174,7 @@ static void SetupConfiguration(int argc, char **argv)
         }
         else if (!strcmp(flag, "-c") || !strcmp(flag, "--compiler"))
         {
-            // main configured the compiler already
-            i++;
+            CONFIG.compiler = i + 1 < argc ? argv[++i] : CONFIG.compiler;
         }
         else if (!strcmp(flag, "-h") || !strcmp(flag, "--help"))
         {
@@ -206,6 +190,9 @@ static void SetupConfiguration(int argc, char **argv)
     {
         Refuse("The output folder is missing, or does not end with /", CONFIG.output == NULL ? "" : CONFIG.output);
     }
+
+    SHU_CompilerConfigureTry(CONFIG.compiler);
+    CONFIG.windows = SHU_CompilerGetTarget() == SHUPlatform_Windows;
 
     // a build for another system has a cache of its own, as OpenECS's build has a folder of its own
     SHUPlatform target = SHU_CompilerGetTarget();
@@ -434,6 +421,38 @@ static char *CppLibrary(void)
     return SHU_UtilFormat("%s", path);
 }
 
+/// @brief The needs of a plugin, by its name; a plugin that compiles in no code of std's dependencies needs nothing, and keeps the analyzer.
+static const PluginNeeds *FindNeeds(const char *name)
+{
+    static const PluginNeeds NOTHING = {.analyze = true};
+
+    for (usz i = 0; i < COUNT(PLUGIN_NEEDS); i++)
+    {
+        if (strcmp(PLUGIN_NEEDS[i].name, name) == 0)
+        {
+            return &PLUGIN_NEEDS[i];
+        }
+    }
+
+    return &NOTHING;
+}
+
+/// @brief The path from a folder back to this one: ../ for each folder in it.
+static const char *PathBack(const char *folder)
+{
+    const char *back = "";
+
+    for (const char *c = folder; *c != '\0'; c++)
+    {
+        if (*c == '/')
+        {
+            back = SHU_UtilFormat("%s../", back);
+        }
+    }
+
+    return back;
+}
+
 /// @brief Compiles the C files of a plugin's folder, root, into the plugin's native library in output. Does nothing if the folder has no C file.
 /// The plugin sees OpenECS's plugin interface and SDL from the build's include/ folder, and, if it has needs, the folders of dependencies/ it compiles in, as system headers, so their warnings stay out.
 static void BuildNative(const char *name, const char *root, const char *output)
@@ -443,33 +462,20 @@ static void BuildNative(const char *name, const char *root, const char *output)
         return;
     }
 
-    const PluginNeeds *needs = NULL;
+    const PluginNeeds *needs = FindNeeds(name);
 
-    for (usz i = 0; i < sizeof(PLUGIN_NEEDS) / sizeof(*PLUGIN_NEEDS); i++)
-    {
-        needs = strcmp(PLUGIN_NEEDS[i].name, name) == 0 ? &PLUGIN_NEEDS[i] : needs;
-    }
-
-    // paths are named from the plugin's folder, which is one level deeper for each folder in root
-    const char *up = "";
-
-    for (const char *c = root; *c != '\0'; c++)
-    {
-        if (*c == '/')
-        {
-            up = SHU_UtilFormat("%s../", up);
-        }
-    }
+    // paths are named from the plugin's folder
+    const char *up = PathBack(root);
 
     // the libraries it takes are compiled first, into static archives that its native library is linked with
     char *archives = SHU_UtilFormat("%sarchives/", CONFIG.cache);
 
-    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
+    for (usz i = 0; needs->libraries[i] != NULL; i++)
     {
         BuildLibrary(needs->libraries[i], archives);
     }
 
-    for (usz i = 0; needs != NULL && needs->cmake[i] != NULL; i++)
+    for (usz i = 0; needs->cmake[i] != NULL; i++)
     {
         BuildCMakeLibrary(needs->cmake[i]);
     }
@@ -479,12 +485,12 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     // the static analyzer takes too much memory on the libraries that a plugin's C files include; the warnings and the sanitizers stay.
     // A plugin that takes its libraries only as archives keeps the analyzer, because its own files hold only their headers
-    if (needs != NULL && !needs->analyze && SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
+    if (!needs->analyze && SHU_CompilerGetIdentifier() == SHUCompiler_GCC)
     {
         SHU_CompilerAddFlags(" -fno-analyzer");
     }
 
-    for (usz i = 0; needs != NULL && needs->includes[i] != NULL; i++)
+    for (usz i = 0; needs->includes[i] != NULL; i++)
     {
         char *flag = SHU_UtilFormat(" -isystem %sdependencies/%s", SHU_UtilGetExecutablePath(), needs->includes[i]);
         SHU_CompilerAddFlags(flag);
@@ -495,7 +501,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
     }
 
     // a C++ library's headers are system headers too, those its build writes among them
-    for (usz i = 0; needs != NULL && needs->cmake[i] != NULL; i++)
+    for (usz i = 0; needs->cmake[i] != NULL; i++)
     {
         for (usz j = 0; needs->cmake[i]->includes[j] != NULL; j++)
         {
@@ -508,7 +514,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
         }
     }
 
-    if (needs != NULL && needs->flags != NULL)
+    if (needs->flags != NULL)
     {
         SHU_CompilerAddFlags(needs->flags);
     }
@@ -517,8 +523,12 @@ static void BuildNative(const char *name, const char *root, const char *output)
     SHU_ModuleAddSourceFile("./");
     SHU_ModuleAddIncludeDirectory(include);
 
+    // stb_ds comes through OpenECS's glue header, stbSDL3.h, beside stb_ds.h in the build's include/stb/ (OpenECS DESIGN 1.7); a plugin compiles its
+    // implementation in, so the folder is a system one, which keeps stb_ds's warnings out
+    SHU_CompilerAddFlags(SHU_UtilFormat(" -isystem %s%sinclude/stb", SHU_UtilGetExecutablePath(), CONFIG.output));
+
     // the linker takes what the plugin uses of each library, in the order they are listed
-    for (usz i = 0; needs != NULL && needs->libraries[i] != NULL; i++)
+    for (usz i = 0; needs->libraries[i] != NULL; i++)
     {
         if (i == 0)
         {
@@ -536,7 +546,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleLinkLibrary("SDL3_ttf");
         SHU_ModuleLinkLibrary("SDL3");
 
-        for (usz i = 0; needs != NULL && needs->windowsLinks[i] != NULL; i++)
+        for (usz i = 0; needs->windowsLinks[i] != NULL; i++)
         {
             SHU_ModuleLinkLibrary(needs->windowsLinks[i]);
         }
@@ -544,7 +554,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
     // the archives of the C++ libraries go after the plugin's files, then the C++ compiler's own library and the C compiler's runtime, all compiled in;
     // on Linux, what they define stays inside the plugin, so it meets no other plugin's copy
-    if (needs != NULL && needs->cmake[0] != NULL)
+    if (needs->cmake[0] != NULL)
     {
         for (usz i = 0; needs->cmake[i] != NULL; i++)
         {
