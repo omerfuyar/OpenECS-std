@@ -494,8 +494,7 @@ static void GpuTextureSize(SDL_Texture *texture, i32 *retWidth, i32 *retHeight)
 
 static void GpuFreeTexture(SDL_Texture *texture)
 {
-    ECSHandle_Forget(texture);
-    GpuTextureDestroy(texture);
+    ECSHandle_Free(GPU.plugin, "texture", texture);
 }
 
 static void GpuImageTransformed(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
@@ -647,13 +646,13 @@ static SHUResult GpuFillGlyphPart(ECSValue *retPart, i64 atlas, SHUSliceView ver
 {
     ECSValue *field = nullptr;
     ECSValue_SetTable(retPart);
-    SHU_ReturnResult(ECSValue_TableSetField(retPart, "atlas", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retPart, "atlas", &field));
     ECSValue_SetInteger(field, atlas);
-    SHU_ReturnResult(ECSValue_TableSetField(retPart, "count", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retPart, "count", &field));
     ECSValue_SetInteger(field, count);
-    SHU_ReturnResult(ECSValue_TableSetField(retPart, "vertices", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retPart, "vertices", &field));
     SHU_ReturnResult(ECSValue_SetBuffer(field, vertices));
-    SHU_ReturnResult(ECSValue_TableSetField(retPart, "indices", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retPart, "indices", &field));
     return ECSValue_SetBuffer(field, indices);
 }
 
@@ -674,7 +673,7 @@ static SHUResult GpuAddGlyphPart(ECSValue *parts, const TTF_GPUAtlasDrawSequence
     f32 *vertices = SDL_malloc(vertexBytes);
     u32 *indices = SDL_malloc(indexBytes);
     ECSValue *part = nullptr;
-    SHUResult result = vertices == nullptr || indices == nullptr ? SHUResult_ErrAllocation : ECSValue_ListAddItem(parts, &part);
+    SHUResult result = vertices == nullptr || indices == nullptr ? SHUResult_ErrAllocation : ECSValue_AddListItem(parts, &part);
 
     if (result == SHUResult_Ok)
     {
@@ -708,11 +707,11 @@ static SHUResult GpuFillGlyphs(TTF_Text *drawn, ECSValue *retGlyphs)
     ECSValue *parts = nullptr;
     TTF_GetTextSize(drawn, &width, &height);
     ECSValue_SetTable(retGlyphs);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "width", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "width", &field));
     ECSValue_SetNumber(field, width);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "height", &field));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "height", &field));
     ECSValue_SetNumber(field, height);
-    SHU_ReturnResult(ECSValue_TableSetField(retGlyphs, "parts", &parts));
+    SHU_ReturnResult(ECSValue_SetTableField(retGlyphs, "parts", &parts));
     ECSValue_SetTable(parts);
 
     for (TTF_GPUAtlasDrawSequence *sequence = TTF_GetGPUTextDrawData(drawn); sequence != nullptr; sequence = sequence->next)
@@ -849,8 +848,7 @@ static i32 GpuBufferSize(GpuBuffer *buffer)
 
 static void GpuFreeBuffer(GpuBuffer *buffer)
 {
-    ECSHandle_Forget(buffer);
-    GpuBufferDestroy(buffer);
+    ECSHandle_Free(GPU.plugin, "buffer", buffer);
 }
 
 /// @brief The Destroy function of the handle type gpu.shader.

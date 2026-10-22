@@ -6,7 +6,7 @@ local ui = require("ui")
 
 -- a size of the ui plugin's settings, in layout units, which every first-party view shares
 local function size(name)
-  return ecs.settings.get("ui." .. name)
+  return ecs.setting.get("ui." .. name)
 end
 
 -- version of a window's saved state: the setting that was chosen
@@ -18,8 +18,8 @@ local windows = {} -- every open window's state, by its panel handle
 local function readSettings()
   local settings = {}
 
-  for _, settingName in ipairs(ecs.settings.list() or {}) do
-    settings[#settings + 1] = ecs.settings.explain(settingName)
+  for _, settingName in ipairs(ecs.setting.list() or {}) do
+    settings[#settings + 1] = ecs.setting.explain(settingName)
   end
 
   table.sort(settings, function(a, b)
@@ -124,7 +124,7 @@ local function refresh(window)
 end
 
 local function set(window, setting, value)
-  local ok, message = ecs.settings.set(setting.name, value)
+  local ok, message = ecs.setting.set(setting.name, value)
 
   if not ok then
     ecs.log.warn(message or ("'%s' is not changed."):format(setting.name))
@@ -360,5 +360,5 @@ assert(ecs.service.register({
 
 -- default keys for the window; presets and the user's settings can change them
 for service, key in pairs({ previous = "Left", next = "Right" }) do
-  assert(ecs.input.bind("settings.window", key, "settings." .. service))
+  assert(ecs.key.bind("settings.window", key, "settings." .. service))
 end
