@@ -606,8 +606,16 @@ static void WebCallDone(void *data)
 static WebRequest *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
 {
     WebRequest *request = WebNewTransfer(url, headers, WebWrite);
-    CURL *easy = request == nullptr ? nullptr : request->easy;
-    bool ok = easy != nullptr && curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
+
+    if (request == nullptr)
+    {
+        ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
+        ECSService_ReleaseCallback((ECSFunction)Done);
+        return nullptr;
+    }
+
+    CURL *easy = request->easy;
+    bool ok = curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, WebTimeout()) == CURLE_OK && WebSetMethod(easy, method, body) &&
               (Done == nullptr || WEB.timer != nullptr || ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok);
@@ -615,12 +623,7 @@ static WebRequest *WebNewRequest(const char *method, const char *url, const ECSV
     if (!ok)
     {
         ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
-
-        if (request != nullptr)
-        {
-            WebFreeMemory(request);
-        }
-
+        WebFreeMemory(request);
         ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
     }
@@ -684,20 +687,22 @@ static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
     // the connection goes on until one side closes it, so the timeout limits only how long it takes to connect;
     // curl asks the read function for messages to send, as for an upload
     WebRequest *request = WebNewTransfer(url, headers, WebSocketWrite);
-    CURL *easy = request == nullptr ? nullptr : request->easy;
-    bool ok = easy != nullptr && curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
+
+    if (request == nullptr)
+    {
+        ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
+        return nullptr;
+    }
+
+    CURL *easy = request->easy;
+    bool ok = curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_UPLOAD, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
               curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, WebTimeout()) == CURLE_OK;
 
     if (!ok)
     {
         ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
-
-        if (request != nullptr)
-        {
-            WebFreeMemory(request);
-        }
-
+        WebFreeMemory(request);
         return nullptr;
     }
 
