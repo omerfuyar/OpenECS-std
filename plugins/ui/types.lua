@@ -22,10 +22,10 @@
 ---@field padding? number Room inside a container's edges.
 ---@field gap? number Room between a container's children.
 ---@field align? "start"|"center"|"end" Where a container puts children that do not stretch.
----@field background? string A colour, such as "#202226" or a theme colour, such as "tabRow".
----@field hoverBackground? string The background while the pointer is over it.
----@field border? string The colour of a line around it.
----@field color? string The colour of its text.
+---@field background? ecs.Color A colour, such as "#202226" or a theme colour, such as "tabRow".
+---@field hoverBackground? ecs.Color The background while the pointer is over it.
+---@field border? ecs.Color The colour of a line around it.
+---@field color? ecs.Color The colour of its text.
 ---@field size? number The font size of its text, in layout units.
 ---@field font? string A font name of draw, such as "ui" or "mono".
 ---@field tooltip? string A text that shows when the pointer rests on it.
@@ -69,7 +69,7 @@
 ---@class ui.TreeNode
 ---@field id any
 ---@field label? string The id as text if missing.
----@field color? string
+---@field color? ecs.Color
 ---@field children? ui.TreeNode[]
 
 ---@class ui.TreeProps: ui.Props
