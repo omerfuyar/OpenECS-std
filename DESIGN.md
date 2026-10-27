@@ -58,6 +58,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Lua plugins have Lua's standard libraries (OpenECS DESIGN 9.6): `io` reads and writes files, and `os` renames and removes them and gives the time. A standard plugin does not offer what they already do; fs (10) adds what they cannot.
 - An object that a plugin gives is a handle (OpenECS DESIGN 10.6): Lua's garbage collector frees it when no one uses it. A plugin whose objects hold much memory, such as images, sounds, models and grids, also has a `free` function, which frees one at once and makes its handles invalid.
 - Names follow OpenECS DESIGN 9.9: a plugin declares by local names, and colours are texts in Lua and `ECSColor` in C (OpenECS DESIGN 5.2).
+- A panel type's callbacks name the panel's state `state`. In Lua, it is their first parameter: `draw = function(state, surface)`. In C, the parameter is `void *data`, and the typed state made from it is `state`: `Lights *state = data;`. A callback that does not read the state keeps `void *state`.
 
 ### 1.4 How panels draw
 

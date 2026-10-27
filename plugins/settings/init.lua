@@ -282,25 +282,25 @@ ecs.panel.registerType({
 
     return window
   end,
-  destroy = function(window)
-    ui.forget(window.panel)
-    windows[window.panel] = nil
+  destroy = function(state)
+    ui.forget(state.panel)
+    windows[state.panel] = nil
   end,
-  saveState = function(window)
-    local chosen = window.settings[window.selected]
+  saveState = function(state)
+    local chosen = state.settings[state.selected]
     return { selected = chosen and chosen.name or nil }
   end,
-  draw = function(window, surface)
-    ui.show(window.panel, surface, view(window))
+  draw = function(state, surface)
+    ui.show(state.panel, surface, view(state))
   end,
-  event = function(window, event)
+  event = function(state, event)
     if event.type == "shown" then
-      refresh(window)
+      refresh(state)
     end
 
     -- Return edits the chosen setting, when no element of the window takes it
-    if not ui.event(window.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #window.settings > 0 then
-      edit(window)
+    if not ui.event(state.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #state.settings > 0 then
+      edit(state)
     end
   end,
 })

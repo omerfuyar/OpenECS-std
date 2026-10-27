@@ -121,24 +121,24 @@ ecs.panel.registerType({
 
     return list
   end,
-  destroy = function(list)
-    ui.forget(list.panel)
-    lists[list.panel] = nil
+  destroy = function(state)
+    ui.forget(state.panel)
+    lists[state.panel] = nil
   end,
-  saveState = function(list)
-    local chosen = list.types[list.selected]
+  saveState = function(state)
+    local chosen = state.types[state.selected]
     return { selected = chosen and chosen.name or nil }
   end,
-  draw = function(list, surface)
-    ui.show(list.panel, surface, view(list))
+  draw = function(state, surface)
+    ui.show(state.panel, surface, view(state))
   end,
-  event = function(list, event)
+  event = function(state, event)
     -- plugins may have registered types since the list was drawn
     if event.type == "shown" then
-      refresh(list)
+      refresh(state)
     end
 
-    ui.event(list.panel, event)
+    ui.event(state.panel, event)
   end,
 })
 
