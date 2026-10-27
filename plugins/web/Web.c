@@ -55,32 +55,32 @@ typedef struct WebRequest
 
     // a WebSocket connection's; the lock guards open and the lists, and the rest belongs to the thread that the note names
     bool socket;
-    bool open;            // the server took the connection
-    WebMessage **inbox;   // stb_ds array of the messages that arrived, oldest first
-    WebMessage **outbox;  // stb_ds array of the messages to send, oldest first
-    bool waking;          // in the list of connections with messages to send
-    bool paused;          // plugin's thread: nothing was left to send, so curl waits until it is woken
-    WebMessage *partial;  // plugin's thread: the message that is arriving
-    WebMessage *sending;  // plugin's thread: the message that is going out
-    usz sent;             // plugin's thread: how much of it went
-    WebMessage *taken;    // main thread: the message that the last receive gave, kept until the next one
+    bool open;           // the server took the connection
+    WebMessage **inbox;  // stb_ds array of the messages that arrived, oldest first
+    WebMessage **outbox; // stb_ds array of the messages to send, oldest first
+    bool waking;         // in the list of connections with messages to send
+    bool paused;         // plugin's thread: nothing was left to send, so curl waits until it is woken
+    WebMessage *partial; // plugin's thread: the message that is arriving
+    WebMessage *sending; // plugin's thread: the message that is going out
+    usz sent;            // plugin's thread: how much of it went
+    WebMessage *taken;   // main thread: the message that the last receive gave, kept until the next one
 } WebRequest;
 
 static struct
 {
     ECSPlugin plugin;
-    bool curlStarted;           // curl_global_init worked
-    CURLM *multi;               // used only on the plugin's thread, except to wake it
-    SDL_Thread *thread;         // started by the first request
+    bool curlStarted;   // curl_global_init worked
+    CURLM *multi;       // used only on the plugin's thread, except to wake it
+    SDL_Thread *thread; // started by the first request
     SDL_Mutex *lock;
-    WebRequest **added;         // stb_ds array of the requests waiting for the plugin's thread
-    WebRequest **forgotten;     // stb_ds array of the running requests that their owner freed
-    WebRequest **waking;        // stb_ds array of the connections with messages to send
+    WebRequest **added;     // stb_ds array of the requests waiting for the plugin's thread
+    WebRequest **forgotten; // stb_ds array of the running requests that their owner freed
+    WebRequest **waking;    // stb_ds array of the connections with messages to send
     bool quit;
-    const char *certificates;   // the system's file of trusted certificates, or nullptr
-    char *storeCertificates;    // on Windows without such a file, stb_ds array of the certificates of its store as PEM text that ends with a zero, or nullptr
-    WebRequest **all;           // main thread: stb_ds array of every request that is not freed, oldest first
-    ECSTimer timer;             // main thread: calls the functions of the requests that are done, while some wait
+    const char *certificates; // the system's file of trusted certificates, or nullptr
+    char *storeCertificates;  // on Windows without such a file, stb_ds array of the certificates of its store as PEM text that ends with a zero, or nullptr
+    WebRequest **all;         // main thread: stb_ds array of every request that is not freed, oldest first
+    ECSTimer timer;           // main thread: calls the functions of the requests that are done, while some wait
 } WEB = {0};
 
 /// @brief Removes a request from a list, an stb_ds array, if it is there.
@@ -714,7 +714,8 @@ static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
 static i32 WebSocketStatus(WebRequest *socket)
 {
     SDL_LockMutex(WEB.lock);
-    i32 status = socket->done ? -1 : socket->open ? 1 : 0;
+    i32 status = socket->done ? -1 : socket->open ? 1
+                                                  : 0;
     SDL_UnlockMutex(WEB.lock);
     return status;
 }

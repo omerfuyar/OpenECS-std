@@ -19,7 +19,7 @@ static struct
     {
         mat4 matrix;
         vec4 vector; // a vector or a quaternion
-    } result; // aligned as cglm needs
+    } result;        // aligned as cglm needs
 } CGLM = {0};
 
 /// @brief Copies a buffer of count floats into floats that are aligned as cglm needs; reports a buffer of another size, and gives false.
@@ -118,46 +118,48 @@ CGLM_VECTOR(3)
 CGLM_VECTOR(4)
 
 // the registration of a vector's functions, with their signatures
-#define CGLM_VECTOR_FUNCTIONS(N)                                                                          \
-    {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "buffer(buffer a, buffer b)",                          \
-     "Add two vectors of " #N " floats\n"                                                                 \
-     "@param a A vector: " #N " floats\n"                                                                 \
-     "@param b A vector: " #N " floats\n"                                                                 \
-     "@return The sum: " #N " floats, or an empty buffer if a buffer has another size"},                  \
-        {"vec" #N "Sub", (ECSFunction)CglmVec##N##Sub, "buffer(buffer a, buffer b)",                      \
-         "Subtract b from a, vectors of " #N " floats\n"                                                  \
-         "@param a The vector to subtract from: " #N " floats\n"                                          \
-         "@param b The vector to subtract: " #N " floats\n"                                               \
-         "@return The difference, a minus b: " #N " floats, or an empty buffer if a buffer has another size"},             \
-        {"vec" #N "Scale", (ECSFunction)CglmVec##N##Scale, "buffer(buffer v, float s)",                   \
-         "Multiply a vector of " #N " floats by a number\n"                                               \
-         "@param v A vector: " #N " floats\n"                                                             \
-         "@param s The number each float is multiplied by\n"                                              \
-         "@return The scaled vector: " #N " floats, or an empty buffer if v has another size"},            \
-        {"vec" #N "Dot", (ECSFunction)CglmVec##N##Dot, "float(buffer a, buffer b)",                       \
-         "Give the dot product of two vectors of " #N " floats\n"                                         \
-         "@param a A vector: " #N " floats\n"                                                             \
-         "@param b A vector: " #N " floats\n"                                                             \
-         "@return The dot product, or 0 if a buffer has another size"},                                    \
-        {"vec" #N "Norm", (ECSFunction)CglmVec##N##Norm, "float(buffer v)",                               \
-         "Give the length of a vector of " #N " floats\n"                                                 \
-         "@param v A vector: " #N " floats\n"                                                             \
-         "@return The length, or 0 if v has another size"},                                                \
-        {"vec" #N "Distance", (ECSFunction)CglmVec##N##Distance, "float(buffer a, buffer b)",             \
-         "Give the distance between two points of " #N " floats\n"                                        \
-         "@param a A point: " #N " floats\n"                                                              \
-         "@param b A point: " #N " floats\n"                                                              \
-         "@return The distance, or 0 if a buffer has another size"},                                       \
-        {"vec" #N "Normalize", (ECSFunction)CglmVec##N##Normalize, "buffer(buffer v)",                    \
-         "Give a vector of " #N " floats the length 1, in its direction\n"                                \
-         "@param v A vector: " #N " floats\n"                                                             \
+#define CGLM_VECTOR_FUNCTIONS(N)                                                                                         \
+    {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "buffer(buffer a, buffer b)",                                         \
+     "Add two vectors of " #N " floats\n"                                                                                \
+     "@param a A vector: " #N " floats\n"                                                                                \
+     "@param b A vector: " #N " floats\n"                                                                                \
+     "@return The sum: " #N " floats, or an empty buffer if a buffer has another size"},                                 \
+        {"vec" #N "Sub", (ECSFunction)CglmVec##N##Sub, "buffer(buffer a, buffer b)",                                     \
+         "Subtract b from a, vectors of " #N " floats\n"                                                                 \
+         "@param a The vector to subtract from: " #N " floats\n"                                                         \
+         "@param b The vector to subtract: " #N " floats\n"                                                              \
+         "@return The difference, a minus b: " #N " floats, or an empty buffer if a buffer has another size"},           \
+        {"vec" #N "Scale", (ECSFunction)CglmVec##N##Scale, "buffer(buffer v, float s)",                                  \
+         "Multiply a vector of " #N " floats by a number\n"                                                              \
+         "@param v A vector: " #N " floats\n"                                                                            \
+         "@param s The number each float is multiplied by\n"                                                             \
+         "@return The scaled vector: " #N " floats, or an empty buffer if v has another size"},                          \
+        {"vec" #N "Dot", (ECSFunction)CglmVec##N##Dot, "float(buffer a, buffer b)",                                      \
+         "Give the dot product of two vectors of " #N " floats\n"                                                        \
+         "@param a A vector: " #N " floats\n"                                                                            \
+         "@param b A vector: " #N " floats\n"                                                                            \
+         "@return The dot product, or 0 if a buffer has another size"},                                                  \
+        {"vec" #N "Norm", (ECSFunction)CglmVec##N##Norm, "float(buffer v)",                                              \
+         "Give the length of a vector of " #N " floats\n"                                                                \
+         "@param v A vector: " #N " floats\n"                                                                            \
+         "@return The length, or 0 if v has another size"},                                                              \
+        {"vec" #N "Distance", (ECSFunction)CglmVec##N##Distance, "float(buffer a, buffer b)",                            \
+         "Give the distance between two points of " #N " floats\n"                                                       \
+         "@param a A point: " #N " floats\n"                                                                             \
+         "@param b A point: " #N " floats\n"                                                                             \
+         "@return The distance, or 0 if a buffer has another size"},                                                     \
+        {"vec" #N "Normalize", (ECSFunction)CglmVec##N##Normalize, "buffer(buffer v)",                                   \
+         "Give a vector of " #N " floats the length 1, in its direction\n"                                               \
+         "@param v A vector: " #N " floats\n"                                                                            \
          "@return The vector: " #N " floats, all 0 if v's length is about 0, or an empty buffer if v has another size"}, \
-        {"vec" #N "Lerp", (ECSFunction)CglmVec##N##Lerp, "buffer(buffer from, buffer to, float t)",       \
-         "Give the vector at t between from, at 0, and to, at 1\n"                                        \
-         "@param from The vector at 0: " #N " floats\n"                                                   \
-         "@param to The vector at 1: " #N " floats\n"                                                     \
-         "@param t Where between them: 0 gives from, 1 gives to, and t below 0 or above 1 goes past them\n" \
-         "@return The vector at t: " #N " floats, or an empty buffer if a buffer has another size"}
+    {                                                                                                                    \
+        "vec" #N "Lerp", (ECSFunction)CglmVec##N##Lerp, "buffer(buffer from, buffer to, float t)",                       \
+            "Give the vector at t between from, at 0, and to, at 1\n"                                                    \
+            "@param from The vector at 0: " #N " floats\n"                                                               \
+            "@param to The vector at 1: " #N " floats\n"                                                                 \
+            "@param t Where between them: 0 gives from, 1 gives to, and t below 0 or above 1 goes past them\n"           \
+            "@return The vector at t: " #N " floats, or an empty buffer if a buffer has another size"                    \
+    }
 
 static SHUSlice CglmVec2(f32 x, f32 y)
 {

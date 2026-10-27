@@ -59,9 +59,9 @@ typedef struct NetConnection
     u16 port;
     NET_StreamSocket *socket; // nullptr until the name resolves, and after it closes
     bool failed;
-    u8 *received;               // what receive gave last, kept until the next receive
-    mbedtls_ssl_context *tls;   // a TLS connection's state, or nullptr for plain TCP
-    bool secured;               // the TLS handshake is done
+    u8 *received;                 // what receive gave last, kept until the next receive
+    mbedtls_ssl_context *tls;     // a TLS connection's state, or nullptr for plain TCP
+    bool secured;                 // the TLS handshake is done
     struct NetServer *acceptedBy; // the TLS server that accepted it, whose configuration it uses, or nullptr
 } NetConnection;
 
@@ -253,7 +253,8 @@ static int NetTlsReceive(void *data, unsigned char *bytes, size_t length)
 {
     NetConnection *connection = data;
     int count = NET_ReadFromStreamSocket(connection->socket, bytes, (int)SDL_min(length, (usz)SDL_MAX_SINT32));
-    return count < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : count == 0 ? MBEDTLS_ERR_SSL_WANT_READ : count;
+    return count < 0 ? MBEDTLS_ERR_NET_RECV_FAILED : count == 0 ? MBEDTLS_ERR_SSL_WANT_READ
+                                                                : count;
 }
 
 /// @brief Gives a connection the state of a TLS connection with a configuration: a client's, or the server's that accepted it.
@@ -457,7 +458,8 @@ static int NetRead(NetConnection *connection, u8 *buffer, i32 maxBytes)
 
     // TLS gives what it decrypted; nothing yet is not an error, and the other side's close is
     int count = mbedtls_ssl_read(connection->tls, buffer, (usz)maxBytes);
-    return count == MBEDTLS_ERR_SSL_WANT_READ || count == MBEDTLS_ERR_SSL_WANT_WRITE ? 0 : count == 0 ? -1 : count;
+    return count == MBEDTLS_ERR_SSL_WANT_READ || count == MBEDTLS_ERR_SSL_WANT_WRITE ? 0 : count == 0 ? -1
+                                                                                                      : count;
 }
 
 static SHUSlice NetReceive(NetConnection *connection, i32 maxBytes)
