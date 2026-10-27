@@ -4,8 +4,7 @@ Notes for agents and the owner that belong in no other document: why the tools a
 
 ## Tools
 
-- `.github/scripts/check.sh` gives clang-tidy the flags of a plugin's Debug build by hand, with the include folders of every plugin's libraries, because shuild writes no compilation database. When `shuild.c` adds a library or changes a plugin's flags, change `check.sh` with it.
-- glslang's build writes one of its headers into `.shu/Debug/cmake/<compiler>/glslang/include`, such as `gcc`, so clang-tidy checks `gpu` only after a Debug build.
+- `.github/scripts/check.sh` runs clang-tidy on `compile_commands.json`, which shuild writes here in OpenECS's build, as OpenECS's notes say.
 - Checks that are off in `.clang-tidy`, besides OpenECS's (its notes say why):
   - `bugprone-suspicious-include`: a plugin includes the C file of a library it compiles in, as `audio` and `net` do.
   - `bugprone-casting-through-void`: inotify gives `fs` its events as bytes.
