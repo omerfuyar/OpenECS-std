@@ -28,6 +28,6 @@ OpenECS's OVERVIEW.md holds the product decisions for these plugins too, and Ope
 
 - Work in a checkout of OpenECS with its submodules, in its `std/` folder, so you build and test with OpenECS (README.md).
 - Releases are made with OpenECS's, at the same time and with the same version, as OpenECS's AGENTS.md says: `dev` is merged into `main` with a pull request that the owner reviews, and the owner tags it. A release's description is `.github/release-notes/vVERSION.md`; it says what changed in this repository, and OpenECS's description links to it. OpenECS's submodule names the commit that ships.
-- Before each commit, run `.github/scripts/check.sh` here, in place of OpenECS's: it formats the changed C files of `plugins/` and checks them with clang-tidy. It needs OpenECS's Debug build first.
+- Before each commit, run `.github/scripts/check.sh` here, in place of OpenECS's: it formats the changed C files of `plugins/` and checks them with clang-tidy, and checks the changed Lua files with the Lua language server when it is installed. clang-tidy needs OpenECS's Debug build first.
 - After a change here is merged into `dev`, move OpenECS's `std/` submodule to it in a pull request to OpenECS.
 - A change to OpenECS's plugin interface may need a change here; make both, and merge OpenECS's first.
