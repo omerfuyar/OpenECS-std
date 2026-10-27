@@ -477,26 +477,26 @@ static bool WebSetCertificates(CURL *easy)
 /// @brief Sets a request's method and body: a body makes it a POST, unless the method names another.
 static bool WebSetMethod(CURL *easy, const char *method, SHUSlice body)
 {
-    bool ok = true;
+    bool configured = true;
 
     if (body.size > 0 || SDL_strcasecmp(method, "POST") == 0)
     {
-        ok = curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body.size) == CURLE_OK &&
-             curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS, body.size > 0 ? (const char *)body.data : "") == CURLE_OK;
+        configured = curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body.size) == CURLE_OK &&
+                     curl_easy_setopt(easy, CURLOPT_COPYPOSTFIELDS, body.size > 0 ? (const char *)body.data : "") == CURLE_OK;
     }
 
     if (SDL_strcasecmp(method, "HEAD") == 0)
     {
-        return ok && curl_easy_setopt(easy, CURLOPT_NOBODY, 1L) == CURLE_OK;
+        return configured && curl_easy_setopt(easy, CURLOPT_NOBODY, 1L) == CURLE_OK;
     }
 
     // curl sends a body with POST, so a GET with a body names its method
     if ((SDL_strcasecmp(method, "GET") == 0 && body.size == 0) || SDL_strcasecmp(method, "POST") == 0)
     {
-        return ok;
+        return configured;
     }
 
-    return ok && curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method) == CURLE_OK;
+    return configured && curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, method) == CURLE_OK;
 }
 
 /// @brief The timeout of the setting web.timeout, in milliseconds.
@@ -540,13 +540,13 @@ static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl
     }
 
     CURL *easy = request->easy;
-    bool ok = curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, Write) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_WRITEDATA, request) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK && WebSetCertificates(easy) &&
-              curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
+    bool configured = curl_easy_setopt(easy, CURLOPT_URL, url) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PRIVATE, request) == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_ERRORBUFFER, request->error) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, Write) == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_WRITEDATA, request) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L) == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_USERAGENT, "OpenECS/" OPENECS_VERSION) == CURLE_OK && WebSetCertificates(easy) &&
+                      curl_easy_setopt(easy, CURLOPT_HTTPHEADER, request->headers) == CURLE_OK;
 
-    if (!ok)
+    if (!configured)
     {
         WebFreeMemory(request);
         return nullptr;
@@ -615,12 +615,12 @@ static WebRequest *WebNewRequest(const char *method, const char *url, const ECSV
     }
 
     CURL *easy = request->easy;
-    bool ok = curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, WebTimeout()) == CURLE_OK && WebSetMethod(easy, method, body) &&
-              (Done == nullptr || WEB.timer != nullptr || ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok);
+    bool configured = curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, WebTimeout()) == CURLE_OK && WebSetMethod(easy, method, body) &&
+                      (Done == nullptr || WEB.timer != nullptr || ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok);
 
-    if (!ok)
+    if (!configured)
     {
         ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
         WebFreeMemory(request);
@@ -695,11 +695,11 @@ static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
     }
 
     CURL *easy = request->easy;
-    bool ok = curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_UPLOAD, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
-              curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, WebTimeout()) == CURLE_OK;
+    bool configured = curl_easy_setopt(easy, CURLOPT_READFUNCTION, WebSocketRead) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_READDATA, request) == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_UPLOAD, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "ws,wss") == CURLE_OK &&
+                      curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, WebTimeout()) == CURLE_OK;
 
-    if (!ok)
+    if (!configured)
     {
         ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
         WebFreeMemory(request);

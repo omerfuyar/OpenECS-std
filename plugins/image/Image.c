@@ -255,14 +255,14 @@ static SHUResult ImageAddFrame(ECSValue *frames, void *image, f64 seconds)
 
 /// @brief Skips a GIF's sub-blocks: each starts with its size, and an empty one ends them.
 /// @return Where the sub-blocks end, or size if the data ends first.
-static usz ImageGifSkipBlocks(const u8 *data, usz size, usz at)
+static usz ImageGifSkipBlocks(const u8 *data, usz size, usz offset)
 {
-    while (at < size && data[at] != 0)
+    while (offset < size && data[offset] != 0)
     {
-        at += 1 + (usz)data[at];
+        offset += 1 + (usz)data[offset];
     }
 
-    return at < size ? at + 1 : size;
+    return offset < size ? offset + 1 : size;
 }
 
 /// @brief Makes every frame of a GIF that restores the frame before it restore the background instead, in place.
@@ -276,26 +276,26 @@ static void ImageGifAvoidPrevious(u8 *data, usz size)
         return;
     }
 
-    usz at = 13 + ((data[10] & 0x80) != 0 ? 3 * ((usz)2 << (data[10] & 0x07)) : 0);
+    usz offset = 13 + ((data[10] & 0x80) != 0 ? 3 * ((usz)2 << (data[10] & 0x07)) : 0);
 
-    while (at < size)
+    while (offset < size)
     {
-        if (data[at] == 0x21 && at + 1 < size)
+        if (data[offset] == 0x21 && offset + 1 < size)
         {
             // a graphic control extension: its first sub-block has 4 bytes, and its first byte holds the disposal in bits 2 to 4
-            if (data[at + 1] == 0xF9 && at + 3 < size && data[at + 2] == 4 && ((data[at + 3] >> 2) & 0x07) == 3)
+            if (data[offset + 1] == 0xF9 && offset + 3 < size && data[offset + 2] == 4 && ((data[offset + 3] >> 2) & 0x07) == 3)
             {
-                data[at + 3] = (u8)((data[at + 3] & ~0x1C) | (2 << 2));
+                data[offset + 3] = (u8)((data[offset + 3] & ~0x1C) | (2 << 2));
             }
 
-            at = ImageGifSkipBlocks(data, size, at + 2);
+            offset = ImageGifSkipBlocks(data, size, offset + 2);
         }
-        else if (data[at] == 0x2C && at + 10 < size)
+        else if (data[offset] == 0x2C && offset + 10 < size)
         {
             // an image: its descriptor, its local colour table if its flag is set, the size of its codes, then its data
-            u8 flags = data[at + 9];
-            at += 10 + ((flags & 0x80) != 0 ? 3 * ((usz)2 << (flags & 0x07)) : 0) + 1;
-            at = ImageGifSkipBlocks(data, size, at);
+            u8 flags = data[offset + 9];
+            offset += 10 + ((flags & 0x80) != 0 ? 3 * ((usz)2 << (flags & 0x07)) : 0) + 1;
+            offset = ImageGifSkipBlocks(data, size, offset);
         }
         else
         {

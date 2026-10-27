@@ -182,19 +182,19 @@ static f32 DrawStrokeDistance(const void *shape, f32 x, f32 y)
 }
 
 /// @brief Blends a colour over a row of pixels, from one column up to another, without it, inside the bounds.
-static void DrawSpan(const ECSSurface *surface, SDL_Rect bounds, i32 row, i32 from, i32 to, ECSColor color)
+static void DrawSpan(const ECSSurface *surface, SDL_Rect bounds, i32 row, i32 start, i32 end, ECSColor color)
 {
-    from = SDL_max(from, bounds.x);
-    to = SDL_min(to, bounds.x + bounds.w);
+    start = SDL_max(start, bounds.x);
+    end = SDL_min(end, bounds.x + bounds.w);
 
-    if (row < bounds.y || row >= bounds.y + bounds.h || from >= to || (color >> 24) == 0)
+    if (row < bounds.y || row >= bounds.y + bounds.h || start >= end || (color >> 24) == 0)
     {
         return;
     }
 
     u32 *pixel = (u32 *)((u8 *)surface->pixels.data + (usz)row * (usz)surface->pitch);
 
-    for (i32 column = from; column < to; column++)
+    for (i32 column = start; column < end; column++)
     {
         DrawBlend(&pixel[column], color);
     }
@@ -210,13 +210,13 @@ static void DrawRect(const ECSSurface *surface, SDL_Rect bounds, SDL_Rect rect, 
 }
 
 /// @brief Fills a triangle in pixels: each pixel whose centre is inside it.
-static void DrawTriangle(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a, DrawPoint b, DrawPoint c, ECSColor color)
+static void DrawTriangle(const ECSSurface *surface, SDL_Rect bounds, DrawPoint pointA, DrawPoint pointB, DrawPoint pointC, ECSColor color)
 {
-    f32 top = SDL_min(a.y, SDL_min(b.y, c.y));
-    f32 bottom = SDL_max(a.y, SDL_max(b.y, c.y));
+    f32 top = SDL_min(pointA.y, SDL_min(pointB.y, pointC.y));
+    f32 bottom = SDL_max(pointA.y, SDL_max(pointB.y, pointC.y));
     i32 first = SDL_max(bounds.y, (i32)SDL_ceilf(top - 0.5f));
     i32 last = SDL_min(bounds.y + bounds.h, (i32)SDL_ceilf(bottom - 0.5f));
-    const DrawPoint edges[3][2] = {{a, b}, {b, c}, {c, a}};
+    const DrawPoint edges[3][2] = {{pointA, pointB}, {pointB, pointC}, {pointC, pointA}};
 
     // each row is crossed by two edges; the span between them is filled
     for (i32 row = first; row < last; row++)
@@ -227,12 +227,12 @@ static void DrawTriangle(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a
 
         for (usz i = 0; i < 3; i++)
         {
-            DrawPoint p = edges[i][0];
-            DrawPoint q = edges[i][1];
+            DrawPoint start = edges[i][0];
+            DrawPoint end = edges[i][1];
 
-            if ((p.y <= y && q.y > y) || (q.y <= y && p.y > y))
+            if ((start.y <= y && end.y > y) || (end.y <= y && start.y > y))
             {
-                f32 x = p.x + (y - p.y) * (q.x - p.x) / (q.y - p.y);
+                f32 x = start.x + (y - start.y) * (end.x - start.x) / (end.y - start.y);
                 left = SDL_min(left, x);
                 right = SDL_max(right, x);
             }
@@ -246,19 +246,19 @@ static void DrawTriangle(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a
 }
 
 /// @brief Draws a line in pixels, with smooth edges.
-static void DrawSegment(const ECSSurface *surface, SDL_Rect bounds, DrawPoint a, DrawPoint b, f32 thickness, ECSColor color)
+static void DrawSegment(const ECSSurface *surface, SDL_Rect bounds, DrawPoint start, DrawPoint end, f32 thickness, ECSColor color)
 {
-    if (a.x == b.x && a.y == b.y)
+    if (start.x == end.x && start.y == end.y)
     {
         return;
     }
 
     // the line is at least a pixel thick, so a thin line never disappears
-    DrawStroke stroke = {a, b, SDL_max(thickness, 1.0f) / 2.0f};
+    DrawStroke stroke = {start, end, SDL_max(thickness, 1.0f) / 2.0f};
     f32 reach = stroke.halfThickness + 1.0f;
-    SDL_Rect area = {(i32)SDL_floorf(SDL_min(a.x, b.x) - reach), (i32)SDL_floorf(SDL_min(a.y, b.y) - reach), 0, 0};
-    area.w = (i32)SDL_ceilf(SDL_max(a.x, b.x) + reach) - area.x;
-    area.h = (i32)SDL_ceilf(SDL_max(a.y, b.y) + reach) - area.y;
+    SDL_Rect area = {(i32)SDL_floorf(SDL_min(start.x, end.x) - reach), (i32)SDL_floorf(SDL_min(start.y, end.y) - reach), 0, 0};
+    area.w = (i32)SDL_ceilf(SDL_max(start.x, end.x) + reach) - area.x;
+    area.h = (i32)SDL_ceilf(SDL_max(start.y, end.y) + reach) - area.y;
     DrawSmooth(surface, bounds, area, DrawStrokeDistance, &stroke, color);
 }
 
@@ -325,12 +325,12 @@ static void DrawOutline(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height
     DrawRect(surface, bounds, (SDL_Rect){rect.x + rect.w - edge, rect.y + edge, edge, rect.h - 2 * edge}, color);
 }
 
-static void DrawLine(ECSSurface *surface, f32 x1, f32 y1, f32 x2, f32 y2, f32 thickness, ECSColor color)
+static void DrawLine(ECSSurface *surface, f32 startX, f32 startY, f32 endX, f32 endY, f32 thickness, ECSColor color)
 {
     if (DrawCanDraw(surface))
     {
         f32 scale = surface->scale;
-        DrawSegment(surface, DrawBounds(surface), (DrawPoint){x1 * scale, y1 * scale}, (DrawPoint){x2 * scale, y2 * scale}, thickness * scale, color);
+        DrawSegment(surface, DrawBounds(surface), (DrawPoint){startX * scale, startY * scale}, (DrawPoint){endX * scale, endY * scale}, thickness * scale, color);
     }
 }
 
@@ -340,8 +340,8 @@ static void DrawCircle(ECSSurface *surface, f32 x, f32 y, f32 radius, f32 thickn
     if (DrawCanDraw(surface))
     {
         f32 scale = surface->scale;
-        f32 r = radius * scale;
-        DrawRoundedPixels(surface, DrawBounds(surface), x * scale - r, y * scale - r, 2.0f * r, 2.0f * r, r, thickness > 0.0f ? SDL_max(thickness * scale, 1.0f) : 0.0f, color);
+        f32 pixelRadius = radius * scale;
+        DrawRoundedPixels(surface, DrawBounds(surface), x * scale - pixelRadius, y * scale - pixelRadius, 2.0f * pixelRadius, 2.0f * pixelRadius, pixelRadius, thickness > 0.0f ? SDL_max(thickness * scale, 1.0f) : 0.0f, color);
     }
 }
 
@@ -387,13 +387,13 @@ static void DrawTriangles(ECSSurface *surface, SHUSlice points, SHUSlice indices
 
     for (usz i = 0; i < count; i++)
     {
-        usz a = indexCount > 0 ? index[3 * i] : 3 * i;
-        usz b = indexCount > 0 ? index[3 * i + 1] : 3 * i + 1;
-        usz c = indexCount > 0 ? index[3 * i + 2] : 3 * i + 2;
+        usz first = indexCount > 0 ? index[3 * i] : 3 * i;
+        usz second = indexCount > 0 ? index[3 * i + 1] : 3 * i + 1;
+        usz third = indexCount > 0 ? index[3 * i + 2] : 3 * i + 2;
 
-        if (a < pointCount && b < pointCount && c < pointCount)
+        if (first < pointCount && second < pointCount && third < pointCount)
         {
-            DrawTriangle(surface, bounds, DrawPointAt(points, a, surface->scale), DrawPointAt(points, b, surface->scale), DrawPointAt(points, c, surface->scale), color);
+            DrawTriangle(surface, bounds, DrawPointAt(points, first, surface->scale), DrawPointAt(points, second, surface->scale), DrawPointAt(points, third, surface->scale), color);
         }
     }
 }
@@ -415,12 +415,12 @@ static void DrawLines(ECSSurface *surface, SHUSlice points, SHUSlice indices, f3
 
     for (usz i = 0; i < count; i++)
     {
-        usz a = indexCount > 0 ? index[2 * i] : i;
-        usz b = indexCount > 0 ? index[2 * i + 1] : i + 1;
+        usz start = indexCount > 0 ? index[2 * i] : i;
+        usz end = indexCount > 0 ? index[2 * i + 1] : i + 1;
 
-        if (a < pointCount && b < pointCount)
+        if (start < pointCount && end < pointCount)
         {
-            DrawSegment(surface, bounds, DrawPointAt(points, a, surface->scale), DrawPointAt(points, b, surface->scale), thickness * surface->scale, color);
+            DrawSegment(surface, bounds, DrawPointAt(points, start, surface->scale), DrawPointAt(points, end, surface->scale), thickness * surface->scale, color);
         }
     }
 }
@@ -430,13 +430,13 @@ static void DrawLines(ECSSurface *surface, SHUSlice points, SHUSlice indices, f3
 #pragma region Images
 
 /// @brief The colour of an image between its pixels, from the four nearest, each counted by its alpha so that transparent pixels do not darken the edges.
-/// @param u, v A point in the image's pixels, whose centres are at whole numbers; outside the image, the nearest edge pixel counts.
-static ECSColor DrawSample(const SDL_Surface *image, f32 u, f32 v)
+/// @param imageX, imageY A point in the image's pixels, whose centres are at whole numbers; outside the image, the nearest edge pixel counts.
+static ECSColor DrawSample(const SDL_Surface *image, f32 imageX, f32 imageY)
 {
-    i32 left = (i32)SDL_floorf(u);
-    i32 top = (i32)SDL_floorf(v);
-    f32 across = u - (f32)left;
-    f32 down = v - (f32)top;
+    i32 left = (i32)SDL_floorf(imageX);
+    i32 top = (i32)SDL_floorf(imageY);
+    f32 across = imageX - (f32)left;
+    f32 down = imageY - (f32)top;
     f32 sums[4] = {0}; // blue, green and red, each multiplied by alpha, then alpha
 
     for (i32 corner = 0; corner < 4; corner++)
@@ -466,13 +466,13 @@ static ECSColor DrawSample(const SDL_Surface *image, f32 u, f32 v)
 }
 
 /// @brief Multiplies each channel of a colour by the same channel of another.
-static ECSColor DrawMultiply(ECSColor color, ECSColor by)
+static ECSColor DrawMultiply(ECSColor color, ECSColor factor)
 {
     ECSColor product = 0;
 
     for (u32 shift = 0; shift < 32; shift += 8)
     {
-        product |= (((color >> shift) & 0xFF) * ((by >> shift) & 0xFF) / 255) << shift;
+        product |= (((color >> shift) & 0xFF) * ((factor >> shift) & 0xFF) / 255) << shift;
     }
 
     return product;
