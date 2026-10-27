@@ -21,7 +21,6 @@ OpenECS's OVERVIEW.md holds the product decisions for these plugins too, and Ope
 | `.github/`      | Checks, rulesets and the agents' check script.                                                                                                                                                             |
 | `.clang-format` | How clang-format formats the C code, as OpenECS's does.                                                                                                                                                    |
 | `.clang-tidy`   | What clang-tidy checks in the C code: names (DESIGN.md, section 1.3), how complex functions are, and common bugs.                                                                                                                      |
-| `.clangd`       | How clangd reads the compilation database that shuild writes, `compile_commands.json`, without gcc's own flags.                                                                                                                        |
 | `.claude/`      | Claude Code's settings and notes: it formats each C file it edits and never edits `dependencies/`; `notes.md` says why the tools are set up as they are. OpenECS's `.claude/skills/` holds the procedures. |
 | `LICENSE.md`    | The license, zlib.                                                                                                                                                                                         |
 
