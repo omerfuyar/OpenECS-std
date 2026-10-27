@@ -237,7 +237,7 @@ static bool NetTrust(const char *path)
         ECS_LogWarn(NET.plugin, "%d certificates of '%s' cannot be read; the others are trusted", failed, fullPath);
     }
 
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
     return trusted;
 }
 
@@ -607,8 +607,8 @@ static void *NetListenTls(i32 port, const char *certificate, const char *key)
         server = nullptr;
     }
 
-    SDL_free(certificatePath);
-    SDL_free(keyPath);
+    ECSPath_Free(certificatePath);
+    ECSPath_Free(keyPath);
     return server;
 }
 

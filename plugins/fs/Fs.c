@@ -114,7 +114,7 @@ static void FsInfo(const char *path, ECSValue *retInfo)
         ECSValue_SetNil(retInfo);
     }
 
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
 }
 
 static int SDLCALL FsCompareNames(const void *first, const void *second)
@@ -171,14 +171,14 @@ static void FsList(const char *path, const char *pattern, ECSValue *retEntries)
     }
 
     SDL_free(names);
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
 }
 
 static bool FsMakeFolder(const char *path)
 {
     char *fullPath = nullptr;
     bool made = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && SDL_CreateDirectory(fullPath);
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
     return made;
 }
 
@@ -187,8 +187,8 @@ static bool FsCopy(const char *source, const char *destination)
     char *fullSource = nullptr;
     char *fullDestination = nullptr;
     bool copied = ECSPath_GetFull(&fullSource, source) == SHUResult_Ok && ECSPath_GetFull(&fullDestination, destination) == SHUResult_Ok && SDL_CopyFile(fullSource, fullDestination);
-    SDL_free(fullSource);
-    SDL_free(fullDestination);
+    ECSPath_Free(fullSource);
+    ECSPath_Free(fullDestination);
     return copied;
 }
 
@@ -617,7 +617,7 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     char *fullPath = nullptr;
     bool watching = ECSPath_GetFull(&fullPath, folder) == SHUResult_Ok && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 && FsStartWatching(watch, fullPath) &&
                     (FILESYSTEM.timer != nullptr || ECSTimer_Start(FILESYSTEM.plugin, &FILESYSTEM.timer, FS_READ_INTERVAL, true, FsReadChanges, nullptr) == SHUResult_Ok);
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
 
     if (!watching)
     {

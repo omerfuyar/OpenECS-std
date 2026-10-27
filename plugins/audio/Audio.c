@@ -206,7 +206,7 @@ static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char
         ECS_LogError(AUDIO.plugin, "Cannot %s the sound '%s': not a WAV, MP3, FLAC or OGG file that can be read.", doing, fullPath != nullptr ? fullPath : path);
     }
 
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
     return opened;
 }
 

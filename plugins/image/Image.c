@@ -177,11 +177,11 @@ static SHUSlice ImageReadFile(const char *path)
     {
         ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", fullPath != nullptr ? fullPath : path, file == nullptr ? SDL_GetError() : "the file is too large");
         SDL_free(file);
-        SDL_free(fullPath);
+        ECSPath_Free(fullPath);
         return cs(nullptr, 0);
     }
 
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
     return cs(file, size);
 }
 
@@ -431,7 +431,7 @@ static bool ImageSave(void *image, const char *path)
         ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", fullPath != nullptr ? fullPath : path);
     }
 
-    SDL_free(fullPath);
+    ECSPath_Free(fullPath);
     SDL_free(rgba);
     return written;
 }

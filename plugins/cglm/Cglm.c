@@ -1,13 +1,15 @@
 // The cglm standard plugin: cglm's vectors, 4 by 4 matrices, quaternions, cameras and noise, for Lua and C (DESIGN 16).
 // Each vector, quaternion and matrix is a buffer of 32-bit floats, a string in Lua: 2, 3 or 4 for a vector, 4 for a quaternion, x, y, z and w,
 // and 16 for a matrix, column by column, as cglm and shaders keep them. A function is named as cglm's, without glm_ and in camelCase:
-// glm_mat4_mul is mat4Mul, and its result is what cglm writes into dest. C plugins call cglm itself, through header.h.
+// glm_mat4_mul is mat4Mul, and its result is what cglm writes into dest. C plugins call the same functions, through cglm.h; cglm itself stays inside the plugin.
 
 #include "OpenECS.h"
 
 #include "SDL3/SDL.h"
 
-#include "header.h"
+// the depth of cglm's projections goes from 0 to 1, as SDL's GPU API takes it
+#define CGLM_FORCE_DEPTH_ZERO_TO_ONE
+#include "cglm/cglm.h"
 
 #pragma region Source Only
 
@@ -42,75 +44,75 @@ static SHUSlice CglmResult(usz count)
 }
 
 // the functions of a vector of N floats, which call cglm's glm_vecN_ functions
-#define CGLM_VECTOR(N)                                                                                                                                  \
-    static SHUSlice CglmVec##N##Add(SHUSlice a, SHUSlice b)                                                                                             \
-    {                                                                                                                                                   \
-        vec##N first, second;                                                                                                                           \
-        if (!CglmRead(first, a, N, "vec" #N "Add") || !CglmRead(second, b, N, "vec" #N "Add"))                                                          \
-        {                                                                                                                                               \
-            return cs(nullptr, 0);                                                                                                                      \
-        }                                                                                                                                               \
-        glm_vec##N##_add(first, second, CGLM.result.vector);                                                                                            \
-        return CglmResult(N);                                                                                                                           \
-    }                                                                                                                                                   \
-    static SHUSlice CglmVec##N##Sub(SHUSlice a, SHUSlice b)                                                                                             \
-    {                                                                                                                                                   \
-        vec##N first, second;                                                                                                                           \
-        if (!CglmRead(first, a, N, "vec" #N "Sub") || !CglmRead(second, b, N, "vec" #N "Sub"))                                                          \
-        {                                                                                                                                               \
-            return cs(nullptr, 0);                                                                                                                      \
-        }                                                                                                                                               \
-        glm_vec##N##_sub(first, second, CGLM.result.vector);                                                                                            \
-        return CglmResult(N);                                                                                                                           \
-    }                                                                                                                                                   \
-    static SHUSlice CglmVec##N##Scale(SHUSlice v, f32 s)                                                                                                \
-    {                                                                                                                                                   \
-        vec##N vector;                                                                                                                                  \
-        if (!CglmRead(vector, v, N, "vec" #N "Scale"))                                                                                                  \
-        {                                                                                                                                               \
-            return cs(nullptr, 0);                                                                                                                      \
-        }                                                                                                                                               \
-        glm_vec##N##_scale(vector, s, CGLM.result.vector);                                                                                              \
-        return CglmResult(N);                                                                                                                           \
-    }                                                                                                                                                   \
-    static f32 CglmVec##N##Dot(SHUSlice a, SHUSlice b)                                                                                                  \
-    {                                                                                                                                                   \
-        vec##N first, second;                                                                                                                           \
-        return CglmRead(first, a, N, "vec" #N "Dot") && CglmRead(second, b, N, "vec" #N "Dot") ? glm_vec##N##_dot(first, second) : 0.0f;                \
-    }                                                                                                                                                   \
-    static f32 CglmVec##N##Norm(SHUSlice v)                                                                                                             \
-    {                                                                                                                                                   \
-        vec##N vector;                                                                                                                                  \
-        return CglmRead(vector, v, N, "vec" #N "Norm") ? glm_vec##N##_norm(vector) : 0.0f;                                                              \
-    }                                                                                                                                                   \
-    static f32 CglmVec##N##Distance(SHUSlice a, SHUSlice b)                                                                                             \
-    {                                                                                                                                                   \
-        vec##N first, second;                                                                                                                           \
-        return CglmRead(first, a, N, "vec" #N "Distance") && CglmRead(second, b, N, "vec" #N "Distance") ? glm_vec##N##_distance(first, second) : 0.0f; \
-    }                                                                                                                                                   \
-    static SHUSlice CglmVec##N##Normalize(SHUSlice v)                                                                                                   \
-    {                                                                                                                                                   \
-        vec##N vector;                                                                                                                                  \
-        if (!CglmRead(vector, v, N, "vec" #N "Normalize"))                                                                                              \
-        {                                                                                                                                               \
-            return cs(nullptr, 0);                                                                                                                      \
-        }                                                                                                                                               \
-        glm_vec##N##_normalize_to(vector, CGLM.result.vector);                                                                                          \
-        return CglmResult(N);                                                                                                                           \
-    }                                                                                                                                                   \
-    static SHUSlice CglmVec##N##Lerp(SHUSlice from, SHUSlice to, f32 t)                                                                                 \
-    {                                                                                                                                                   \
-        vec##N first, second;                                                                                                                           \
-        if (!CglmRead(first, from, N, "vec" #N "Lerp") || !CglmRead(second, to, N, "vec" #N "Lerp"))                                                    \
-        {                                                                                                                                               \
-            return cs(nullptr, 0);                                                                                                                      \
-        }                                                                                                                                               \
-        /* cglm keeps t between 0 and 1 for vec2, but not for vec3 and vec4, so all sizes go as vec3 and vec4 do */                                     \
-        for (int i = 0; i < N; i++)                                                                                                                     \
-        {                                                                                                                                               \
-            CGLM.result.vector[i] = first[i] + t * (second[i] - first[i]);                                                                              \
-        }                                                                                                                                               \
-        return CglmResult(N);                                                                                                                           \
+#define CGLM_VECTOR(N)                                                                                                                                                       \
+    static SHUSlice CglmVec##N##Add(SHUSlice firstBuffer, SHUSlice secondBuffer)                                                                                             \
+    {                                                                                                                                                                        \
+        vec##N first, second;                                                                                                                                                \
+        if (!CglmRead(first, firstBuffer, N, "vec" #N "Add") || !CglmRead(second, secondBuffer, N, "vec" #N "Add"))                                                          \
+        {                                                                                                                                                                    \
+            return cs(nullptr, 0);                                                                                                                                           \
+        }                                                                                                                                                                    \
+        glm_vec##N##_add(first, second, CGLM.result.vector);                                                                                                                 \
+        return CglmResult(N);                                                                                                                                                \
+    }                                                                                                                                                                        \
+    static SHUSlice CglmVec##N##Sub(SHUSlice firstBuffer, SHUSlice secondBuffer)                                                                                             \
+    {                                                                                                                                                                        \
+        vec##N first, second;                                                                                                                                                \
+        if (!CglmRead(first, firstBuffer, N, "vec" #N "Sub") || !CglmRead(second, secondBuffer, N, "vec" #N "Sub"))                                                          \
+        {                                                                                                                                                                    \
+            return cs(nullptr, 0);                                                                                                                                           \
+        }                                                                                                                                                                    \
+        glm_vec##N##_sub(first, second, CGLM.result.vector);                                                                                                                 \
+        return CglmResult(N);                                                                                                                                                \
+    }                                                                                                                                                                        \
+    static SHUSlice CglmVec##N##Scale(SHUSlice vectorBuffer, f32 scale)                                                                                                      \
+    {                                                                                                                                                                        \
+        vec##N vector;                                                                                                                                                       \
+        if (!CglmRead(vector, vectorBuffer, N, "vec" #N "Scale"))                                                                                                            \
+        {                                                                                                                                                                    \
+            return cs(nullptr, 0);                                                                                                                                           \
+        }                                                                                                                                                                    \
+        glm_vec##N##_scale(vector, scale, CGLM.result.vector);                                                                                                               \
+        return CglmResult(N);                                                                                                                                                \
+    }                                                                                                                                                                        \
+    static f32 CglmVec##N##Dot(SHUSlice firstBuffer, SHUSlice secondBuffer)                                                                                                  \
+    {                                                                                                                                                                        \
+        vec##N first, second;                                                                                                                                                \
+        return CglmRead(first, firstBuffer, N, "vec" #N "Dot") && CglmRead(second, secondBuffer, N, "vec" #N "Dot") ? glm_vec##N##_dot(first, second) : 0.0f;                \
+    }                                                                                                                                                                        \
+    static f32 CglmVec##N##Norm(SHUSlice vectorBuffer)                                                                                                                       \
+    {                                                                                                                                                                        \
+        vec##N vector;                                                                                                                                                       \
+        return CglmRead(vector, vectorBuffer, N, "vec" #N "Norm") ? glm_vec##N##_norm(vector) : 0.0f;                                                                        \
+    }                                                                                                                                                                        \
+    static f32 CglmVec##N##Distance(SHUSlice firstBuffer, SHUSlice secondBuffer)                                                                                             \
+    {                                                                                                                                                                        \
+        vec##N first, second;                                                                                                                                                \
+        return CglmRead(first, firstBuffer, N, "vec" #N "Distance") && CglmRead(second, secondBuffer, N, "vec" #N "Distance") ? glm_vec##N##_distance(first, second) : 0.0f; \
+    }                                                                                                                                                                        \
+    static SHUSlice CglmVec##N##Normalize(SHUSlice vectorBuffer)                                                                                                             \
+    {                                                                                                                                                                        \
+        vec##N vector;                                                                                                                                                       \
+        if (!CglmRead(vector, vectorBuffer, N, "vec" #N "Normalize"))                                                                                                        \
+        {                                                                                                                                                                    \
+            return cs(nullptr, 0);                                                                                                                                           \
+        }                                                                                                                                                                    \
+        glm_vec##N##_normalize_to(vector, CGLM.result.vector);                                                                                                               \
+        return CglmResult(N);                                                                                                                                                \
+    }                                                                                                                                                                        \
+    static SHUSlice CglmVec##N##Lerp(SHUSlice fromBuffer, SHUSlice toBuffer, f32 amount)                                                                                     \
+    {                                                                                                                                                                        \
+        vec##N first, second;                                                                                                                                                \
+        if (!CglmRead(first, fromBuffer, N, "vec" #N "Lerp") || !CglmRead(second, toBuffer, N, "vec" #N "Lerp"))                                                             \
+        {                                                                                                                                                                    \
+            return cs(nullptr, 0);                                                                                                                                           \
+        }                                                                                                                                                                    \
+        /* cglm keeps t between 0 and 1 for vec2, but not for vec3 and vec4, so all sizes go as vec3 and vec4 do */                                                          \
+        for (int i = 0; i < N; i++)                                                                                                                                          \
+        {                                                                                                                                                                    \
+            CGLM.result.vector[i] = first[i] + amount * (second[i] - first[i]);                                                                                              \
+        }                                                                                                                                                                    \
+        return CglmResult(N);                                                                                                                                                \
     }
 
 CGLM_VECTOR(2)
@@ -179,17 +181,17 @@ static SHUSlice CglmVec4(f32 x, f32 y, f32 z, f32 w)
     return CglmResult(4);
 }
 
-static void CglmComponents(SHUSlice v, f32 *retX, f32 *retY, f32 *retZ, f32 *retW)
+static void CglmComponents(SHUSlice vectorBuffer, f32 *retX, f32 *retY, f32 *retZ, f32 *retW)
 {
     f32 components[4] = {0};
 
-    if (v.data != nullptr && v.size % sizeof(f32) == 0 && v.size <= sizeof(components))
+    if (vectorBuffer.data != nullptr && vectorBuffer.size % sizeof(f32) == 0 && vectorBuffer.size <= sizeof(components))
     {
-        SDL_memcpy(components, v.data, v.size);
+        SDL_memcpy(components, vectorBuffer.data, vectorBuffer.size);
     }
     else
     {
-        ECS_LogWarn(CGLM.plugin, "cglm.components takes a buffer of up to 4 floats, not of %zu bytes", v.size);
+        ECS_LogWarn(CGLM.plugin, "cglm.components takes a buffer of up to 4 floats, not of %zu bytes", vectorBuffer.size);
     }
 
     *retX = components[0];
@@ -198,11 +200,11 @@ static void CglmComponents(SHUSlice v, f32 *retX, f32 *retY, f32 *retZ, f32 *ret
     *retW = components[3];
 }
 
-static SHUSlice CglmVec3Cross(SHUSlice a, SHUSlice b)
+static SHUSlice CglmVec3Cross(SHUSlice firstBuffer, SHUSlice secondBuffer)
 {
     vec3 first, second;
 
-    if (!CglmRead(first, a, 3, "vec3Cross") || !CglmRead(second, b, 3, "vec3Cross"))
+    if (!CglmRead(first, firstBuffer, 3, "vec3Cross") || !CglmRead(second, secondBuffer, 3, "vec3Cross"))
     {
         return cs(nullptr, 0);
     }
@@ -217,11 +219,11 @@ static SHUSlice CglmMat4Identity(void)
     return CglmResult(16);
 }
 
-static SHUSlice CglmMat4Mul(SHUSlice a, SHUSlice b)
+static SHUSlice CglmMat4Mul(SHUSlice firstBuffer, SHUSlice secondBuffer)
 {
     mat4 first, second;
 
-    if (!CglmRead((f32 *)first, a, 16, "mat4Mul") || !CglmRead((f32 *)second, b, 16, "mat4Mul"))
+    if (!CglmRead((f32 *)first, firstBuffer, 16, "mat4Mul") || !CglmRead((f32 *)second, secondBuffer, 16, "mat4Mul"))
     {
         return cs(nullptr, 0);
     }
@@ -230,12 +232,12 @@ static SHUSlice CglmMat4Mul(SHUSlice a, SHUSlice b)
     return CglmResult(16);
 }
 
-static SHUSlice CglmMat4Mulv(SHUSlice m, SHUSlice v)
+static SHUSlice CglmMat4Mulv(SHUSlice matrixBuffer, SHUSlice vectorBuffer)
 {
     mat4 matrix;
     vec4 vector;
 
-    if (!CglmRead((f32 *)matrix, m, 16, "mat4Mulv") || !CglmRead(vector, v, 4, "mat4Mulv"))
+    if (!CglmRead((f32 *)matrix, matrixBuffer, 16, "mat4Mulv") || !CglmRead(vector, vectorBuffer, 4, "mat4Mulv"))
     {
         return cs(nullptr, 0);
     }
@@ -244,12 +246,12 @@ static SHUSlice CglmMat4Mulv(SHUSlice m, SHUSlice v)
     return CglmResult(4);
 }
 
-static SHUSlice CglmMat4Mulv3(SHUSlice m, SHUSlice v, f32 last)
+static SHUSlice CglmMat4Mulv3(SHUSlice matrixBuffer, SHUSlice vectorBuffer, f32 last)
 {
     mat4 matrix;
     vec3 vector;
 
-    if (!CglmRead((f32 *)matrix, m, 16, "mat4Mulv3") || !CglmRead(vector, v, 3, "mat4Mulv3"))
+    if (!CglmRead((f32 *)matrix, matrixBuffer, 16, "mat4Mulv3") || !CglmRead(vector, vectorBuffer, 3, "mat4Mulv3"))
     {
         return cs(nullptr, 0);
     }
@@ -258,11 +260,11 @@ static SHUSlice CglmMat4Mulv3(SHUSlice m, SHUSlice v, f32 last)
     return CglmResult(3);
 }
 
-static SHUSlice CglmMat4Transpose(SHUSlice m)
+static SHUSlice CglmMat4Transpose(SHUSlice matrixBuffer)
 {
     mat4 matrix;
 
-    if (!CglmRead((f32 *)matrix, m, 16, "mat4Transpose"))
+    if (!CglmRead((f32 *)matrix, matrixBuffer, 16, "mat4Transpose"))
     {
         return cs(nullptr, 0);
     }
@@ -271,18 +273,18 @@ static SHUSlice CglmMat4Transpose(SHUSlice m)
     return CglmResult(16);
 }
 
-static f32 CglmMat4Det(SHUSlice m)
+static f32 CglmMat4Det(SHUSlice matrixBuffer)
 {
     mat4 matrix;
-    return CglmRead((f32 *)matrix, m, 16, "mat4Det") ? glm_mat4_det(matrix) : 0.0f;
+    return CglmRead((f32 *)matrix, matrixBuffer, 16, "mat4Det") ? glm_mat4_det(matrix) : 0.0f;
 }
 
 // cglm inverts any matrix; one whose determinant is 0 has no inverse, so it gives an empty buffer
-static SHUSlice CglmMat4Inv(SHUSlice m)
+static SHUSlice CglmMat4Inv(SHUSlice matrixBuffer)
 {
     mat4 matrix;
 
-    if (!CglmRead((f32 *)matrix, m, 16, "mat4Inv") || glm_mat4_det(matrix) == 0.0f)
+    if (!CglmRead((f32 *)matrix, matrixBuffer, 16, "mat4Inv") || glm_mat4_det(matrix) == 0.0f)
     {
         return cs(nullptr, 0);
     }
@@ -291,11 +293,11 @@ static SHUSlice CglmMat4Inv(SHUSlice m)
     return CglmResult(16);
 }
 
-static SHUSlice CglmTranslateMake(SHUSlice v)
+static SHUSlice CglmTranslateMake(SHUSlice vectorBuffer)
 {
     vec3 vector;
 
-    if (!CglmRead(vector, v, 3, "translateMake"))
+    if (!CglmRead(vector, vectorBuffer, 3, "translateMake"))
     {
         return cs(nullptr, 0);
     }
@@ -304,11 +306,11 @@ static SHUSlice CglmTranslateMake(SHUSlice v)
     return CglmResult(16);
 }
 
-static SHUSlice CglmScaleMake(SHUSlice v)
+static SHUSlice CglmScaleMake(SHUSlice vectorBuffer)
 {
     vec3 vector;
 
-    if (!CglmRead(vector, v, 3, "scaleMake"))
+    if (!CglmRead(vector, vectorBuffer, 3, "scaleMake"))
     {
         return cs(nullptr, 0);
     }
@@ -330,11 +332,11 @@ static SHUSlice CglmRotateMake(f32 angle, SHUSlice axis)
     return CglmResult(16);
 }
 
-static SHUSlice CglmTranslate(SHUSlice m, SHUSlice v)
+static SHUSlice CglmTranslate(SHUSlice matrixBuffer, SHUSlice vectorBuffer)
 {
     vec3 vector;
 
-    if (!CglmRead((f32 *)CGLM.result.matrix, m, 16, "translate") || !CglmRead(vector, v, 3, "translate"))
+    if (!CglmRead((f32 *)CGLM.result.matrix, matrixBuffer, 16, "translate") || !CglmRead(vector, vectorBuffer, 3, "translate"))
     {
         return cs(nullptr, 0);
     }
@@ -343,11 +345,11 @@ static SHUSlice CglmTranslate(SHUSlice m, SHUSlice v)
     return CglmResult(16);
 }
 
-static SHUSlice CglmRotate(SHUSlice m, f32 angle, SHUSlice axis)
+static SHUSlice CglmRotate(SHUSlice matrixBuffer, f32 angle, SHUSlice axis)
 {
     vec3 vector;
 
-    if (!CglmRead((f32 *)CGLM.result.matrix, m, 16, "rotate") || !CglmRead(vector, axis, 3, "rotate"))
+    if (!CglmRead((f32 *)CGLM.result.matrix, matrixBuffer, 16, "rotate") || !CglmRead(vector, axis, 3, "rotate"))
     {
         return cs(nullptr, 0);
     }
@@ -356,11 +358,11 @@ static SHUSlice CglmRotate(SHUSlice m, f32 angle, SHUSlice axis)
     return CglmResult(16);
 }
 
-static SHUSlice CglmScale(SHUSlice m, SHUSlice v)
+static SHUSlice CglmScale(SHUSlice matrixBuffer, SHUSlice vectorBuffer)
 {
     vec3 vector;
 
-    if (!CglmRead((f32 *)CGLM.result.matrix, m, 16, "scale") || !CglmRead(vector, v, 3, "scale"))
+    if (!CglmRead((f32 *)CGLM.result.matrix, matrixBuffer, 16, "scale") || !CglmRead(vector, vectorBuffer, 3, "scale"))
     {
         return cs(nullptr, 0);
     }
@@ -381,11 +383,11 @@ static SHUSlice CglmOrtho(f32 left, f32 right, f32 bottom, f32 top, f32 nearZ, f
     return CglmResult(16);
 }
 
-static SHUSlice CglmLookat(SHUSlice eye, SHUSlice center, SHUSlice up)
+static SHUSlice CglmLookat(SHUSlice eye, SHUSlice center, SHUSlice upBuffer)
 {
     vec3 eyePoint, centerPoint, upDirection;
 
-    if (!CglmRead(eyePoint, eye, 3, "lookat") || !CglmRead(centerPoint, center, 3, "lookat") || !CglmRead(upDirection, up, 3, "lookat"))
+    if (!CglmRead(eyePoint, eye, 3, "lookat") || !CglmRead(centerPoint, center, 3, "lookat") || !CglmRead(upDirection, upBuffer, 3, "lookat"))
     {
         return cs(nullptr, 0);
     }
@@ -394,13 +396,13 @@ static SHUSlice CglmLookat(SHUSlice eye, SHUSlice center, SHUSlice up)
     return CglmResult(16);
 }
 
-static SHUSlice CglmProject(SHUSlice position, SHUSlice m, SHUSlice viewport)
+static SHUSlice CglmProject(SHUSlice position, SHUSlice matrixBuffer, SHUSlice viewport)
 {
     vec3 point;
     mat4 matrix;
     vec4 rectangle;
 
-    if (!CglmRead(point, position, 3, "project") || !CglmRead((f32 *)matrix, m, 16, "project") || !CglmRead(rectangle, viewport, 4, "project"))
+    if (!CglmRead(point, position, 3, "project") || !CglmRead((f32 *)matrix, matrixBuffer, 16, "project") || !CglmRead(rectangle, viewport, 4, "project"))
     {
         return cs(nullptr, 0);
     }
@@ -434,11 +436,11 @@ static SHUSlice CglmQuatv(f32 angle, SHUSlice axis)
     return CglmResult(4);
 }
 
-static SHUSlice CglmQuatMul(SHUSlice p, SHUSlice q)
+static SHUSlice CglmQuatMul(SHUSlice firstQuatBuffer, SHUSlice quatBuffer)
 {
     versor first, second;
 
-    if (!CglmRead(first, p, 4, "quatMul") || !CglmRead(second, q, 4, "quatMul"))
+    if (!CglmRead(first, firstQuatBuffer, 4, "quatMul") || !CglmRead(second, quatBuffer, 4, "quatMul"))
     {
         return cs(nullptr, 0);
     }
@@ -447,11 +449,11 @@ static SHUSlice CglmQuatMul(SHUSlice p, SHUSlice q)
     return CglmResult(4);
 }
 
-static SHUSlice CglmQuatNormalize(SHUSlice q)
+static SHUSlice CglmQuatNormalize(SHUSlice quatBuffer)
 {
     versor rotation;
 
-    if (!CglmRead(rotation, q, 4, "quatNormalize"))
+    if (!CglmRead(rotation, quatBuffer, 4, "quatNormalize"))
     {
         return cs(nullptr, 0);
     }
@@ -460,24 +462,24 @@ static SHUSlice CglmQuatNormalize(SHUSlice q)
     return CglmResult(4);
 }
 
-static SHUSlice CglmQuatSlerp(SHUSlice from, SHUSlice to, f32 t)
+static SHUSlice CglmQuatSlerp(SHUSlice fromBuffer, SHUSlice toBuffer, f32 amount)
 {
     versor first, second;
 
-    if (!CglmRead(first, from, 4, "quatSlerp") || !CglmRead(second, to, 4, "quatSlerp"))
+    if (!CglmRead(first, fromBuffer, 4, "quatSlerp") || !CglmRead(second, toBuffer, 4, "quatSlerp"))
     {
         return cs(nullptr, 0);
     }
 
-    glm_quat_slerp(first, second, t, CGLM.result.vector);
+    glm_quat_slerp(first, second, amount, CGLM.result.vector);
     return CglmResult(4);
 }
 
-static SHUSlice CglmQuatMat4(SHUSlice q)
+static SHUSlice CglmQuatMat4(SHUSlice quatBuffer)
 {
     versor rotation;
 
-    if (!CglmRead(rotation, q, 4, "quatMat4"))
+    if (!CglmRead(rotation, quatBuffer, 4, "quatMat4"))
     {
         return cs(nullptr, 0);
     }
@@ -486,12 +488,12 @@ static SHUSlice CglmQuatMat4(SHUSlice q)
     return CglmResult(16);
 }
 
-static SHUSlice CglmQuatRotatev(SHUSlice q, SHUSlice v)
+static SHUSlice CglmQuatRotatev(SHUSlice quatBuffer, SHUSlice vectorBuffer)
 {
     versor rotation;
     vec3 vector;
 
-    if (!CglmRead(rotation, q, 4, "quatRotatev") || !CglmRead(vector, v, 3, "quatRotatev"))
+    if (!CglmRead(rotation, quatBuffer, 4, "quatRotatev") || !CglmRead(vector, vectorBuffer, 3, "quatRotatev"))
     {
         return cs(nullptr, 0);
     }
