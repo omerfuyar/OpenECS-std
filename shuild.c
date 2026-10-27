@@ -361,10 +361,16 @@ static void BuildLibrary(const Library *library, const char *folder)
     }
 }
 
-/// @brief The folder of a C++ library's build in the cache.
+/// @brief The folder of a C++ library's build in the cache, from this folder, as shuild's functions take paths.
 static char *CMakeFolder(const CMakeLibrary *library)
 {
-    return SHU_UtilFormat("%s%s%s/", SHU_UtilGetScriptDirectory(), CONFIG.cmakeCache, library->name);
+    return SHU_UtilFormat("%s%s/", CONFIG.cmakeCache, library->name);
+}
+
+/// @brief The full path of a C++ library's build, as CMake and the compiler run in other folders.
+static char *CMakeFolderPath(const CMakeLibrary *library)
+{
+    return SHU_UtilFormat("%s%s", SHU_UtilGetScriptDirectory(), CMakeFolder(library));
 }
 
 /// @brief Builds a C++ library of dependencies/ with CMake, with OpenECS's compiler and its C++ compiler, into static archives in the cache, unless they
@@ -372,12 +378,11 @@ static char *CMakeFolder(const CMakeLibrary *library)
 /// the warnings, nor the analyzer, nor the sanitizers. Its symbols are hidden, so they stay inside the plugin. Each step's output goes to a log beside it.
 static void BuildCMakeLibrary(const CMakeLibrary *library)
 {
-    char *folder = CMakeFolder(library);
     bool built = true;
 
     for (usz i = 0; library->archives[i] != NULL; i++)
     {
-        built = built && SHU_UtilFileExists(SHU_UtilFormat("%s%s", folder, library->archives[i])) == SHUFileType_Regular;
+        built = built && SHU_UtilFileExists(SHU_UtilFormat("%s%s", CMakeFolder(library), library->archives[i])) == SHUFileType_Regular;
     }
 
     if (built)
@@ -394,7 +399,8 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
         compilers = SHU_UtilFormat("%s -DCMAKE_SYSTEM_NAME=%s", compilers, SHUPlatform_GetString(SHU_CompilerGetTarget()));
     }
 
-    char *logs = SHU_UtilFormat("%s%s/", CONFIG.cmakeCache, library->name);
+    char *folder = CMakeFolderPath(library);
+    char *logs = CMakeFolder(library);
     SHU_UtilRunLogged(SHU_UtilFormat("%sconfigure.log", logs),
                       "cmake -S \"%sdependencies/%s\" -B \"%s\" -G Ninja -DCMAKE_BUILD_TYPE=Release %s -DCMAKE_POSITION_INDEPENDENT_CODE=ON "
                       "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
@@ -514,7 +520,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
 
             for (usz j = 0; needs->cmake[i]->built[j] != NULL; j++)
             {
-                SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s%s", CMakeFolder(needs->cmake[i]), needs->cmake[i]->built[j]));
+                SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s%s", CMakeFolderPath(needs->cmake[i]), needs->cmake[i]->built[j]));
             }
         }
 
@@ -562,7 +568,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
             {
                 for (usz j = 0; needs->cmake[i]->archives[j] != NULL; j++)
                 {
-                    SHU_CompilerAddLinkerFlags(SHU_UtilFormat("\"%s%s\"", CMakeFolder(needs->cmake[i]), needs->cmake[i]->archives[j]));
+                    SHU_CompilerAddLinkerFlags(SHU_UtilFormat("\"%s%s\"", CMakeFolderPath(needs->cmake[i]), needs->cmake[i]->archives[j]));
                 }
             }
 
