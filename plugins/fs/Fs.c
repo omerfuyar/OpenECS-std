@@ -594,7 +594,7 @@ static void FsReadChanges(void *data)
 }
 #endif
 
-static FsWatch *FsWatchFolder(const char *folder, FsChangedFunction Changed)
+static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 {
     FsWatch *watch = Changed == nullptr ? nullptr : SDL_calloc(1, sizeof(FsWatch));
 
@@ -636,7 +636,7 @@ static void FsWatchDestroy(void *object)
 }
 
 /// @brief Stops a watch now, instead of when no one uses its handle.
-static void FsUnwatch(FsWatch *watch)
+static void FsUnwatch(void *watch)
 {
     ECSHandle_Free(FILESYSTEM.plugin, "watch", watch);
 }

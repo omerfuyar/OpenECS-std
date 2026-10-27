@@ -61,7 +61,7 @@ static const char *GltfResultText(cgltf_result result)
     }
 }
 
-static GltfModel *GltfLoad(const char *path)
+static void *GltfLoad(const char *path)
 {
     char *fullPath = nullptr;
 
@@ -110,7 +110,7 @@ static void GltfModelDestroy(void *object)
 }
 
 /// @brief Frees a model now, instead of when no one uses its handle.
-static void GltfFreeModel(GltfModel *model)
+static void GltfFreeModel(void *model)
 {
     ECSHandle_Free(GLTF.plugin, "model", model);
 }
@@ -429,8 +429,10 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *retInfo)
 }
 
 /// @brief Gives a model's parts; a model too big for the memory left gives nil.
-static void GltfDescribe(GltfModel *model, ECSValue *retInfo)
+static void GltfDescribe(void *modelHandle, ECSValue *retInfo)
 {
+    GltfModel *model = modelHandle;
+
     if (GltfDescribeModel(model->data, retInfo) != SHUResult_Ok)
     {
         ECS_LogError(GLTF.plugin, "Out of memory while describing a model");
@@ -468,7 +470,7 @@ static SHUSlice GltfKeepResult(GltfModel *model, void *data, usz size)
     return cs(data, data == nullptr ? 0 : size);
 }
 
-static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const char *name)
+static SHUSlice GltfAttribute(void *model, i32 mesh, i32 primitive, const char *name)
 {
     const cgltf_accessor *accessor = GltfFindAttributeNamed(GltfFindPrimitive(model, mesh, primitive), name);
 
@@ -485,7 +487,7 @@ static SHUSlice GltfAttribute(GltfModel *model, i32 mesh, i32 primitive, const c
     return GltfKeepResult(model, floats, count * sizeof(f32));
 }
 
-static SHUSlice GltfIndices(GltfModel *model, i32 mesh, i32 primitive)
+static SHUSlice GltfIndices(void *model, i32 mesh, i32 primitive)
 {
     const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
     usz count = found == nullptr ? 0 : GltfIndexCount(found);
@@ -656,8 +658,10 @@ static mat4 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 second
     return matrices;
 }
 
-static SHUSlice GltfPose(GltfModel *model, i32 animation, f32 seconds)
+static SHUSlice GltfPose(void *modelHandle, i32 animation, f32 seconds)
 {
+    GltfModel *model = modelHandle;
+
     mat4 *matrices = GltfLocalMatrices(model->data, animation, seconds);
     return GltfKeepResult(model, matrices, model->data->nodes_count * sizeof(mat4));
 }
@@ -724,8 +728,10 @@ static mat4 *GltfJointMatrices(const cgltf_data *data, const cgltf_skin *skin, i
 
 /// @brief Gives a primitive's positions moved by a skin's joints at a time of an animation, three floats each, in the model's space, as glTF skins them:
 /// each vertex goes through the joints that JOINTS_0 names, by the weights that WEIGHTS_0 gives. A primitive without them, or a missing skin, gives its positions as they are.
-static SHUSlice GltfSkin(GltfModel *model, i32 mesh, i32 primitive, i32 skinNumber, i32 animation, f32 seconds)
+static SHUSlice GltfSkin(void *modelHandle, i32 mesh, i32 primitive, i32 skinNumber, i32 animation, f32 seconds)
 {
+    GltfModel *model = modelHandle;
+
     const cgltf_data *data = model->data;
     const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
     const cgltf_accessor *positions = GltfFindAttribute(found, cgltf_attribute_type_position);
@@ -876,8 +882,10 @@ static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz
     return GltfReadImageFile(model, image->uri, retSize);
 }
 
-static SHUSlice GltfImage(GltfModel *model, i32 image)
+static SHUSlice GltfImage(void *modelHandle, i32 image)
 {
+    GltfModel *model = modelHandle;
+
     if (image < 1 || (usz)image > model->data->images_count)
     {
         return GltfKeepResult(model, nullptr, 0);

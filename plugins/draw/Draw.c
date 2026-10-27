@@ -478,8 +478,10 @@ static ECSColor DrawMultiply(ECSColor color, ECSColor factor)
     return product;
 }
 
-static void DrawImageTransformed(ECSSurface *surface, DrawImage *image, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
+static void DrawImageTransformed(ECSSurface *surface, void *imageHandle, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
 {
+    DrawImage *image = imageHandle;
+
     if (!DrawCanDraw(surface) || width <= 0.0f || height <= 0.0f)
     {
         return;
@@ -535,7 +537,7 @@ static void DrawImageDestroy(void *object)
     SDL_free(image);
 }
 
-static DrawImage *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
+static void *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
 {
     if (width <= 0 || height <= 0 || (pixels.size != 0 && pixels.size != (usz)width * (usz)height * sizeof(u32)))
     {
@@ -568,14 +570,18 @@ static DrawImage *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
     return image;
 }
 
-static void DrawImageSize(DrawImage *image, i32 *retWidth, i32 *retHeight)
+static void DrawImageSize(void *imageHandle, i32 *retWidth, i32 *retHeight)
 {
+    DrawImage *image = imageHandle;
+
     *retWidth = image->surface->w;
     *retHeight = image->surface->h;
 }
 
-static ECSColor DrawImagePixel(DrawImage *image, i32 x, i32 y)
+static ECSColor DrawImagePixel(void *imageHandle, i32 x, i32 y)
 {
+    DrawImage *image = imageHandle;
+
     if (x < 0 || y < 0 || x >= image->surface->w || y >= image->surface->h)
     {
         return 0;
@@ -584,14 +590,16 @@ static ECSColor DrawImagePixel(DrawImage *image, i32 x, i32 y)
     return ((const u32 *)((const u8 *)image->surface->pixels + (usz)y * (usz)image->surface->pitch))[x];
 }
 
-static SHUSlice DrawImagePixels(DrawImage *image)
+static SHUSlice DrawImagePixels(void *imageHandle)
 {
+    DrawImage *image = imageHandle;
+
     // a surface of four bytes a pixel has no padding after its rows, so its pixels are row after row
     SDL_assert(image->surface->pitch == image->surface->w * (i32)sizeof(u32));
     return cs(image->surface->pixels, (usz)image->surface->pitch * (usz)image->surface->h);
 }
 
-static void DrawFreeImage(DrawImage *image)
+static void DrawFreeImage(void *image)
 {
     ECSHandle_Free(DRAW.plugin, "image", image);
 }
@@ -611,8 +619,10 @@ static SDL_Surface *DrawWrapSurface(const ECSSurface *surface)
     return target;
 }
 
-static void DrawDrawImage(ECSSurface *surface, DrawImage *image, f32 x, f32 y, f32 width, f32 height)
+static void DrawDrawImage(ECSSurface *surface, void *imageHandle, f32 x, f32 y, f32 width, f32 height)
 {
+    DrawImage *image = imageHandle;
+
     SDL_Surface *target = DrawWrapSurface(surface);
 
     if (target == nullptr)
@@ -659,7 +669,7 @@ static void DrawCloseSizes(DrawFont *font)
 
 /// @brief Finds the font of a name, and adds it the first time it is asked for.
 /// @return The font, or nullptr if out of memory.
-static DrawFont *DrawFindOrAddFont(const char *name)
+static void *DrawFindOrAddFont(const char *name)
 {
     for (usz i = 0; i < arrlenu(DRAW.fonts); i++)
     {
@@ -747,12 +757,14 @@ static void DrawSettingChanged(void *data, const char *name, const ECSValue *val
 }
 
 /// @brief Gives the file a font is read from, for plugins that draw text in other ways, such as gpu. A setting that names another file changes it.
-static const char *DrawFontFile(DrawFont *font)
+static const char *DrawFontFile(void *fontHandle)
 {
+    DrawFont *font = fontHandle;
+
     return font->path;
 }
 
-static f32 DrawText(ECSSurface *surface, DrawFont *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
+static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
 {
     if (text[0] == '\0' || surface->scale <= 0.0f)
     {
@@ -782,7 +794,7 @@ static f32 DrawText(ECSSurface *surface, DrawFont *font, const char *text, f32 x
     return (f32)width / surface->scale;
 }
 
-static void DrawMeasure(DrawFont *font, const char *text, f32 size, f32 *retWidth, f32 *retLineHeight)
+static void DrawMeasure(void *font, const char *text, f32 size, f32 *retWidth, f32 *retLineHeight)
 {
     TTF_Font *opened = DrawFindOrOpenSize(font, size);
     int width = 0;

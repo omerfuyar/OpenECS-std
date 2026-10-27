@@ -374,7 +374,7 @@ static bool TextGridResizeCells(TextGrid *grid, i32 columns, i32 rows)
     return true;
 }
 
-static TextGrid *TextGridNew(i32 columns, i32 rows)
+static void *TextGridNew(i32 columns, i32 rows)
 {
     TextGrid *grid = SDL_calloc(1, sizeof(TextGrid));
 
@@ -398,7 +398,7 @@ static TextGrid *TextGridNew(i32 columns, i32 rows)
     return grid;
 }
 
-static void TextGridResize(TextGrid *grid, i32 columns, i32 rows)
+static void TextGridResize(void *grid, i32 columns, i32 rows)
 {
     if (!TextGridResizeCells(grid, columns, rows))
     {
@@ -406,14 +406,18 @@ static void TextGridResize(TextGrid *grid, i32 columns, i32 rows)
     }
 }
 
-static void TextGridGetSize(TextGrid *grid, i32 *retColumns, i32 *retRows)
+static void TextGridGetSize(void *gridHandle, i32 *retColumns, i32 *retRows)
 {
+    TextGrid *grid = gridHandle;
+
     *retColumns = grid->columns;
     *retRows = grid->rows;
 }
 
-static void TextGridClear(TextGrid *grid)
+static void TextGridClear(void *gridHandle)
 {
+    TextGrid *grid = gridHandle;
+
     for (i32 row = 0; row < grid->rows; row++)
     {
         TextGridClearRow(grid, row);
@@ -423,14 +427,18 @@ static void TextGridClear(TextGrid *grid)
     grid->cursorRow = 0;
 }
 
-static void TextGridSetColors(TextGrid *grid, ECSColor foreground, ECSColor background)
+static void TextGridSetColors(void *gridHandle, ECSColor foreground, ECSColor background)
 {
+    TextGrid *grid = gridHandle;
+
     grid->foreground = foreground;
     grid->background = background;
 }
 
-static void TextGridSetStyle(TextGrid *grid, const char *style)
+static void TextGridSetStyle(void *gridHandle, const char *style)
 {
+    TextGrid *grid = gridHandle;
+
     u8 flags = 0;
 
     // the style is words with spaces between them
@@ -462,8 +470,10 @@ static void TextGridSetStyle(TextGrid *grid, const char *style)
     grid->style = flags;
 }
 
-static const char *TextGridGet(TextGrid *grid, i32 column, i32 row, const char **retStyle)
+static const char *TextGridGet(void *gridHandle, i32 column, i32 row, const char **retStyle)
 {
+    TextGrid *grid = gridHandle;
+
     // the texts stay until the next call, and Lua copies them
     static char character[5];
     static const char *const styles[] = {"", "bold", "underline", "bold underline"};
@@ -486,20 +496,26 @@ static const char *TextGridGet(TextGrid *grid, i32 column, i32 row, const char *
     return character;
 }
 
-static void TextGridSetCursor(TextGrid *grid, i32 column, i32 row)
+static void TextGridSetCursor(void *gridHandle, i32 column, i32 row)
 {
+    TextGrid *grid = gridHandle;
+
     grid->cursorColumn = SDL_clamp(column, 0, grid->columns - 1);
     grid->cursorRow = SDL_clamp(row, 0, grid->rows - 1);
 }
 
-static void TextGridGetCursor(TextGrid *grid, i32 *retColumn, i32 *retRow)
+static void TextGridGetCursor(void *gridHandle, i32 *retColumn, i32 *retRow)
 {
+    TextGrid *grid = gridHandle;
+
     *retColumn = grid->cursorColumn;
     *retRow = grid->cursorRow;
 }
 
-static void TextGridPut(TextGrid *grid, i32 column, i32 row, const char *text)
+static void TextGridPut(void *gridHandle, i32 column, i32 row, const char *text)
 {
+    TextGrid *grid = gridHandle;
+
     usz length = SDL_strlen(text);
 
     // a wide character that does not fit at the edge is left out; the text stops at the edge, so the column never overflows
@@ -522,8 +538,10 @@ static void TextGridPut(TextGrid *grid, i32 column, i32 row, const char *text)
     }
 }
 
-static void TextGridPrint(TextGrid *grid, const char *text)
+static void TextGridPrint(void *gridHandle, const char *text)
 {
+    TextGrid *grid = gridHandle;
+
     usz length = SDL_strlen(text);
 
     for (u32 character = SDL_StepUTF8(&text, &length); character != 0; character = SDL_StepUTF8(&text, &length))
@@ -628,8 +646,10 @@ static i32 TextGridReadRun(TextGrid *grid, i32 start, i32 row, char *text)
     return end;
 }
 
-static void TextGridDraw(ECSSurface *surface, TextGrid *grid, f32 x, f32 y, f32 size, bool cursor)
+static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f32 size, bool cursor)
 {
+    TextGrid *grid = gridHandle;
+
     // a cell is measured at the size the surface draws at, so the characters of a run stay on their cells
     f32 scale = surface->scale > 0.0f ? surface->scale : 1.0f;
     f32 cellWidth = 0.0f;
@@ -682,7 +702,7 @@ static void TextGridDraw(ECSSurface *surface, TextGrid *grid, f32 x, f32 y, f32 
 }
 
 /// @brief Frees a grid now, instead of when no one uses its handle.
-static void TextGridFree(TextGrid *grid)
+static void TextGridFree(void *grid)
 {
     ECSHandle_Free(TEXTGRID.plugin, "grid", grid);
 }

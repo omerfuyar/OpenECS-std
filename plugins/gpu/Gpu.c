@@ -450,7 +450,7 @@ static void GpuMesh(ECSSurface *surface, SHUSlice points, SHUSlice colors, SHUSl
     SDL_free(pointColors);
 }
 
-static SDL_Texture *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
+static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
 {
     if (GPU.renderer == nullptr || width < 1 || height < 1 || pixels.size != (usz)width * (usz)height * 4)
     {
@@ -474,8 +474,10 @@ static SDL_Texture *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
     return texture;
 }
 
-static bool GpuUpdateTexture(SDL_Texture *texture, SHUSlice pixels)
+static bool GpuUpdateTexture(void *textureHandle, SHUSlice pixels)
 {
+    SDL_Texture *texture = textureHandle;
+
     if (pixels.size != (usz)texture->w * (usz)texture->h * 4)
     {
         ECS_LogWarn(GPU.plugin, "A %dx%d texture takes %d bytes of pixels.", texture->w, texture->h, texture->w * texture->h * 4);
@@ -486,18 +488,20 @@ static bool GpuUpdateTexture(SDL_Texture *texture, SHUSlice pixels)
     return SDL_UpdateTexture(texture, nullptr, pixels.data, texture->w * 4);
 }
 
-static void GpuTextureSize(SDL_Texture *texture, i32 *retWidth, i32 *retHeight)
+static void GpuTextureSize(void *textureHandle, i32 *retWidth, i32 *retHeight)
 {
+    SDL_Texture *texture = textureHandle;
+
     *retWidth = texture->w;
     *retHeight = texture->h;
 }
 
-static void GpuFreeTexture(SDL_Texture *texture)
+static void GpuFreeTexture(void *texture)
 {
     ECSHandle_Free(GPU.plugin, "texture", texture);
 }
 
-static void GpuImageTransformed(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
+static void GpuImageTransformed(ECSSurface *surface, void *texture, f32 x, f32 y, f32 width, f32 height, f32 angle, ECSColor color)
 {
     GpuFrame *frame = GpuFrameOf(surface);
 
@@ -517,7 +521,7 @@ static void GpuImageTransformed(ECSSurface *surface, SDL_Texture *texture, f32 x
     SDL_RenderTextureRotated(GPU.renderer, texture, nullptr, &rect, angle, nullptr, SDL_FLIP_NONE);
 }
 
-static void GpuImage(ECSSurface *surface, SDL_Texture *texture, f32 x, f32 y, f32 width, f32 height)
+static void GpuImage(ECSSurface *surface, void *texture, f32 x, f32 y, f32 width, f32 height)
 {
     GpuImageTransformed(surface, texture, x, y, width, height, 0.0f, 0xFFFFFFFF);
 }
@@ -785,8 +789,10 @@ static void GpuBufferDestroy(void *object)
 }
 
 /// @brief Gives a buffer new bytes; a buffer of another size is made again.
-static bool GpuUpdateBuffer(GpuBuffer *buffer, SHUSlice bytes)
+static bool GpuUpdateBuffer(void *bufferHandle, SHUSlice bytes)
 {
+    GpuBuffer *buffer = bufferHandle;
+
     if (bytes.size == 0 || bytes.size > SDL_MAX_UINT32 || (buffer->index && bytes.size % 4 != 0))
     {
         ECS_LogWarn(GPU.plugin, buffer->index ? "An index buffer needs 32-bit indices, 4 bytes each." : "A buffer needs bytes.");
@@ -812,7 +818,7 @@ static bool GpuUpdateBuffer(GpuBuffer *buffer, SHUSlice bytes)
     return GpuUpload(buffer->buffer, bytes);
 }
 
-static GpuBuffer *GpuNewBuffer(const char *usage, SHUSlice bytes)
+static void *GpuNewBuffer(const char *usage, SHUSlice bytes)
 {
     bool index = SDL_strcmp(usage, "index") == 0;
 
@@ -841,12 +847,14 @@ static GpuBuffer *GpuNewBuffer(const char *usage, SHUSlice bytes)
     return buffer;
 }
 
-static i32 GpuBufferSize(GpuBuffer *buffer)
+static i32 GpuBufferSize(void *bufferHandle)
 {
+    GpuBuffer *buffer = bufferHandle;
+
     return (i32)buffer->size;
 }
 
-static void GpuFreeBuffer(GpuBuffer *buffer)
+static void GpuFreeBuffer(void *buffer)
 {
     ECSHandle_Free(GPU.plugin, "buffer", buffer);
 }
@@ -1127,7 +1135,7 @@ static void *GpuSpirvToDxbc(const u32 *words, usz size, const char *entry, bool 
     return dxbc;
 }
 
-static SDL_GPUShader *GpuNewShader(const ECSValue *desc)
+static void *GpuNewShader(const ECSValue *desc)
 {
     if (GPU.device == nullptr)
     {
@@ -1282,7 +1290,7 @@ static i32 GpuFindName(const char *word, const char *const *names, usz count)
     return -1;
 }
 
-static GpuPipeline *GpuNewPipeline(const ECSValue *desc)
+static void *GpuNewPipeline(const ECSValue *desc)
 {
     SDL_GPUShader *vertex = ECSValue_GetHandle(ECSValue_GetTableField(desc, "vertex"), "gpu.shader");
     SDL_GPUShader *fragment = ECSValue_GetHandle(ECSValue_GetTableField(desc, "fragment"), "gpu.shader");
@@ -1454,8 +1462,10 @@ static SDL_GPURenderPass *GpuBeginPass(GpuFrame *frame)
     return frame->pass;
 }
 
-static void GpuDraw(ECSSurface *surface, GpuPipeline *pipeline, const ECSValue *draw)
+static void GpuDraw(ECSSurface *surface, void *pipelineHandle, const ECSValue *draw)
 {
+    GpuPipeline *pipeline = pipelineHandle;
+
     GpuFrame *frame = GpuFrameOf(surface);
 
     if (frame == nullptr)
