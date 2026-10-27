@@ -229,20 +229,77 @@ static void TextGridPlaceCursor(TextGridLayout *layout)
     layout->cursorColumn = layout->column;
 }
 
+/// @brief Finds the last row to lay out: rows below the cursor and the last written row are blank, and are left out.
+static i32 TextGridFindLastRow(const TextGrid *grid)
+{
+    for (i32 row = grid->rows - 1; row > grid->cursorRow; row--)
+    {
+        for (i32 column = 0; column < grid->columns; column++)
+        {
+            if (!TextGridIsBlank(grid, &grid->cells[(usz)row * (usz)grid->columns + (usz)column]))
+            {
+                return row;
+            }
+        }
+    }
+
+    return grid->cursorRow;
+}
+
+/// @brief Lays out a line of the grid, from its first row to its last, cut into rows at the layout's width.
+/// Its cells are those rows, without the blanks at the end, but with those before the cursor.
+static void TextGridReflowLine(const TextGrid *grid, TextGridLayout *layout, i32 first, i32 end)
+{
+    usz size = (usz)(end - first + 1) * (usz)grid->columns;
+    usz length = size;
+    const TextGridCell *cells = &grid->cells[(usz)first * (usz)grid->columns];
+
+    while (length > 0 && TextGridIsBlank(grid, &cells[length - 1]))
+    {
+        length--;
+    }
+
+    bool cursorHere = grid->cursorRow >= first && grid->cursorRow <= end;
+    usz cursor = cursorHere ? (usz)(grid->cursorRow - first) * (usz)grid->columns + (usz)grid->cursorColumn : 0;
+    length = cursorHere ? SDL_max(length, SDL_min(cursor, size)) : length;
+    TextGridStartRow(layout);
+
+    for (usz i = 0; i < length;)
+    {
+        // a wide character moves whole, and is left out where it never fits; a right half without its left is a blank
+        i32 width = i + 1 < length && cells[i].character != 0 && cells[i + 1].character == 0 ? 2 : 1;
+        const TextGridCell *cell = cells[i].character == 0 ? &layout->blank : &cells[i];
+
+        if (layout->column + width > layout->columns && width <= layout->columns)
+        {
+            layout->wrapped[arrlenu(layout->wrapped) - 1] = true;
+            TextGridStartRow(layout);
+        }
+
+        if (cursorHere && cursor >= i && cursor < i + (usz)width)
+        {
+            TextGridPlaceCursor(layout);
+        }
+
+        if (width <= layout->columns)
+        {
+            TextGridPlaceCell(layout, cell, width);
+        }
+
+        i += (usz)width;
+    }
+
+    if (cursorHere && cursor >= length)
+    {
+        TextGridPlaceCursor(layout);
+    }
+}
+
 /// @brief Lays the grid's lines out at the layout's width: rows that wrap are joined into their lines, and each line is cut into rows again.
 /// The blanks at the end of a line are left out, except before the cursor, whose new place it gives.
 static void TextGridReflow(const TextGrid *grid, TextGridLayout *layout)
 {
-    // rows below the cursor and the last written row are blank, and are left out
-    i32 last = grid->cursorRow;
-
-    for (i32 row = grid->rows - 1; row > last; row--)
-    {
-        for (i32 column = 0; column < grid->columns && row > last; column++)
-        {
-            last = TextGridIsBlank(grid, &grid->cells[(usz)row * (usz)grid->columns + (usz)column]) ? last : row;
-        }
-    }
+    i32 last = TextGridFindLastRow(grid);
 
     for (i32 first = 0; first <= last;)
     {
@@ -254,50 +311,7 @@ static void TextGridReflow(const TextGrid *grid, TextGridLayout *layout)
             end++;
         }
 
-        // its cells are those rows, without the blanks at the end, but with those before the cursor
-        usz length = (usz)(end - first + 1) * (usz)grid->columns;
-        const TextGridCell *cells = &grid->cells[(usz)first * (usz)grid->columns];
-
-        while (length > 0 && TextGridIsBlank(grid, &cells[length - 1]))
-        {
-            length--;
-        }
-
-        bool cursorHere = grid->cursorRow >= first && grid->cursorRow <= end;
-        usz cursor = cursorHere ? (usz)(grid->cursorRow - first) * (usz)grid->columns + (usz)grid->cursorColumn : 0;
-        length = cursorHere ? SDL_max(length, SDL_min(cursor, (usz)(end - first + 1) * (usz)grid->columns)) : length;
-        TextGridStartRow(layout);
-
-        for (usz i = 0; i < length;)
-        {
-            // a wide character moves whole, and is left out where it never fits; a right half without its left is a blank
-            i32 width = i + 1 < length && cells[i].character != 0 && cells[i + 1].character == 0 ? 2 : 1;
-            const TextGridCell *cell = cells[i].character == 0 ? &layout->blank : &cells[i];
-
-            if (layout->column + width > layout->columns && width <= layout->columns)
-            {
-                layout->wrapped[arrlenu(layout->wrapped) - 1] = true;
-                TextGridStartRow(layout);
-            }
-
-            if (cursorHere && cursor >= i && cursor < i + (usz)width)
-            {
-                TextGridPlaceCursor(layout);
-            }
-
-            if (width <= layout->columns)
-            {
-                TextGridPlaceCell(layout, cell, width);
-            }
-
-            i += (usz)width;
-        }
-
-        if (cursorHere && cursor >= length)
-        {
-            TextGridPlaceCursor(layout);
-        }
-
+        TextGridReflowLine(grid, layout, first, end);
         first = end + 1;
     }
 }
@@ -597,6 +611,41 @@ static void TextGridFit(f32 width, f32 height, f32 size, i32 *retColumns, i32 *r
     *retRows = cellHeight <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(height / cellHeight));
 }
 
+/// @brief Reads a run of a row's cells in one colour and style, from a column, into a text of the run's characters.
+/// A wide character is a run alone over its two cells, so the font's width for it does not move the characters after it.
+/// @param text Has room for 4 bytes for each column, and a terminator.
+/// @return The column after the run.
+static i32 TextGridReadRun(TextGrid *grid, i32 start, i32 row, char *text)
+{
+    const TextGridCell *first = TextGridCellAt(grid, start, row);
+    usz length = 0;
+    text[0] = '\0';
+
+    if (TextGridIsWide(grid, start, row))
+    {
+        TextGridAppendUtf8(text, &length, first->character);
+        return start + 2;
+    }
+
+    i32 end = start;
+
+    while (end < grid->columns)
+    {
+        const TextGridCell *cell = TextGridCellAt(grid, end, row);
+
+        if (end > start && (TextGridIsWide(grid, end, row) || cell->background != first->background || cell->foreground != first->foreground || cell->style != first->style))
+        {
+            break;
+        }
+
+        // the right half of a wide character whose left half is gone is a space
+        TextGridAppendUtf8(text, &length, cell->character == 0 ? ' ' : cell->character);
+        end++;
+    }
+
+    return end;
+}
+
 static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f32 size, bool cursor)
 {
     TextGrid *grid = gridHandle;
@@ -620,30 +669,7 @@ static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f3
         for (i32 start = 0; start < grid->columns;)
         {
             TextGridCell *first = TextGridCellAt(grid, start, row);
-            i32 end = start;
-            usz length = 0;
-            text[0] = '\0';
-
-            // a wide character is drawn alone over its two cells, so the font's width for it does not move the characters after it
-            if (TextGridIsWide(grid, start, row))
-            {
-                TextGridAppendUtf8(text, &length, first->character);
-                end = start + 2;
-            }
-
-            while (end < grid->columns && !TextGridIsWide(grid, start, row))
-            {
-                const TextGridCell *cell = TextGridCellAt(grid, end, row);
-
-                if (end > start && (TextGridIsWide(grid, end, row) || cell->background != first->background || cell->foreground != first->foreground || cell->style != first->style))
-                {
-                    break;
-                }
-
-                // the right half of a wide character whose left half is gone is a space
-                TextGridAppendUtf8(text, &length, cell->character == 0 ? ' ' : cell->character);
-                end++;
-            }
+            i32 end = TextGridReadRun(grid, start, row, text);
 
             f32 left = x + (f32)start * cellWidth;
             f32 width = (f32)(end - start) * cellWidth;

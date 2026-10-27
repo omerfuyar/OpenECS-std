@@ -68,7 +68,7 @@ static struct
     FsWatch **watches; // stb_ds array
     ECSTimer timer;    // reads the changes while a folder is watched
     bool telling;      // the changes are being told, so stopped watches wait to be freed
-} FS = {.inotify = -1};
+} FILESYSTEM = {.inotify = -1};
 
 /// @brief The separator that a folder's path needs at its end: none if it has one, or /.
 static const char *FsMissingSeparator(const char *folder)
@@ -117,9 +117,9 @@ static void FsInfo(const char *path, ECSValue *retInfo)
     SDL_free(fullPath);
 }
 
-static int SDLCALL FsCompareNames(const void *a, const void *b)
+static int SDLCALL FsCompareNames(const void *first, const void *second)
 {
-    return SDL_strcmp(*(char *const *)a, *(char *const *)b);
+    return SDL_strcmp(*(char *const *)first, *(char *const *)second);
 }
 
 /// @brief Makes a value the list of the entries of a folder, sorted by name: each a table of its name and its info.
@@ -182,13 +182,13 @@ static bool FsMakeFolder(const char *path)
     return made;
 }
 
-static bool FsCopy(const char *from, const char *to)
+static bool FsCopy(const char *source, const char *destination)
 {
-    char *fullFrom = nullptr;
-    char *fullTo = nullptr;
-    bool copied = ECSPath_GetFull(&fullFrom, from) == SHUResult_Ok && ECSPath_GetFull(&fullTo, to) == SHUResult_Ok && SDL_CopyFile(fullFrom, fullTo);
-    SDL_free(fullFrom);
-    SDL_free(fullTo);
+    char *fullSource = nullptr;
+    char *fullDestination = nullptr;
+    bool copied = ECSPath_GetFull(&fullSource, source) == SHUResult_Ok && ECSPath_GetFull(&fullDestination, destination) == SHUResult_Ok && SDL_CopyFile(fullSource, fullDestination);
+    SDL_free(fullSource);
+    SDL_free(fullDestination);
     return copied;
 }
 
@@ -244,14 +244,14 @@ static void FsFreeWatch(FsWatch *watch)
 #ifdef __linux__
     bool shared = false;
 
-    for (usz i = 0; i < arrlenu(FS.watches); i++)
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
-        shared = shared || (FS.watches[i] != watch && !FS.watches[i]->stopped && FS.watches[i]->descriptor == watch->descriptor);
+        shared = shared || (FILESYSTEM.watches[i] != watch && !FILESYSTEM.watches[i]->stopped && FILESYSTEM.watches[i]->descriptor == watch->descriptor);
     }
 
     if (!shared && watch->descriptor >= 0)
     {
-        inotify_rm_watch(FS.inotify, watch->descriptor);
+        inotify_rm_watch(FILESYSTEM.inotify, watch->descriptor);
     }
 #elif defined(_WIN32)
     // the read that waits is cancelled, and ends, before its buffer is freed
@@ -270,11 +270,11 @@ static void FsFreeWatch(FsWatch *watch)
     SDL_free(watch->buffer);
 #endif
 
-    for (usz i = 0; i < arrlenu(FS.watches); i++)
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
-        if (FS.watches[i] == watch)
+        if (FILESYSTEM.watches[i] == watch)
         {
-            arrdelswap(FS.watches, i);
+            arrdelswap(FILESYSTEM.watches, i);
             break;
         }
     }
@@ -285,16 +285,16 @@ static void FsFreeWatch(FsWatch *watch)
     SDL_free(watch->folder);
     SDL_free(watch);
 
-    if (arrlenu(FS.watches) == 0 && FS.timer != nullptr)
+    if (arrlenu(FILESYSTEM.watches) == 0 && FILESYSTEM.timer != nullptr)
     {
-        ECSTimer_Stop(&FS.timer);
+        ECSTimer_Stop(&FILESYSTEM.timer);
     }
 }
 
 /// @brief Stops a watch: now, or after the changes being told.
 static void FsStop(FsWatch *watch)
 {
-    if (FS.telling)
+    if (FILESYSTEM.telling)
     {
         watch->stopped = true;
         return;
@@ -306,11 +306,11 @@ static void FsStop(FsWatch *watch)
 /// @brief Frees the watches that were stopped while the changes were being told.
 static void FsFreeStoppedWatches(void)
 {
-    for (usz i = arrlenu(FS.watches); i > 0; i--)
+    for (usz i = arrlenu(FILESYSTEM.watches); i > 0; i--)
     {
-        if (i <= arrlenu(FS.watches) && FS.watches[i - 1]->stopped)
+        if (i <= arrlenu(FILESYSTEM.watches) && FILESYSTEM.watches[i - 1]->stopped)
         {
-            FsFreeWatch(FS.watches[i - 1]);
+            FsFreeWatch(FILESYSTEM.watches[i - 1]);
         }
     }
 }
@@ -319,13 +319,13 @@ static void FsFreeStoppedWatches(void)
 /// @brief Starts watching a folder with inotify.
 static bool FsStartWatching(FsWatch *watch, const char *fullPath)
 {
-    if (FS.inotify < 0)
+    if (FILESYSTEM.inotify < 0)
     {
-        FS.inotify = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        FILESYSTEM.inotify = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     }
 
     // IN_ONLYDIR: a file is not a folder to watch
-    watch->descriptor = FS.inotify < 0 ? -1 : inotify_add_watch(FS.inotify, fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB);
+    watch->descriptor = FILESYSTEM.inotify < 0 ? -1 : inotify_add_watch(FILESYSTEM.inotify, fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB);
     return watch->descriptor >= 0;
 }
 
@@ -336,22 +336,22 @@ static void FsReadChanges(void *data)
 
     alignas(struct inotify_event) char buffer[4096];
     ssize_t length = 0;
-    FS.telling = true;
+    FILESYSTEM.telling = true;
 
     // a folder that changes all the time cannot hold the main thread: the rest waits for the next call
-    for (usz reads = 0; reads < FS_WATCH_READS && (length = read(FS.inotify, buffer, sizeof(buffer))) > 0; reads++)
+    for (usz reads = 0; reads < FS_WATCH_READS && (length = read(FILESYSTEM.inotify, buffer, sizeof(buffer))) > 0; reads++)
     {
-        for (char *at = buffer; at < buffer + length;)
+        for (char *cursor = buffer; cursor < buffer + length;)
         {
-            const struct inotify_event *event = (const struct inotify_event *)(void *)at;
+            const struct inotify_event *event = (const struct inotify_event *)(void *)cursor;
             const char *change = event->mask & (IN_CREATE | IN_MOVED_TO) ? "added" : event->mask & (IN_DELETE | IN_MOVED_FROM)            ? "removed"
                                                                                  : event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB) ? "changed"
                                                                                                                                           : nullptr;
 
             // the watches may change while they are told, so they are counted again each time
-            for (usz i = 0; change != nullptr && event->len > 0 && i < arrlenu(FS.watches); i++)
+            for (usz i = 0; change != nullptr && event->len > 0 && i < arrlenu(FILESYSTEM.watches); i++)
             {
-                FsWatch *watch = FS.watches[i];
+                FsWatch *watch = FILESYSTEM.watches[i];
 
                 if (!watch->stopped && watch->descriptor == event->wd)
                 {
@@ -359,11 +359,11 @@ static void FsReadChanges(void *data)
                 }
             }
 
-            at += sizeof(struct inotify_event) + event->len;
+            cursor += sizeof(struct inotify_event) + event->len;
         }
     }
 
-    FS.telling = false;
+    FILESYSTEM.telling = false;
     FsFreeStoppedWatches();
 }
 
@@ -430,12 +430,12 @@ static void FsTellChanges(FsWatch *watch, DWORD length)
 static void FsReadChanges(void *data)
 {
     (void)data;
-    FS.telling = true;
+    FILESYSTEM.telling = true;
 
     // the watches may change while they are told, so they are counted again each time
-    for (usz i = 0; i < arrlenu(FS.watches); i++)
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
-        FsWatch *watch = FS.watches[i];
+        FsWatch *watch = FILESYSTEM.watches[i];
         DWORD length = 0;
 
         if (watch->stopped || !watch->reading)
@@ -458,7 +458,7 @@ static void FsReadChanges(void *data)
             if (error != ERROR_NOTIFY_ENUM_DIR)
             {
                 watch->reading = false;
-                ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)error);
+                ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)error);
                 continue;
             }
         }
@@ -467,11 +467,11 @@ static void FsReadChanges(void *data)
 
         if (!watch->stopped && !FsStartRead(watch))
         {
-            ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)GetLastError());
+            ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)GetLastError());
         }
     }
 
-    FS.telling = false;
+    FILESYSTEM.telling = false;
     FsFreeStoppedWatches();
 }
 
@@ -570,12 +570,12 @@ static void FsTellChanges(FsWatch *watch, const FsEntry *old, const FsEntry *ent
 static void FsReadChanges(void *data)
 {
     (void)data;
-    FS.telling = true;
+    FILESYSTEM.telling = true;
 
     // the watches may change while they are told, so they are counted again each time
-    for (usz i = 0; i < arrlenu(FS.watches); i++)
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
-        FsWatch *watch = FS.watches[i];
+        FsWatch *watch = FILESYSTEM.watches[i];
         FsEntry *entries = nullptr;
 
         if (watch->stopped || !FsReadFolder(watch->fullPath, &entries))
@@ -589,7 +589,7 @@ static void FsReadChanges(void *data)
         FsFreeEntries(old);
     }
 
-    FS.telling = false;
+    FILESYSTEM.telling = false;
     FsFreeStoppedWatches();
 }
 #endif
@@ -600,7 +600,7 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 
     if (watch == nullptr)
     {
-        ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s'", folder);
+        ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s'", folder);
 
         if (Changed != nullptr)
         {
@@ -613,15 +613,15 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
     // the watch is added first, so a watch that fails is freed as any other, which stops inotify's watch and the timer when nothing else uses them
     watch->descriptor = -1;
     watch->Changed = Changed;
-    arrput(FS.watches, watch);
+    arrput(FILESYSTEM.watches, watch);
     char *fullPath = nullptr;
     bool watching = ECSPath_GetFull(&fullPath, folder) == SHUResult_Ok && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 && FsStartWatching(watch, fullPath) &&
-                    (FS.timer != nullptr || ECSTimer_Start(FS.plugin, &FS.timer, FS_READ_INTERVAL, true, FsReadChanges, nullptr) == SHUResult_Ok);
+                    (FILESYSTEM.timer != nullptr || ECSTimer_Start(FILESYSTEM.plugin, &FILESYSTEM.timer, FS_READ_INTERVAL, true, FsReadChanges, nullptr) == SHUResult_Ok);
     SDL_free(fullPath);
 
     if (!watching)
     {
-        ECS_LogWarn(FS.plugin, "Cannot watch the folder '%s'", folder);
+        ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s'", folder);
         FsStop(watch);
         return nullptr;
     }
@@ -638,7 +638,7 @@ static void FsWatchDestroy(void *object)
 /// @brief Stops a watch now, instead of when no one uses its handle.
 static void FsUnwatch(void *watch)
 {
-    ECSHandle_Free(FS.plugin, "watch", watch);
+    ECSHandle_Free(FILESYSTEM.plugin, "watch", watch);
 }
 
 #pragma endregion Watches
@@ -648,28 +648,28 @@ static void FsFree(void *data)
 {
     (void)data;
 
-    while (arrlenu(FS.watches) > 0)
+    while (arrlenu(FILESYSTEM.watches) > 0)
     {
-        FsFreeWatch(FS.watches[0]);
+        FsFreeWatch(FILESYSTEM.watches[0]);
     }
 
 #ifdef __linux__
-    if (FS.inotify >= 0)
+    if (FILESYSTEM.inotify >= 0)
     {
-        close(FS.inotify);
+        close(FILESYSTEM.inotify);
     }
 #endif
 
-    arrfree(FS.watches);
-    SDL_zero(FS);
-    FS.inotify = -1;
+    arrfree(FILESYSTEM.watches);
+    SDL_zero(FILESYSTEM);
+    FILESYSTEM.inotify = -1;
 }
 
 #pragma endregion Source Only
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
-    FS.plugin = plugin;
+    FILESYSTEM.plugin = plugin;
     const ECSPluginDesc desc = {.Destroy = FsFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "watch", FsWatchDestroy));

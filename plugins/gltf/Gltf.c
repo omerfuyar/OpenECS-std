@@ -561,21 +561,21 @@ static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, Gltf
     (void)cgltf_accessor_read_float(sampler->input, previous + 1, &end, 1);
     f32 span = end - start;
     f32 progress = span > 0.0f ? (seconds - start) / span : 0.0f;
-    versor from = {0};
-    versor to = {0};
-    GltfReadKeyframe(sampler, previous, 1, from, components);
-    GltfReadKeyframe(sampler, previous + 1, 1, to, components);
+    versor previousKey = {0};
+    versor nextKey = {0};
+    GltfReadKeyframe(sampler, previous, 1, previousKey, components);
+    GltfReadKeyframe(sampler, previous + 1, 1, nextKey, components);
 
     if (sampler->interpolation == cgltf_interpolation_type_linear && rotation)
     {
-        glm_quat_slerp(from, to, progress, target);
+        glm_quat_slerp(previousKey, nextKey, progress, target);
         glm_quat_normalize(target);
         return;
     }
 
     if (sampler->interpolation == cgltf_interpolation_type_linear)
     {
-        glm_vec3_lerp(from, to, progress, target);
+        glm_vec3_lerp(previousKey, nextKey, progress, target);
         return;
     }
 
@@ -589,7 +589,7 @@ static void GltfSample(const cgltf_animation_channel *channel, f32 seconds, Gltf
 
     for (usz i = 0; i < components; i++)
     {
-        target[i] = (2.0f * cubed - 3.0f * squared + 1.0f) * from[i] + (cubed - 2.0f * squared + progress) * span * outTangent[i] + (-2.0f * cubed + 3.0f * squared) * to[i] +
+        target[i] = (2.0f * cubed - 3.0f * squared + 1.0f) * previousKey[i] + (cubed - 2.0f * squared + progress) * span * outTangent[i] + (-2.0f * cubed + 3.0f * squared) * nextKey[i] +
                     (cubed - squared) * span * inTangent[i];
     }
 

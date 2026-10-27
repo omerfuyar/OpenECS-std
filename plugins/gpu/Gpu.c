@@ -315,12 +315,12 @@ static void GpuFill(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, EC
     SDL_RenderFillRect(GPU.renderer, &rect);
 }
 
-static void GpuLine(ECSSurface *surface, f32 x1, f32 y1, f32 x2, f32 y2, f32 thickness, ECSColor color)
+static void GpuLine(ECSSurface *surface, f32 startX, f32 startY, f32 endX, f32 endY, f32 thickness, ECSColor color)
 {
     GpuFrame *frame = GpuFrameOf(surface);
     f32 scale = surface->scale;
-    f32 directionX = (x2 - x1) * scale;
-    f32 directionY = (y2 - y1) * scale;
+    f32 directionX = (endX - startX) * scale;
+    f32 directionY = (endY - startY) * scale;
     f32 length = SDL_sqrtf(directionX * directionX + directionY * directionY);
 
     if (frame == nullptr || length <= 0.0f)
@@ -331,8 +331,8 @@ static void GpuLine(ECSSurface *surface, f32 x1, f32 y1, f32 x2, f32 y2, f32 thi
     // a line is a rectangle around it, of its thickness, in two triangles; the normal is half the thickness across it
     f32 normalX = -directionY / length * thickness * scale / 2.0f;
     f32 normalY = directionX / length * thickness * scale / 2.0f;
-    const f32 points[] = {x1 * scale + normalX, y1 * scale + normalY, x2 * scale + normalX, y2 * scale + normalY,
-                          x2 * scale - normalX, y2 * scale - normalY, x1 * scale - normalX, y1 * scale - normalY};
+    const f32 points[] = {startX * scale + normalX, startY * scale + normalY, endX * scale + normalX, endY * scale + normalY,
+                          endX * scale - normalX, endY * scale - normalY, startX * scale - normalX, startY * scale - normalY};
     const int indices[] = {0, 1, 2, 0, 2, 3};
     const SDL_FColor fillColor = GpuToFColor(color);
     GpuTarget(frame, color);
@@ -943,7 +943,7 @@ static u32 *GpuCompileGlsl(const char *source, bool vertex, usz *retSize, char *
 static void GpuCountResources(const u32 *spirv, usz size, u32 *retUniformCount, u32 *retSamplerCount)
 {
     spvc_context context = nullptr;
-    spvc_parsed_ir ir = nullptr;
+    spvc_parsed_ir parsed = nullptr;
     spvc_compiler compiler = nullptr;
     spvc_resources resources = nullptr;
     const spvc_reflected_resource *list = nullptr;
@@ -956,8 +956,8 @@ static void GpuCountResources(const u32 *spirv, usz size, u32 *retUniformCount, 
         return;
     }
 
-    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &ir) == SPVC_SUCCESS &&
-        spvc_context_create_compiler(context, SPVC_BACKEND_NONE, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
+    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &parsed) == SPVC_SUCCESS &&
+        spvc_context_create_compiler(context, SPVC_BACKEND_NONE, parsed, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
         spvc_compiler_create_shader_resources(compiler, &resources) == SPVC_SUCCESS)
     {
         if (spvc_resources_get_resource_list_for_type(resources, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, &list, &count) == SPVC_SUCCESS)
@@ -979,7 +979,7 @@ static void GpuCountResources(const u32 *spirv, usz size, u32 *retUniformCount, 
 static char *GpuSpirvToHlsl(const u32 *spirv, usz size)
 {
     spvc_context context = nullptr;
-    spvc_parsed_ir ir = nullptr;
+    spvc_parsed_ir parsed = nullptr;
     spvc_compiler compiler = nullptr;
     spvc_compiler_options options = nullptr;
     const char *hlsl = nullptr;
@@ -990,8 +990,8 @@ static char *GpuSpirvToHlsl(const u32 *spirv, usz size)
         return nullptr;
     }
 
-    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &ir) == SPVC_SUCCESS &&
-        spvc_context_create_compiler(context, SPVC_BACKEND_HLSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
+    if (spvc_context_parse_spirv(context, spirv, size / sizeof(u32), &parsed) == SPVC_SUCCESS &&
+        spvc_context_create_compiler(context, SPVC_BACKEND_HLSL, parsed, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler) == SPVC_SUCCESS &&
         spvc_compiler_create_compiler_options(compiler, &options) == SPVC_SUCCESS)
     {
         spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL, 51);
@@ -1083,6 +1083,58 @@ static bool GpuReadStage(const char *stage, bool *retVertex)
     return *retVertex || SDL_strcmp(stage, "fragment") == 0;
 }
 
+/// @brief Finds the code that a shader's description gives in a format the device's driver takes: SPIR-V for Vulkan, DXIL for Direct3D 12, MSL for Metal; the first one given that it takes.
+/// @return The code's format, or SDL_GPU_SHADERFORMAT_INVALID when the description gives no code that the driver takes.
+static SDL_GPUShaderFormat GpuFindGivenCode(const ECSValue *desc, SDL_GPUShaderFormat formats, SHUSlice *retCode)
+{
+    const struct
+    {
+        const char *field;
+        SDL_GPUShaderFormat format;
+    } codes[] = {{"spirv", SDL_GPU_SHADERFORMAT_SPIRV}, {"dxil", SDL_GPU_SHADERFORMAT_DXIL}, {"msl", SDL_GPU_SHADERFORMAT_MSL}};
+
+    for (usz i = 0; i < SDL_arraysize(codes); i++)
+    {
+        *retCode = ECSValue_GetBuffer(ECSValue_GetTableField(desc, codes[i].field), cs(nullptr, 0));
+
+        if (retCode->size > 0 && (formats & codes[i].format) != 0)
+        {
+            return codes[i].format;
+        }
+    }
+
+    return SDL_GPU_SHADERFORMAT_INVALID;
+}
+
+/// @brief Copies SPIR-V into words, aligned as SPIRV-Cross reads them.
+/// @return The words, which the caller frees, or nullptr when the SPIR-V is empty, is not whole words, or cannot be copied.
+static u32 *GpuCopySpirvWords(SHUSlice spirv)
+{
+    if (spirv.size == 0 || spirv.size % sizeof(u32) != 0)
+    {
+        return nullptr;
+    }
+
+    u32 *words = SDL_malloc(spirv.size);
+
+    if (words != nullptr)
+    {
+        SDL_memcpy(words, spirv.data, spirv.size);
+    }
+
+    return words;
+}
+
+/// @brief Makes DXBC, for Direct3D 12, from SPIR-V words, through HLSL.
+/// @return The DXBC, which the caller frees, or nullptr when it cannot be made.
+static void *GpuSpirvToDxbc(const u32 *words, usz size, const char *entry, bool vertex, usz *retSize)
+{
+    char *hlsl = GpuSpirvToHlsl(words, size);
+    void *dxbc = hlsl == nullptr ? nullptr : GpuHlslToDxbc(hlsl, entry, vertex, retSize);
+    SDL_free(hlsl);
+    return dxbc;
+}
+
 static void *GpuNewShader(const ECSValue *desc)
 {
     if (GPU.device == nullptr)
@@ -1100,21 +1152,9 @@ static void *GpuNewShader(const ECSValue *desc)
         return nullptr;
     }
 
-    // code that the device's driver takes is used as it is: SPIR-V for Vulkan, DXIL for Direct3D 12, MSL for Metal; the first one given that it takes
-    const struct
-    {
-        const char *field;
-        SDL_GPUShaderFormat format;
-    } codes[] = {{"spirv", SDL_GPU_SHADERFORMAT_SPIRV}, {"dxil", SDL_GPU_SHADERFORMAT_DXIL}, {"msl", SDL_GPU_SHADERFORMAT_MSL}};
     SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(GPU.device);
     SHUSlice code = {0};
-    SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
-
-    for (usz i = 0; i < SDL_arraysize(codes) && format == SDL_GPU_SHADERFORMAT_INVALID; i++)
-    {
-        code = ECSValue_GetBuffer(ECSValue_GetTableField(desc, codes[i].field), cs(nullptr, 0));
-        format = code.size > 0 && (formats & codes[i].format) != 0 ? codes[i].format : SDL_GPU_SHADERFORMAT_INVALID;
-    }
+    SDL_GPUShaderFormat format = GpuFindGivenCode(desc, formats, &code);
 
     const char *entry = ECSValue_GetString(ECSValue_GetTableField(desc, "entry"), "main");
     const char *glsl = ECSValue_GetString(ECSValue_GetTableField(desc, "glsl"), nullptr);
@@ -1142,35 +1182,29 @@ static void *GpuNewShader(const ECSValue *desc)
         format = (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0 ? SDL_GPU_SHADERFORMAT_SPIRV : SDL_GPU_SHADERFORMAT_INVALID;
     }
 
-    if (spirv.size > 0 && spirv.size % sizeof(u32) == 0)
+    u32 *words = GpuCopySpirvWords(spirv);
+
+    if (words != nullptr)
     {
-        u32 *words = SDL_malloc(spirv.size);
-
-        if (words != nullptr)
-        {
-            SDL_memcpy(words, spirv.data, spirv.size);
-            GpuCountResources(words, spirv.size, &uniformCount, &samplerCount);
-        }
-
-        // a driver that does not take SPIR-V, such as Direct3D 12's, gets DXBC made from it
-        if (format == SDL_GPU_SHADERFORMAT_INVALID && words != nullptr && (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0)
-        {
-            char *hlsl = GpuSpirvToHlsl(words, spirv.size);
-            usz size = 0;
-            void *dxbc = hlsl == nullptr ? nullptr : GpuHlslToDxbc(hlsl, entry, vertex, &size);
-            SDL_free(hlsl);
-
-            if (dxbc != nullptr)
-            {
-                SDL_free(made);
-                made = dxbc;
-                code = cs(dxbc, size);
-                format = SDL_GPU_SHADERFORMAT_DXBC;
-            }
-        }
-
-        SDL_free(words);
+        GpuCountResources(words, spirv.size, &uniformCount, &samplerCount);
     }
+
+    // a driver that does not take SPIR-V, such as Direct3D 12's, gets DXBC made from it
+    if (format == SDL_GPU_SHADERFORMAT_INVALID && words != nullptr && (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0)
+    {
+        usz size = 0;
+        void *dxbc = GpuSpirvToDxbc(words, spirv.size, entry, vertex, &size);
+
+        if (dxbc != nullptr)
+        {
+            SDL_free(made);
+            made = dxbc;
+            code = cs(dxbc, size);
+            format = SDL_GPU_SHADERFORMAT_DXBC;
+        }
+    }
+
+    SDL_free(words);
 
     if (format == SDL_GPU_SHADERFORMAT_INVALID)
     {

@@ -305,14 +305,16 @@ static f32 MixerFlushDenormal(f32 sample)
     return SDL_fabsf(sample) < 1e-20f ? 0.0f : sample;
 }
 
-/// @brief Sets a filter's coefficients, divided by a0 as the Audio EQ Cookbook does, and keeps what it heard.
-static void MixerSetCoefficients(MixerBiquad *filter, f32 b0, f32 b1, f32 b2, f32 a0, f32 a1, f32 a2)
+/// @brief Sets a filter's coefficients, divided by back0 as the Audio EQ Cookbook does, and keeps what it heard.
+/// @param forward0, forward1, forward2 The cookbook's b0, b1 and b2.
+/// @param back0, back1, back2 The cookbook's a0, a1 and a2.
+static void MixerSetCoefficients(MixerBiquad *filter, f32 forward0, f32 forward1, f32 forward2, f32 back0, f32 back1, f32 back2)
 {
-    filter->b0 = b0 / a0;
-    filter->b1 = b1 / a0;
-    filter->b2 = b2 / a0;
-    filter->a1 = a1 / a0;
-    filter->a2 = a2 / a0;
+    filter->b0 = forward0 / back0;
+    filter->b1 = forward1 / back0;
+    filter->b2 = forward2 / back0;
+    filter->a1 = back1 / back0;
+    filter->a2 = back2 / back0;
 }
 
 /// @brief The angle of a filter's frequency, for the Audio EQ Cookbook. A frequency at or past half the rate cannot be filtered, so it is kept just below.
@@ -827,10 +829,10 @@ static MixerReverb *MixerNewReverb(i32 channels, i32 rate)
         return nullptr;
     }
 
-    for (usz i = 0, at = 0; i < (usz)channels * filters; i++)
+    for (usz i = 0, offset = 0; i < (usz)channels * filters; i++)
     {
-        delays[i].samples = memory + at;
-        at += (usz)delays[i].length;
+        delays[i].samples = memory + offset;
+        offset += (usz)delays[i].length;
     }
 
     *reverb = (MixerReverb){.channels = channels, .rate = rate, .delays = delays, .memory = memory, .samples = total};
