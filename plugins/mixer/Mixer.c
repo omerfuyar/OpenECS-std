@@ -125,7 +125,7 @@ static void MixerReleaseSound(void *object)
     }
 }
 
-static MixerSound *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
+static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
 {
     usz frameSize = (usz)SDL_max(channels, 1) * sizeof(f32);
 
@@ -161,7 +161,7 @@ static MixerSound *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
     return sound;
 }
 
-static MixerSound *MixerNewStream(i32 channels, i32 rate)
+static void *MixerNewStream(i32 channels, i32 rate)
 {
     if (channels <= 0 || rate <= 0)
     {
@@ -190,8 +190,10 @@ static MixerSound *MixerNewStream(i32 channels, i32 rate)
     return sound;
 }
 
-static bool MixerQueue(MixerSound *sound, SHUSlice samples)
+static bool MixerQueue(void *soundHandle, SHUSlice samples)
 {
+    MixerSound *sound = soundHandle;
+
     usz frameSize = (usz)sound->spec.channels * sizeof(f32);
 
     if (sound->queue == nullptr || SDL_GetAtomicInt(&sound->finished) || samples.size % frameSize != 0 || samples.size > (usz)SDL_MAX_SINT32)
@@ -202,33 +204,41 @@ static bool MixerQueue(MixerSound *sound, SHUSlice samples)
     return SDL_PutAudioStreamData(sound->queue, samples.data, (int)samples.size);
 }
 
-static f64 MixerQueued(MixerSound *sound)
+static f64 MixerQueued(void *soundHandle)
 {
+    MixerSound *sound = soundHandle;
+
     int bytes = sound->queue == nullptr ? 0 : SDL_GetAudioStreamAvailable(sound->queue);
     return (f64)SDL_max(bytes, 0) / (f64)((usz)sound->spec.channels * sizeof(f32)) / (f64)sound->spec.freq;
 }
 
-static void MixerFinish(MixerSound *sound)
+static void MixerFinish(void *soundHandle)
 {
+    MixerSound *sound = soundHandle;
+
     if (sound->queue != nullptr)
     {
         SDL_SetAtomicInt(&sound->finished, 1);
     }
 }
 
-static f64 MixerLength(MixerSound *sound)
+static f64 MixerLength(void *soundHandle)
 {
+    MixerSound *sound = soundHandle;
+
     return (f64)sound->frames / (f64)sound->spec.freq;
 }
 
 /// @brief Keeps a sound alive for a plugin that uses it after giving its handle away, such as one that feeds a stream, until releaseSound.
-static void MixerKeepSound(MixerSound *sound)
+static void MixerKeepSound(void *soundHandle)
 {
+    MixerSound *sound = soundHandle;
+
     sound->users++;
 }
 
 /// @brief Lets go of a sound now; it is freed once the voices that play it end.
-static void MixerFreeSound(MixerSound *sound)
+static void MixerFreeSound(void *sound)
 {
     ECSHandle_Free(MIXER.plugin, "sound", sound);
 }
@@ -612,8 +622,10 @@ static bool MixerOpenOutput(void)
     return MIXER.device != 0;
 }
 
-static i32 MixerPlay(MixerSound *sound, f32 volume, bool loop)
+static i32 MixerPlay(void *soundHandle, f32 volume, bool loop)
 {
+    MixerSound *sound = soundHandle;
+
     MixerFreeFinishedVoices();
 
     // a stream's samples go to one voice, so it plays in one voice at a time

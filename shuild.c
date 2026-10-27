@@ -28,18 +28,19 @@ static struct
     const char *compiler; // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
     bool windows;         // the compiler compiles for Windows
     char *cache;          // shuild's cache, such as .shu/Debug/
-} CONFIG = {BuildType_Debug, NULL, "gcc", false, NULL};
+    char *cmakeCache;     // the C++ libraries' builds, a folder for each compiler, as CMake keeps the compiler it configured with, such as .shu/Debug/cmake/gcc/
+} CONFIG = {BuildType_Debug, NULL, "gcc", false, NULL, NULL};
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
 typedef struct Library
 {
     const char *name;
-    const char *sources;             // the folder of its C files, in dependencies/
-    const char *includes[3];         // the folders of dependencies/ that only its own files include, ending with NULL
-    const char *headers[3];          // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
-    const char *flags;               // the definitions it is configured with
-    const struct Library *links[2];  // the libraries it uses, whose headers it gets by linking them, ending with NULL
-    const char *windowsLinks[5];     // the Windows libraries it uses, ending with NULL
+    const char *sources;            // the folder of its C files, in dependencies/
+    const char *includes[3];        // the folders of dependencies/ that only its own files include, ending with NULL
+    const char *headers[3];         // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
+    const char *flags;              // the definitions it is configured with
+    const struct Library *links[2]; // the libraries it uses, whose headers it gets by linking them, ending with NULL
+    const char *windowsLinks[5];    // the Windows libraries it uses, ending with NULL
 } Library;
 
 /// @brief A C++ library of dependencies/, which CMake builds into static archives in the cache, as shuild compiles only C. A plugin that takes one
@@ -57,11 +58,11 @@ typedef struct CMakeLibrary
 typedef struct PluginNeeds
 {
     const char *name;
-    const char *includes[3];     // ending with NULL
-    const char *flags;           // definitions for its C files, or NULL
-    const Library *libraries[3]; // ending with NULL
-    const char *windowsLinks[4]; // the Windows libraries it uses, ending with NULL
-    bool analyze;                // its C files hold only its own code and headers, so the static analyzer can afford them
+    const char *includes[3];      // ending with NULL
+    const char *flags;            // definitions for its C files, or NULL
+    const Library *libraries[3];  // ending with NULL
+    const char *windowsLinks[4];  // the Windows libraries it uses, ending with NULL
+    bool analyze;                 // its C files hold only its own code and headers, so the static analyzer can afford them
     const CMakeLibrary *cmake[3]; // the C++ libraries it takes, ending with NULL
 } PluginNeeds;
 
@@ -212,6 +213,16 @@ static void Configure(void)
     SHUPlatform target = SHU_CompilerGetTarget();
     CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPE_STRINGS[CONFIG.type], SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUPlatform_GetString(target));
     SHU_CacheConfigure(CONFIG.cache);
+
+    // a compiler named by its path, such as /usr/bin/clang, has a folder of its name
+    const char *compilerName = CONFIG.compiler + strlen(CONFIG.compiler);
+
+    while (compilerName > CONFIG.compiler && compilerName[-1] != '/' && compilerName[-1] != '\\')
+    {
+        compilerName--;
+    }
+
+    CONFIG.cmakeCache = SHU_UtilFormat("%scmake/%s/", CONFIG.cache, compilerName);
 }
 
 // the plugins get OpenECS's warnings, and in Debug gcc's static analyzer and the sanitizers, as OpenECS's own code does, except where MinGW has no sanitizers;
@@ -353,7 +364,7 @@ static void BuildLibrary(const Library *library, const char *folder)
 /// @brief The folder of a C++ library's build in the cache.
 static char *CMakeFolder(const CMakeLibrary *library)
 {
-    return SHU_UtilFormat("%s%scmake/%s/", SHU_UtilGetScriptDirectory(), CONFIG.cache, library->name);
+    return SHU_UtilFormat("%s%s%s/", SHU_UtilGetScriptDirectory(), CONFIG.cmakeCache, library->name);
 }
 
 /// @brief Builds a C++ library of dependencies/ with CMake, with OpenECS's compiler and its C++ compiler, into static archives in the cache, unless they
@@ -383,7 +394,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
         compilers = SHU_UtilFormat("%s -DCMAKE_SYSTEM_NAME=%s", compilers, SHUPlatform_GetString(SHU_CompilerGetTarget()));
     }
 
-    char *logs = SHU_UtilFormat("%scmake/%s/", CONFIG.cache, library->name);
+    char *logs = SHU_UtilFormat("%s%s/", CONFIG.cmakeCache, library->name);
     SHU_UtilRunLogged(SHU_UtilFormat("%sconfigure.log", logs),
                       "cmake -S \"%sdependencies/%s\" -B \"%s\" -G Ninja -DCMAKE_BUILD_TYPE=Release %s -DCMAKE_POSITION_INDEPENDENT_CODE=ON "
                       "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
@@ -397,7 +408,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
 static char *CppLibrary(void)
 {
     const char *file = CONFIG.windows && SHU_CompilerGetFamily() == SHUCompiler_Clang ? "libc++.a" : "libstdc++.a";
-    char *log = SHU_UtilFormat("%scmake/library.log", CONFIG.cache);
+    char *log = SHU_UtilFormat("%slibrary.log", CONFIG.cmakeCache);
     SHU_UtilRunLogged(log, "%s -print-file-name=%s", SHU_CompilerGetTool("g++", "clang++"), file);
 
     // the path is the log's first line

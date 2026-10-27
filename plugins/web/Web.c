@@ -603,7 +603,7 @@ static void WebCallDone(void *data)
     }
 }
 
-static WebRequest *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
+static void *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
 {
     WebRequest *request = WebNewTransfer(url, headers, WebWrite);
 
@@ -633,13 +633,15 @@ static WebRequest *WebNewRequest(const char *method, const char *url, const ECSV
     return request;
 }
 
-static WebRequest *WebGet(const char *url, WebDoneFunction Done)
+static void *WebGet(const char *url, WebDoneFunction Done)
 {
     return WebNewRequest("GET", url, nullptr, cs(nullptr, 0), Done);
 }
 
-static i32 WebStatus(WebRequest *request)
+static i32 WebStatus(void *requestHandle)
 {
+    WebRequest *request = requestHandle;
+
     SDL_LockMutex(WEB.lock);
     i32 status = request->done ? request->status : 0;
     SDL_UnlockMutex(WEB.lock);
@@ -651,13 +653,17 @@ static bool WebDone(WebRequest *request)
     return WebStatus(request) != 0;
 }
 
-static SHUSlice WebBody(WebRequest *request)
+static SHUSlice WebBody(void *requestHandle)
 {
+    WebRequest *request = requestHandle;
+
     return WebDone(request) ? cs(request->body, arrlenu(request->body)) : cs(nullptr, 0);
 }
 
-static const char *WebHeader(WebRequest *request, const char *name)
+static const char *WebHeader(void *requestHandle, const char *name)
 {
+    WebRequest *request = requestHandle;
+
     struct curl_header *header = nullptr;
 
     // -1 is the last response, after the redirects
@@ -669,20 +675,22 @@ static const char *WebHeader(WebRequest *request, const char *name)
     return header->value;
 }
 
-static const char *WebError(WebRequest *request)
+static const char *WebError(void *requestHandle)
 {
+    WebRequest *request = requestHandle;
+
     return WebDone(request) ? request->error : "";
 }
 
 /// @brief Frees a request now, instead of when no one uses its handle; one that runs stops, and its function is not called.
-static void WebFreeRequest(WebRequest *request)
+static void WebFreeRequest(void *request)
 {
     ECSHandle_Forget(request);
     WebDelete(request);
 }
 
 /// @brief Starts a WebSocket connection to a ws:// or wss:// URL, with headers, a list of texts.
-static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
+static void *WebOpenSocket(const char *url, const ECSValue *headers)
 {
     // the connection goes on until one side closes it, so the timeout limits only how long it takes to connect;
     // curl asks the read function for messages to send, as for an upload
@@ -711,8 +719,10 @@ static WebRequest *WebOpenSocket(const char *url, const ECSValue *headers)
     return request;
 }
 
-static i32 WebSocketStatus(WebRequest *socket)
+static i32 WebSocketStatus(void *socketHandle)
 {
+    WebRequest *socket = socketHandle;
+
     SDL_LockMutex(WEB.lock);
     i32 status = socket->done ? -1 : socket->open ? 1
                                                   : 0;
@@ -722,8 +732,10 @@ static i32 WebSocketStatus(WebRequest *socket)
 
 /// @brief Queues a message to send, as text or as bytes. It goes once the connection is open.
 /// @return false if the connection failed or closed, or memory runs out.
-static bool WebSocketSend(WebRequest *socket, SHUSlice data, bool text)
+static bool WebSocketSend(void *socketHandle, SHUSlice data, bool text)
 {
+    WebRequest *socket = socketHandle;
+
     if (WebSocketStatus(socket) < 0)
     {
         return false;
@@ -755,8 +767,10 @@ static bool WebSocketSend(WebRequest *socket, SHUSlice data, bool text)
 }
 
 /// @brief Takes the oldest message that arrived, and whether it is "text" or "binary"; nothing if none waits. The message is kept until the next receive.
-static SHUSlice WebSocketReceive(WebRequest *socket, const char **retType)
+static SHUSlice WebSocketReceive(void *socketHandle, const char **retType)
 {
+    WebRequest *socket = socketHandle;
+
     WebFreeMessage(socket->taken);
     socket->taken = nullptr;
     *retType = nullptr;
@@ -780,8 +794,10 @@ static SHUSlice WebSocketReceive(WebRequest *socket, const char **retType)
     return cs(socket->taken->data, arrlenu(socket->taken->data));
 }
 
-static const char *WebSocketError(WebRequest *socket)
+static const char *WebSocketError(void *socketHandle)
 {
+    WebRequest *socket = socketHandle;
+
     return WebSocketStatus(socket) < 0 ? socket->error : "";
 }
 

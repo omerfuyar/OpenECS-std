@@ -344,7 +344,7 @@ static void NetAdvance(NetConnection *connection)
     }
 }
 
-static NetConnection *NetConnect(const char *host, i32 port)
+static void *NetConnect(const char *host, i32 port)
 {
     NetConnection *connection = SDL_calloc(1, sizeof(NetConnection));
 
@@ -382,7 +382,7 @@ static void NetConnectionDestroy(void *object)
 }
 
 // a TLS connection checks the server's certificate against the name it was asked for
-static NetConnection *NetConnectTls(const char *host, i32 port)
+static void *NetConnectTls(const char *host, i32 port)
 {
     NetConnection *connection = NetTlsStart() ? NetConnect(host, port) : nullptr;
 
@@ -401,8 +401,10 @@ static NetConnection *NetConnectTls(const char *host, i32 port)
     return connection;
 }
 
-static i32 NetStatus(NetConnection *connection)
+static i32 NetStatus(void *connectionHandle)
 {
+    NetConnection *connection = connectionHandle;
+
     NetAdvance(connection);
 
     if (connection->failed || (connection->socket == nullptr && connection->address == nullptr))
@@ -427,8 +429,10 @@ static i32 NetStatus(NetConnection *connection)
     }
 }
 
-static bool NetSend(NetConnection *connection, SHUSlice data)
+static bool NetSend(void *connectionHandle, SHUSlice data)
 {
+    NetConnection *connection = connectionHandle;
+
     NetAdvance(connection);
 
     if (connection->tls == nullptr)
@@ -462,8 +466,10 @@ static int NetRead(NetConnection *connection, u8 *buffer, i32 maxBytes)
                                                                                                       : count;
 }
 
-static SHUSlice NetReceive(NetConnection *connection, i32 maxBytes)
+static SHUSlice NetReceive(void *connectionHandle, i32 maxBytes)
 {
+    NetConnection *connection = connectionHandle;
+
     NetAdvance(connection);
     SDL_free(connection->received);
     connection->received = nullptr;
@@ -489,8 +495,10 @@ static SHUSlice NetReceive(NetConnection *connection, i32 maxBytes)
     return cs(buffer, (usz)count);
 }
 
-static void NetClose(NetConnection *connection)
+static void NetClose(void *connectionHandle)
 {
+    NetConnection *connection = connectionHandle;
+
     NET_DestroyStreamSocket(connection->socket);
     connection->socket = nullptr;
     connection->failed = true;
@@ -537,7 +545,7 @@ static NET_Server *NetCreateServer(i32 port)
     return server;
 }
 
-static NetServer *NetListen(i32 port)
+static void *NetListen(i32 port)
 {
     NetServer *server = SDL_calloc(1, sizeof(NetServer));
 
@@ -585,7 +593,7 @@ static bool NetAddServerTls(NetServer *server, const char *certificatePath, cons
 }
 
 // a TLS server shows its certificate to the clients, and proves it with the certificate's key
-static NetServer *NetListenTls(i32 port, const char *certificate, const char *key)
+static void *NetListenTls(i32 port, const char *certificate, const char *key)
 {
     char *certificatePath = nullptr;
     char *keyPath = nullptr;
@@ -605,8 +613,10 @@ static NetServer *NetListenTls(i32 port, const char *certificate, const char *ke
 }
 
 // a TLS server's connection does its handshake as the client's does, and keeps the server's configuration while it lives
-static NetConnection *NetAccept(NetServer *server)
+static void *NetAccept(void *serverHandle)
 {
+    NetServer *server = serverHandle;
+
     NET_StreamSocket *socket = nullptr;
 
     if (server->server == nullptr || !NET_AcceptClient(server->server, &socket) || socket == nullptr)
@@ -653,7 +663,7 @@ static void NetServerDestroy(void *object)
 
 #pragma region UDP
 
-static NetUdp *NetOpenUdp(i32 port)
+static void *NetOpenUdp(i32 port)
 {
     NetUdp *udp = SDL_calloc(1, sizeof(NetUdp));
 
@@ -759,8 +769,10 @@ static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
     return address;
 }
 
-static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
+static bool NetUdpSendTo(void *udpHandle, const char *host, i32 port, SHUSlice data)
 {
+    NetUdp *udp = udpHandle;
+
     if (data.size > (usz)SDL_MAX_SINT32)
     {
         return false;
@@ -782,8 +794,10 @@ static bool NetUdpSendTo(NetUdp *udp, const char *host, i32 port, SHUSlice data)
     return true;
 }
 
-static SHUSlice NetUdpReceiveFrom(NetUdp *udp, const char **retHost, i32 *retPort)
+static SHUSlice NetUdpReceiveFrom(void *udpHandle, const char **retHost, i32 *retPort)
 {
+    NetUdp *udp = udpHandle;
+
     NetUdpFlush(udp);
     NET_DestroyDatagram(udp->received);
     udp->received = nullptr;
