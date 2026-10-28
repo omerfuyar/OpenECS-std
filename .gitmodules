@@ -28,3 +28,18 @@
 [submodule "dependencies/SPIRV-Cross"]
 	path = dependencies/SPIRV-Cross
 	url = https://github.com/KhronosGroup/SPIRV-Cross.git
+[submodule "dependencies/yyjson"]
+	path = dependencies/yyjson
+	url = https://github.com/ibireme/yyjson.git
+[submodule "dependencies/tomlc17"]
+	path = dependencies/tomlc17
+	url = https://github.com/cktan/tomlc17.git
+[submodule "dependencies/zlib"]
+	path = dependencies/zlib
+	url = https://github.com/madler/zlib.git
+[submodule "dependencies/zstd"]
+	path = dependencies/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "dependencies/nghttp2"]
+	path = dependencies/nghttp2
+	url = https://github.com/nghttp2/nghttp2.git

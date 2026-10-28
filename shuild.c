@@ -36,11 +36,11 @@ static struct
 typedef struct Library
 {
     const char *name;
-    const char *sources;            // the folder of its C files, in dependencies/
+    const char *sources[20];        // its C files and the folders of them, in dependencies/, ending with NULL
     const char *includes[3];        // the folders of dependencies/ that only its own files include, ending with NULL
     const char *headers[3];         // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
     const char *flags;              // the definitions it is configured with
-    const struct Library *links[2]; // the libraries it uses, whose headers it gets by linking them, ending with NULL
+    const struct Library *links[5]; // the libraries it uses, whose headers it gets by linking them, ending with NULL
     const char *windowsLinks[5];    // the Windows libraries it uses, ending with NULL
 } Library;
 
@@ -61,7 +61,7 @@ typedef struct PluginNeeds
     const char *name;
     const char *includes[3];      // ending with NULL
     const char *flags;            // definitions for its C files, or NULL
-    const Library *libraries[3];  // ending with NULL
+    const Library *libraries[6];  // ending with NULL
     const char *windowsLinks[4];  // the Windows libraries it uses, ending with NULL
     bool analyze;                 // its C files hold only its own code and headers, so the static analyzer can afford them
     const CMakeLibrary *cmake[3]; // the C++ libraries it takes, ending with NULL
@@ -71,8 +71,35 @@ typedef struct PluginNeeds
 #define MBEDTLS_FLAGS "'-DMBEDTLS_USER_CONFIG_FILE=<mbedtls_user_config.h>'"
 
 // curl is configured by a glue header, which HAVE_CONFIG_H names, in place of its configure script, for HTTP and HTTPS with mbedTLS
-static const Library MBEDTLS = {"mbedtls", "mbedtls/library/", {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}, {"bcrypt", NULL}};
-static const Library CURL = {"curl", "curl/lib/", {"other/curl", "curl/lib", NULL}, {"curl/include", NULL}, MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB", {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", "bcrypt"}};
+static const Library MBEDTLS = {"mbedtls", {"mbedtls/library/", NULL}, {"mbedtls/library", NULL}, {"mbedtls/include", "other/mbedtls", NULL}, MBEDTLS_FLAGS, {NULL}, {"bcrypt", NULL}};
+
+// zlib's own C files, without its tests, its examples and its gz* functions, which read and write files and need its configure script; minizip, from its contrib/, reads and writes zip archives with it
+static const Library ZLIB = {"zlib",
+                             {"zlib/adler32.c", "zlib/compress.c", "zlib/crc32.c", "zlib/deflate.c", "zlib/infback.c", "zlib/inffast.c", "zlib/inflate.c", "zlib/inftrees.c", "zlib/trees.c", "zlib/uncompr.c", "zlib/zutil.c", NULL},
+                             {NULL},
+                             {"zlib", NULL},
+                             "",
+                             {NULL},
+                             {NULL}};
+static const Library MINIZIP = {"minizip", {"zlib/contrib/minizip/ioapi.c", "zlib/contrib/minizip/zip.c", "zlib/contrib/minizip/unzip.c", NULL}, {NULL}, {"zlib/contrib/minizip", NULL}, "-DNOCRYPT", {&ZLIB, NULL}, {NULL}};
+
+// zstd without its dictionary builder and its old formats, and without its assembly, as shuild compiles only C
+static const Library ZSTD = {"zstd", {"zstd/lib/common/", "zstd/lib/compress/", "zstd/lib/decompress/", NULL}, {NULL}, {"zstd/lib", NULL}, "-DZSTD_DISABLE_ASM", {NULL}, {NULL}};
+
+// nghttp2, for libcurl's HTTP/2, is configured by glue headers too: config.h, which HAVE_CONFIG_H names, and its version header
+static const Library NGHTTP2 = {"nghttp2", {"nghttp2/lib/", NULL}, {"other/nghttp2", "nghttp2/lib", NULL}, {"nghttp2/lib/includes", "other/nghttp2/include", NULL}, "-DHAVE_CONFIG_H -DBUILDING_NGHTTP2 -DNGHTTP2_STATICLIB", {NULL}, {"ws2_32", NULL}};
+
+static const Library CURL = {"curl",
+                             {"curl/lib/", NULL},
+                             {"other/curl", "curl/lib", NULL},
+                             {"curl/include", NULL},
+                             MBEDTLS_FLAGS " -DHAVE_CONFIG_H -DBUILDING_LIBCURL -DCURL_STATICLIB -DNGHTTP2_STATICLIB",
+                             {&MBEDTLS, &ZLIB, &ZSTD, &NGHTTP2, NULL},
+                             {"ws2_32", "iphlpapi", "crypt32", "bcrypt"}};
+
+// yyjson reads and writes JSON, and tomlc17 reads TOML, for the parse plugin
+static const Library YYJSON = {"yyjson", {"yyjson/src/yyjson.c", NULL}, {NULL}, {"yyjson/src", NULL}, "", {NULL}, {NULL}};
+static const Library TOMLC17 = {"tomlc17", {"tomlc17/src/tomlc17.c", NULL}, {NULL}, {"tomlc17/src", NULL}, "", {NULL}, {NULL}};
 
 // glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
 static const CMakeLibrary GLSLANG = {"glslang",
@@ -96,8 +123,10 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", NULL}, false},
     {"gltf", {"cgltf", "cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
-    {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, NULL}, {"crypt32", NULL}, true},
+    {"web", {NULL}, MBEDTLS_FLAGS " -DCURL_STATICLIB", {&CURL, &MBEDTLS, &ZLIB, &ZSTD, &NGHTTP2, NULL}, {"crypt32", NULL}, true},
     {"gpu", {NULL}, NULL, {NULL}, {NULL}, true, {&GLSLANG, &SPIRV_CROSS, NULL}},
+    {"parse", {NULL}, NULL, {&YYJSON, &TOMLC17, NULL}, {NULL}, true},
+    {"compress", {NULL}, NULL, {&MINIZIP, &ZLIB, &ZSTD, NULL}, {NULL}, true},
 };
 
 #pragma endregion Setup
@@ -366,7 +395,10 @@ static void BuildLibrary(const Library *library, const char *folder)
         }
 
         // each C file compiles alone, in parallel, and the compiler finds its headers with the library's definitions
-        SHU_ModuleAddSourceFiles(library->sources);
+        for (usz i = 0; library->sources[i] != NULL; i++)
+        {
+            SHU_ModuleAddSourceFiles(library->sources[i]);
+        }
     }
 }
 
