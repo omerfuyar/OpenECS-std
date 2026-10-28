@@ -12,7 +12,8 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **net:** TCP connections and servers, TLS connections and servers, and UDP sockets, that never block the program.
 - **web:** HTTP and HTTPS requests, and WebSocket connections, that never block the program.
 - **fs:** lists, makes and watches folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
-- **gpu:** draws into GPU surfaces on the GPU, from Lua or C: shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders.
+- **gpu:** draws into GPU surfaces on the GPU, from Lua or C: shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders, which it compiles from GLSL.
+- **cglm:** [cglm](https://github.com/recp/cglm)'s vectors, matrices, quaternions, cameras and noise for 3D scenes and shaders, in Lua; C plugins call cglm itself.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
@@ -26,17 +27,18 @@ Build and test inside a checkout of OpenECS, as OpenECS's README.md says:
 ```shell
 git clone --recursive https://github.com/omerfuyar/OpenECS.git
 cd OpenECS
-.github/scripts/build.sh D
-.github/scripts/test.sh build/Debug/bin/OpenECS
-.github/scripts/test-wayland.sh build/Debug/bin/OpenECS
+gcc shuild.c -o shuild.ignore -O3
+./shuild.ignore -t
 ```
 
-`test-wayland.sh` runs the tests on Wayland, in a headless sway, as OpenECS's README.md says.
+`-t` builds in Debug with the examples, and runs every example's test. OpenECS's README.md says how to run them on Wayland.
 
-OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `test.sh` runs each example's test, and each plugin has an example.
+OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `-t` runs each example's test, and each plugin has an example.
 
-Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it. The build writes a `.luarc.json` here that names OpenECS's `include/` and the plugins' definition files, so an editor with LuaLS completes and checks the Lua plugins.
+Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it. The build writes a `.luarc.json` here that names the `include/` of OpenECS's build, with the plugin interface and the plugins' definition files, so an editor with LuaLS completes and checks the Lua plugins.
 
 ## Releases
 
 This repository is released with OpenECS, at the same time and with the same version. Each release has a description in `.github/release-notes/`.
+
+Each release also has these plugins built for Linux and Windows, with OpenECS of the same version: `plugins/`, `presets/` and the plugins' definition files in `include/`. Unpack it into an OpenECS folder of that version.

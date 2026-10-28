@@ -7,11 +7,8 @@ local ui = require("ui")
 
 -- a size of the ui plugin's settings, in layout units, which every first-party view shares
 local function size(name)
-  return ecs.settings.get("ui." .. name)
+  return ecs.setting.get("ui." .. name)
 end
-
--- the id of the list of entries
-local LIST = "list"
 
 -- version of a list's saved state: the panel type that was chosen
 local STATE_VERSION = 1
@@ -23,7 +20,7 @@ local target -- the panel that had the focus when the list was opened; a chosen 
 local function readTypes()
   local types = {}
 
-  for _, entry in ipairs(ecs.panel.types()) do
+  for _, entry in ipairs(ecs.panel.listTypes()) do
     if entry.name ~= "panels.list" then
       types[#types + 1] = entry
     end
@@ -63,18 +60,9 @@ local function open(entry)
   end
 end
 
-local function findList(panel)
-  local list = lists[panel]
-
-  if not list then
-    ecs.log.warn("That panel is not a panel list.")
-  end
-
-  return list
-end
-
--- the list's elements: the title, then for each plugin a heading with its description and a row for each of its panel types, which a click opens
-local function tree(list)
+-- the list's elements: the title, then for each plugin a heading with its description and a row for each of its panel types, which a click,
+-- or Return on the chosen one, opens
+local function view(list)
   local rows = {}
   local plugin
 
@@ -100,7 +88,7 @@ local function tree(list)
   return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
     ui.text("Open a panel", { size = size("titleSize") }),
     ui.list({
-      id = LIST,
+      id = "list",
       selected = list.selected,
       onSelect = function(index)
         list.selected = index
@@ -133,24 +121,24 @@ ecs.panel.registerType({
 
     return list
   end,
-  destroy = function(list)
-    ui.forget(list.panel)
-    lists[list.panel] = nil
+  destroy = function(state)
+    ui.forget(state.panel)
+    lists[state.panel] = nil
   end,
-  saveState = function(list)
-    local chosen = list.types[list.selected]
+  saveState = function(state)
+    local chosen = state.types[state.selected]
     return { selected = chosen and chosen.name or nil }
   end,
-  draw = function(list, surface)
-    ui.show(list.panel, surface, tree(list))
+  draw = function(state, surface)
+    ui.show(state.panel, surface, view(state))
   end,
-  event = function(list, event)
+  event = function(state, event)
     -- plugins may have registered types since the list was drawn
     if event.type == "shown" then
-      refresh(list)
+      refresh(state)
     end
 
-    ui.event(list.panel, event)
+    ui.event(state.panel, event)
   end,
 })
 
@@ -164,11 +152,11 @@ function services.open()
     target = focus
   end
 
-  local open = next(lists)
+  local openList = next(lists)
 
-  if open then
-    refresh(lists[open])
-    ecs.layout.focus(open)
+  if openList then
+    refresh(lists[openList])
+    ecs.layout.focus(openList)
     return
   end
 
@@ -179,32 +167,7 @@ function services.open()
   end
 end
 
-function services.up(panel)
-  if findList(panel) then
-    ui.move(panel, LIST, -1)
-  end
-end
-
-function services.down(panel)
-  if findList(panel) then
-    ui.move(panel, LIST, 1)
-  end
-end
-
-function services.choose(panel)
-  if findList(panel) then
-    ui.activate(panel, LIST)
-  end
-end
-
 assert(ecs.service.register({
   open = { sig = "void()", doc = "Open panels", fn = services.open },
-  up = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type above", fn = services.up },
-  down = { sig = "void(handle<ecs.panel> panel)", doc = "Choose the panel type below", fn = services.down },
-  choose = { sig = "void(handle<ecs.panel> panel)", doc = "Open a panel of the chosen type", fn = services.choose },
 }))
 
--- default keys for the list; presets and the user's settings can change them
-for service, key in pairs({ up = "Up", down = "Down", choose = "Return" }) do
-  assert(ecs.input.bind("panels.list", key, "panels." .. service))
-end

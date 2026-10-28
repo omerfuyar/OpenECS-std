@@ -19,3 +19,12 @@
 [submodule "dependencies/mbedtls"]
 	path = dependencies/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "dependencies/cglm"]
+	path = dependencies/cglm
+	url = https://github.com/recp/cglm.git
+[submodule "dependencies/glslang"]
+	path = dependencies/glslang
+	url = https://github.com/KhronosGroup/glslang.git
+[submodule "dependencies/SPIRV-Cross"]
+	path = dependencies/SPIRV-Cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross.git

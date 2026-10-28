@@ -22,10 +22,10 @@
 ---@field padding? number Room inside a container's edges.
 ---@field gap? number Room between a container's children.
 ---@field align? "start"|"center"|"end" Where a container puts children that do not stretch.
----@field background? string A colour, such as "#202226" or a theme colour, such as "tabRow".
----@field hoverBackground? string The background while the pointer is over it.
----@field border? string The colour of a line around it.
----@field color? string The colour of its text.
+---@field background? ecs.Color A colour, such as "#202226" or a theme colour, such as "tabRow".
+---@field hoverBackground? ecs.Color The background while the pointer is over it.
+---@field border? ecs.Color The colour of a line around it.
+---@field color? ecs.Color The colour of its text.
 ---@field size? number The font size of its text, in layout units.
 ---@field font? string A font name of draw, such as "ui" or "mono".
 ---@field tooltip? string A text that shows when the pointer rests on it.
@@ -69,7 +69,7 @@
 ---@class ui.TreeNode
 ---@field id any
 ---@field label? string The id as text if missing.
----@field color? string
+---@field color? ecs.Color
 ---@field children? ui.TreeNode[]
 
 ---@class ui.TreeProps: ui.Props
@@ -122,15 +122,17 @@
 ---@field id string
 ---@field onChange? fun(combination: string)
 
----An element as a plugin in C describes it, which ui.showDescription builds with the element function of its kind.
+---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description
----@field kind string The element's kind, which names its function, such as "column" or "button".
+---@field type string The element's type, which names its function, such as "column" or "button".
 ---@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button.
 ---@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number or a path.
 ---@field choices? string[] A selector's, tabs' or dropdown's choices.
 ---@field columns? ui.TableColumn[] A table's columns.
 ---@field rows? ui.TableRow[] A table's rows.
 ---@field nodes? ui.TreeNode[] A tree's nodes.
+---@field open? table<any, boolean> A tree's open nodes, by id.
+---@field selected? any A tree's chosen node's id.
 ---@field children? ui.Description[] A container's children.
 
 ---What a callback of a described element got, which ui.take gives.

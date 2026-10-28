@@ -1,0 +1,51 @@
+# Checks of the plugins' C code, run by .github/scripts/check.sh: OpenECS's checks, with the names of this DESIGN.md, section 1.3.
+# Each kind of name has an impossible case and an IgnoredRegexp with the right form, so only names in the wrong form are reported.
+# A plugin includes the C file of a library it compiles in, and inotify gives its events as bytes
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -bugprone-macro-parentheses,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-inc-dec-in-conditions,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone,
+  -bugprone-suspicious-include,
+  -bugprone-casting-through-void,
+  performance-*,
+  readability-braces-around-statements,
+  readability-function-cognitive-complexity,
+  readability-identifier-length,
+  readability-identifier-naming,
+  readability-inconsistent-declaration-parameter-name,
+  readability-misleading-indentation,
+  readability-non-const-parameter
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^plugins/'
+CheckOptions:
+  readability-function-cognitive-complexity.Threshold: 25
+  readability-function-cognitive-complexity.IgnoreMacros: true
+  readability-identifier-length.MinimumVariableNameLength: 3
+  readability-identifier-length.MinimumParameterNameLength: 3
+  readability-identifier-length.MinimumLoopCounterNameLength: 3
+  readability-identifier-length.IgnoredVariableNames: '^(i|j|k|x|y|z|w|h|id)$'
+  readability-identifier-length.IgnoredParameterNames: '^(i|j|k|x|y|z|w|h|id)$'
+  readability-identifier-length.IgnoredLoopCounterNames: '^(i|j|k|x|y|z|w|h|id)$'
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.FunctionIgnoredRegexp: '^([A-Z][A-Za-z0-9]*|ECSPlugin_[A-Z][A-Za-z0-9]*)$'
+  readability-identifier-naming.TypedefCase: lower_case
+  readability-identifier-naming.TypedefIgnoredRegexp: '^[A-Z][A-Za-z0-9]*$'
+  readability-identifier-naming.StructCase: lower_case
+  readability-identifier-naming.StructIgnoredRegexp: '^[A-Z][A-Za-z0-9]*$'
+  readability-identifier-naming.EnumCase: lower_case
+  readability-identifier-naming.EnumIgnoredRegexp: '^[A-Z][A-Za-z0-9]*$'
+  readability-identifier-naming.ParameterCase: camelBack
+  readability-identifier-naming.ParameterIgnoredRegexp: '^[A-Z][A-Za-z0-9]*$'
+  readability-identifier-naming.LocalVariableCase: camelBack
+  readability-identifier-naming.LocalVariableIgnoredRegexp: '^([A-Z][A-Za-z0-9]*|[A-Z][A-Z0-9_]*)$'
+  readability-identifier-naming.MemberCase: camelBack
+  readability-identifier-naming.MemberIgnoredRegexp: '^[A-Z][A-Za-z0-9]*$'
+  readability-identifier-naming.GlobalVariableCase: UPPER_CASE
+  readability-identifier-naming.GlobalConstantCase: UPPER_CASE
