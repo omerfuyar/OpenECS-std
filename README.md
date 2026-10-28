@@ -27,16 +27,15 @@ Build and test inside a checkout of OpenECS, as OpenECS's README.md says:
 ```shell
 git clone --recursive https://github.com/omerfuyar/OpenECS.git
 cd OpenECS
-.github/scripts/build.sh D
-.github/scripts/test.sh build/Debug/bin/OpenECS
-.github/scripts/test-wayland.sh build/Debug/bin/OpenECS
+gcc shuild.c -o shuild.ignore -O3
+./shuild.ignore -t
 ```
 
-`test-wayland.sh` runs the tests on Wayland, in a headless sway, as OpenECS's README.md says.
+`-t` builds in Debug with the examples, and runs every example's test. OpenECS's README.md says how to run them on Wayland.
 
-OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `test.sh` runs each example's test, and each plugin has an example.
+OpenECS's build compiles and runs `shuild.c` from `std/`, which builds these plugins, unless OpenECS's build is given `--no-std`. The examples of [OpenECS-examples](https://github.com/omerfuyar/OpenECS-examples) are the tests: `-t` runs each example's test, and each plugin has an example.
 
-Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it. The build writes a `.luarc.json` here that names OpenECS's `include/` and the plugins' definition files, so an editor with LuaLS completes and checks the Lua plugins.
+Each plugin needs nothing but OpenECS: the libraries it uses are compiled into it. The build writes a `.luarc.json` here that names the `include/` of OpenECS's build, with the plugin interface and the plugins' definition files, so an editor with LuaLS completes and checks the Lua plugins.
 
 ## Releases
 
