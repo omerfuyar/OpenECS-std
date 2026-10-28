@@ -20,6 +20,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 14. The panel list
 15. gpu
 16. cglm
+17. parse
+18. compress
 
 ## 1. Rules
 
@@ -28,10 +30,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl and mbedTLS. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
-- A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson and tomlc17. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
-- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts.
+- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
 ### 1.1 Building
@@ -237,7 +239,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 11. web
 
-- The `web` plugin makes HTTP and HTTPS requests, and WebSocket connections. It is a native plugin: libcurl makes them, with TLS from mbedTLS, and both are compiled into it (1). libcurl is built for HTTP, HTTPS and WebSockets only, with HTTP/1.1, and resolves names on a thread of its own.
+- The `web` plugin makes HTTP and HTTPS requests, and WebSocket connections. It is a native plugin: libcurl makes them, with TLS from mbedTLS, HTTP/2 from nghttp2, and compressed answers from zlib and zstd, and all are compiled into it (1). libcurl is built for HTTP, HTTPS and WebSockets only, and resolves names on a thread of its own.
+- HTTPS uses HTTP/2 when the server offers it, and HTTP/1.1 otherwise; plain HTTP and WebSockets use HTTP/1.1. A request asks for a compressed answer, with gzip, deflate or zstd, and `web.body` gives it uncompressed; `web.header(request, "Content-Encoding")` still names how it came.
 - Nothing it does blocks the program: one thread of the plugin runs every request, many at once.
 - `web.get(url, done)` starts a GET request and gives a handle of type `web.request`. `web.request(method, url, headers, body, done)` starts a request with any method, such as `"POST"`; the headers are a list of texts, such as `{ "Content-Type: application/json" }`, and a body that is not empty is sent. A request that cannot be made gives nil; one to a URL that is not HTTP or HTTPS fails, as one to a host that cannot be reached does.
 - `done`, if given, is a kept callback (OpenECS DESIGN 10.4): web calls it on the main thread with the request once it is done, and then releases it. The request goes on when its handle is dropped, and `done` gets it in a new handle. Without `done`, a plugin asks for the request's state when it wants, such as from a timer, as with net (9).
@@ -267,7 +270,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 13. The launcher
 
-- When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
+- When the command line names no preset and no session, OpenECS starts with the first-party preset `launcher`. Its app id is `openecs.launcher`, its desktop entry's category is `Development` (OpenECS DESIGN 13.9), it sets `listed = false`, and it shows one panel of the first-party Lua plugin `launcher`.
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
 - An entry shows the tool's name. A session's entry also shows the file's name and when it was saved.
 - The panel reads both lists when it is created and each time it is shown again.
@@ -286,30 +289,6 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - A click on a row, or Return on the chosen one, opens a panel of the type. Up and Down choose a row, as the list handles them (5).
 - The panel's saved state is the chosen type.
 - It is built with ui (5): the types are a list, with each plugin's name and description as a heading, whose `onActivate` opens the type.
-
----
-
-## Glossary
-
-**Archive (static).** A file that holds compiled code, which a library or a program takes in when it is linked.
-
-**Certificate.** A file with which a server proves who it is to HTTPS. It is trusted when an authority that the system trusts signed it.
-
-**Datagram.** A message sent by UDP on its own, without a connection.
-
-**Ellipsis.** The three dots, …, that end a text that is cut.
-
-**PEM.** A text file that holds certificates or keys in base64, between lines such as `-----BEGIN CERTIFICATE-----`.
-
-**Proxy.** A server that makes requests for other programs.
-
-**Rasterizer.** Code that turns a shape into the pixels it covers.
-
-**Redirect.** An answer that tells the client to ask another URL instead.
-
-**Thumb (scrollbar).** The part of a scrollbar that shows which part of the content is in view, and that the user drags to scroll.
-
-**TLS (Transport Layer Security).** The protocol that encrypts HTTPS and other connections, and checks the server's certificate.
 
 ## 15. gpu
 
@@ -367,3 +346,50 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - cglm is a submodule in `dependencies/`, at a release tag. Its functions are inline, in its headers, so the plugin compiles the ones it uses into itself.
 - A C plugin calls the plugin's functions through `cglm.h` (OpenECS DESIGN 10.10), with buffers as Lua does: `CglmFunctions_Get(plugin, &cglm)`, then `cglm.mat4Mul(m1, m2)`. Neither cglm's headers nor its types reach other plugins.
 - The plugin's functions for Lua keep each result until the next call, as Lua copies it.
+
+## 17. parse
+
+- The `parse` plugin reads common text formats into values, which are Lua tables in Lua, and writes values back into them: JSON, TOML, INI, .env and CSV. It is a native plugin: yyjson reads and writes JSON, and tomlc17 reads TOML; both are compiled into it (1). It writes TOML, and reads and writes INI, .env and CSV, itself, as they are small formats.
+- Each format has two functions: `readJson(text)` gives the data, and `writeJson(data, pretty)` the text; then `readToml` and `writeToml`, `readIni` and `writeIni`, `readEnv` and `writeEnv`, and `readCsv(text, separator)` and `writeCsv(rows, separator)`, whose separator is one character, and a comma when it is empty.
+- A function that fails gives nothing and why, as text, with the line where the text is wrong: `local data, problem = parse.readJson(text)`. A text that a write gives, and the reason, are kept until the plugin's next call; Lua gets copies.
+- Writes give the same text for the same data: named fields are written sorted by name. A number is written in the shortest form that reads back the same, with a `.` or an exponent, so it reads back as a number and not an integer.
+- **JSON:** an object is a table of named fields, an array a list, and `null` is nil, so a field that is null is left out, and a list with nulls has holes. Comments and trailing commas are read. An integer too large for 64 bits is read as a number. A table is written as an array if it is a list, and as an object otherwise, an empty table as `{}`; a table that is both, a handle, or an infinite number cannot be written.
+- **TOML:** tables are tables of named fields, and arrays are lists. Dates and times are texts, as TOML writes them, such as `1979-05-27T07:32:00Z`. A table's values are written first, then its tables as `[sections]`, and a list of tables as `[[sections]]`; other tables in lists are written inline.
+- **INI:** each `[section]` is a table of its keys, and keys before the first section are fields of the top table. Lines are `key = value`, and lines that start with `;` or `#` are comments. Every value is read as a text, without the quotes around it; a value with blanks at its ends is written in quotes.
+- **.env:** `KEY=value` lines, which may start with `export`, give a table of texts. A value in double quotes may span lines and has the escapes `\n`, `\r`, `\t`, `\\`, `\"` and `\$`; one in single quotes is taken as it is; a value without quotes ends at a `#` after a blank. Values are taken as written, without expanding `${...}`. A value with a blank or a character that a shell reads otherwise is written in double quotes.
+- **CSV:** a list of rows, each a list of texts, as RFC 4180 says: a field in double quotes holds separators, line breaks and doubled quotes. Rows end with `\n` or `\r\n`. Numbers and booleans are written as texts.
+- A text that holds a zero byte is read as a buffer, a string in Lua.
+- The plugin gives yyjson and tomlc17 SDL's allocator.
+
+## 18. compress
+
+- The `compress` plugin packs and unpacks data, and reads and writes zip archives. It is a native plugin: zlib packs gzip, zlib and deflate, zstd packs zstd, and zlib's minizip reads and writes zip archives; all are compiled into it (1).
+- `compress.pack(format, data, level)` gives the packed data, and `compress.unpack(format, data)` the unpacked data. The format is `"gzip"`, `"zlib"`, `"deflate"` or `"zstd"`; for `unpack`, an empty format tells gzip, zlib and zstd by the data's first bytes. The level is 1 to 9 for zlib's formats and -7 to 22 for zstd, higher being smaller and slower, and 0 is the format's default. zstd's data may hold many frames.
+- `compress.zipList(path)` lists an archive's entries, each with its `name`, `size` and `packedSize`; a folder's name ends with `/`. `compress.zipRead(path, name)` gives a file of it, unpacked and checked against its checksum. `compress.zipExtract(path, folder)` writes every entry into a folder, and refuses an entry whose name is absolute or goes up with `..`. `compress.zipWrite(path, files, level)` writes an archive of a list of files, each a table of its `name` and `data`, packed with deflate, with the current time.
+- A function that fails gives nothing, or false, and why: `local data, problem = compress.unpack("", packed)`. The reason is kept until the plugin's next call.
+- Data passes whole, in memory: a call reads or writes all of it. Paths follow 1.3; minizip reads and writes files through SDL's streams, so paths are UTF-8 on every system.
+- The plugin gives zlib and zstd SDL's allocator; minizip allocates with the C library.
+
+---
+
+## Glossary
+
+**Archive (static).** A file that holds compiled code, which a library or a program takes in when it is linked.
+
+**Certificate.** A file with which a server proves who it is to HTTPS. It is trusted when an authority that the system trusts signed it.
+
+**Datagram.** A message sent by UDP on its own, without a connection.
+
+**Ellipsis.** The three dots, …, that end a text that is cut.
+
+**PEM.** A text file that holds certificates or keys in base64, between lines such as `-----BEGIN CERTIFICATE-----`.
+
+**Proxy.** A server that makes requests for other programs.
+
+**Rasterizer.** Code that turns a shape into the pixels it covers.
+
+**Redirect.** An answer that tells the client to ask another URL instead.
+
+**Thumb (scrollbar).** The part of a scrollbar that shows which part of the content is in view, and that the user drags to scroll.
+
+**TLS (Transport Layer Security).** The protocol that encrypts HTTPS and other connections, and checks the server's certificate.

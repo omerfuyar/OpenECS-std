@@ -1,5 +1,5 @@
 // The web standard plugin: HTTP and HTTPS requests, and WebSocket connections, that never block the program (DESIGN 11).
-// libcurl makes them, with TLS from mbedTLS; both are compiled into this plugin (DESIGN 1). One thread of the plugin runs every request and connection.
+// libcurl makes them, with TLS from mbedTLS, HTTP/2 from nghttp2, and compressed answers from zlib and zstd; all are compiled into this plugin (DESIGN 1). One thread of the plugin runs every request and connection.
 // A plugin gives a function that gets the request once it is done, or asks for its state and takes its answer when it wants.
 // A WebSocket connection is a request that goes on: the plugin asks for its state, and sends and takes messages when it wants.
 
@@ -618,6 +618,7 @@ static void *WebNewRequest(const char *method, const char *url, const ECSValue *
     bool configured = curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L) == CURLE_OK && curl_easy_setopt(easy, CURLOPT_MAXREDIRS, (long)WEB_REDIRECTS) == CURLE_OK &&
                       curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https") == CURLE_OK && curl_easy_setopt(easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https") == CURLE_OK &&
                       curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, WebTimeout()) == CURLE_OK && WebSetMethod(easy, method, body) &&
+                      curl_easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "") == CURLE_OK &&
                       (Done == nullptr || WEB.timer != nullptr || ECSTimer_Start(WEB.plugin, &WEB.timer, WEB_DONE_INTERVAL, true, WebCallDone, nullptr) == SHUResult_Ok);
 
     if (!configured)

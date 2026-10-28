@@ -1,5 +1,5 @@
 // The configuration of libcurl for the web plugin, in place of the one curl's configure script or CMake would write.
-// It is for Linux with glibc, on x86_64 and aarch64, and for Windows on x86_64 with MinGW: HTTP, HTTPS and WebSockets only, TLS from mbedTLS,
+// It is for Linux with glibc, on x86_64 and aarch64, and for Windows on x86_64 with MinGW: HTTP, HTTPS and WebSockets only, TLS from mbedTLS, HTTP/2 from nghttp2, compressed answers from zlib and zstd,
 // and names resolved on a thread of their own.
 #pragma once
 
@@ -25,6 +25,10 @@
 #define CURL_DISABLE_TELNET 1
 #define CURL_DISABLE_TFTP 1
 
+// compressed answers with zlib and zstd, and HTTP/2 with nghttp2, compiled into the web plugin with libcurl
+#define HAVE_LIBZ 1
+#define HAVE_ZSTD 1
+#define USE_NGHTTP2 1
 #define USE_IPV6 1
 #define USE_MBEDTLS 1
 #define USE_RESOLV_THREADED 1
