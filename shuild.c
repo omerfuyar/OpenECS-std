@@ -1,6 +1,6 @@
 // The build of OpenECS's standard plugins. It runs inside a checkout of OpenECS, in its std/ folder: OpenECS's shuild.c compiles this file with shu and shuild
 // from OpenECS's dependencies/ into shuild.ignore here, and runs it with the build type and OpenECS's build folder (DESIGN 1).
-// It builds each plugin into bin/plugins/, copies the presets into bin/presets/, and cglm's headers into include/cglm/.
+// It builds each plugin into bin/plugins/ and copies the presets into bin/presets/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
 #include "shuild/shuild.h"
@@ -24,12 +24,13 @@ static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDeb
 static struct
 {
     BuildType type;
-    const char *output;   // OpenECS's build folder, such as ../build/Debug/
-    const char *compiler; // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
-    bool windows;         // the compiler compiles for Windows
-    char *cache;          // shuild's cache, such as .shu/Debug/
-    char *cmakeCache;     // the C++ libraries' builds, a folder for each compiler, as CMake keeps the compiler it configured with, such as .shu/Debug/cmake/gcc/
-} CONFIG = {BuildType_Debug, NULL, "gcc", false, NULL, NULL};
+    const char *output;       // OpenECS's build folder, such as ../build/Debug/, whose include/ holds the plugin interface
+    const char *dependencies; // OpenECS's built dependencies, such as ../.shu/Debug/dependencies/: SDL's and stb's headers in include/, SDL's import libraries in lib/
+    const char *compiler;     // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
+    bool windows;             // the compiler compiles for Windows
+    char *cache;              // shuild's cache, such as .shu/Debug/
+    char *cmakeCache;         // the C++ libraries' builds, a folder for each compiler, as CMake keeps the compiler it configured with, such as .shu/Debug/cmake/gcc/
+} CONFIG = {BuildType_Debug, NULL, NULL, "gcc", false, NULL, NULL};
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
 typedef struct Library
@@ -121,9 +122,6 @@ int main(int argc, char **argv)
 
     Configure();
 
-    // cglm's headers go to OpenECS's include/, beside SDL's, so C plugins get cglm through the cglm plugin's header (DESIGN 16)
-    SHU_UtilCopyFile("dependencies/cglm/include/cglm/", SHU_UtilFormat("%sinclude/cglm/", CONFIG.output));
-
     // each folder of plugins/ is a standard plugin
     ForEachFolder("plugins/", BuildPlugin);
 
@@ -136,10 +134,12 @@ int main(int argc, char **argv)
 
 static void PrintUsage(void)
 {
-    printf("Usage: ./shuild.ignore -o FOLDER [FLAG...]\n\n"
+    printf("Usage: ./shuild.ignore -o FOLDER -d FOLDER [FLAG...]\n\n"
            "OpenECS's shuild.c runs this build; see OpenECS's README.md.\n\n"
            "Flags:\n"
            "  -o, --output FOLDER  OpenECS's build folder, named from this folder, such as ../build/Debug/\n"
+           "  -d, --dependencies FOLDER\n"
+           "                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n"
            "  -b, --build TYPE     Build type: debug (the default), release, relwithdebinfo or minsizerel\n"
            "  -c, --compiler CC    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n"
            "  -h, --help           Show this help\n");
@@ -180,6 +180,10 @@ static bool ReadArguments(int argc, char **argv)
         {
             CONFIG.output = i + 1 < argc ? argv[++i] : NULL;
         }
+        else if (!strcmp(flag, "-d") || !strcmp(flag, "--dependencies"))
+        {
+            CONFIG.dependencies = i + 1 < argc ? argv[++i] : NULL;
+        }
         else if (!strcmp(flag, "-c") || !strcmp(flag, "--compiler"))
         {
             CONFIG.compiler = i + 1 < argc ? argv[++i] : CONFIG.compiler;
@@ -198,6 +202,11 @@ static bool ReadArguments(int argc, char **argv)
     if (CONFIG.output == NULL || CONFIG.output[0] == '\0' || CONFIG.output[strlen(CONFIG.output) - 1] != '/')
     {
         Refuse("The output folder is missing, or does not end with /", CONFIG.output == NULL ? "" : CONFIG.output);
+    }
+
+    if (CONFIG.dependencies == NULL || CONFIG.dependencies[0] == '\0' || CONFIG.dependencies[strlen(CONFIG.dependencies) - 1] != '/')
+    {
+        Refuse("The dependencies' folder is missing, or does not end with /", CONFIG.dependencies == NULL ? "" : CONFIG.dependencies);
     }
 
     return true;
@@ -533,9 +542,10 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleAddSourceFiles("./");
         SHU_ModuleAddIncludeDirectories(include);
 
-        // stb_ds comes through OpenECS's glue header, stbSDL3.h, beside stb_ds.h in the build's include/stb/ (OpenECS DESIGN 1.7); a plugin compiles its
-        // implementation in, so the folder is a system one, which keeps stb_ds's warnings out
-        SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s%sinclude/stb", SHU_UtilGetScriptDirectory(), CONFIG.output));
+        // a standard plugin also reuses OpenECS's built dependencies, which no other plugin sees: SDL, and stb_ds through OpenECS's glue header stbSDL3.h
+        // (OpenECS DESIGN 1.7, 17.2), as system headers, which keeps their warnings out
+        char *dependencies = SHU_UtilFormat("%s%sinclude", SHU_UtilGetScriptDirectory(), CONFIG.dependencies);
+        SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s", dependencies), SHU_UtilFormat("-isystem %s/stb", dependencies));
 
         // the linker takes what the plugin uses of each library, in the order they are listed
         for (usz i = 0; needs->libraries[i] != NULL; i++)
@@ -548,10 +558,11 @@ static void BuildNative(const char *name, const char *root, const char *output)
             SHU_ModuleLinkLibraries(needs->libraries[i]->name);
         }
 
-        // a DLL calls OpenECS and SDL through their import libraries, in OpenECS's lib/ (OpenECS DESIGN 17.2); elsewhere the calls are resolved when it is loaded
+        // a DLL calls OpenECS and SDL through their import libraries, in OpenECS's lib/ and its dependencies' (OpenECS DESIGN 17.2); elsewhere the calls are
+        // resolved when it is loaded
         if (CONFIG.windows)
         {
-            SHU_ModuleAddLibraryDirectories(SHU_UtilFormat("%slib/", CONFIG.output));
+            SHU_ModuleAddLibraryDirectories(SHU_UtilFormat("%slib/", CONFIG.output), SHU_UtilFormat("%slib/", CONFIG.dependencies));
             SHU_ModuleLinkLibraries("OpenECS", "SDL3_ttf", "SDL3");
 
             for (usz i = 0; needs->windowsLinks[i] != NULL; i++)

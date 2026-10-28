@@ -91,7 +91,7 @@ static void *GltfLoad(const char *path)
     {
         ECS_LogError(GLTF.plugin, "Cannot read the model '%s': %s", fullPath, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
         cgltf_free(data);
-        SDL_free(fullPath);
+        ECSPath_Free(fullPath);
         return nullptr;
     }
 
