@@ -328,12 +328,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 16. cglm
 
 - The `cglm` plugin is the binding of [cglm](https://github.com/recp/cglm), a C library of the math of 3D scenes and shaders: vectors, matrices, quaternions, cameras and noise. It gives cglm to Lua and to C plugins, and cglm itself stays inside it.
-- Each vector, quaternion and matrix is a buffer of 32-bit floats in native byte order, a string in Lua: a vector has 2, 3 or 4, a quaternion 4, x, y, z and w, and a 4 by 4 matrix 16, column by column, as cglm and shaders keep them and as gltf's `pose` gives them. So a matrix goes into gpu's uniforms as it is, and uniforms are matrices and vectors joined: `vertexUniforms = model .. viewProjection`.
+- Vectors, quaternions and matrices are struct types (OpenECS DESIGN 10.11): `cglm.vec2`, `cglm.vec3` and `cglm.vec4` have the floats `x`, `y`, `z` and `w` that they need, `cglm.quat` has `x`, `y`, `z` and `w`, and `cglm.mat4` is a list of 16 floats, column by column, as cglm and shaders keep them. In Lua, `v.x` reads a field and `m[13]` a matrix's move along y.
+- The functions about a struct are its methods, named as the function without its type: `v:normalize()` is `cglm.vec3Normalize(v)`, `m:inv()` is `cglm.mat4Inv(m)`, and `m:translate(v)` is `cglm.translate(m, v)`. A vector's `add`, `sub` and `scale` are `a + b`, `a - b` and `v * s`, a matrix's `mat4Mul` is `m1 * m2`, and a quaternion's `quatMul` is `p * q`. A vector times a vector is an error, so `dot` and `cross` are methods only.
+- `bytes` gives a struct's floats as a buffer, in native byte order, so uniforms are the bytes of matrices and vectors joined: `vertexUniforms = model:bytes() .. viewProjection:bytes()`.
 - A function is named as cglm's, without `glm_` and in camelCase, and takes its parameters in cglm's order; it gives what cglm writes into `dest`. So `glm_mat4_mul(m1, m2, dest)` is `cglm.mat4Mul(m1, m2)`, and cglm's documentation tells what each does:
 
   | Functions                                                                          | Do                                                                                                   |
   | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-  | `vec2`, `vec3`, `vec4`, `components`                                                | Make a vector of floats, and give its floats back, 0 for those it lacks. These are the plugin's own. |
+  | `vec2`, `vec3`, `vec4`, `vec2Bytes`, `vec3Bytes`, `vec4Bytes`, `quatBytes`, `mat4Bytes` | Make a vector, and give a struct's floats as bytes. These are the plugin's own.                       |
   | `vec2Add`, `vec2Sub`, `vec2Scale`, `vec2Dot`, `vec2Norm`, `vec2Distance`, `vec2Normalize`, `vec2Lerp`, and the same for `vec3` and `vec4` | cglm's functions of vectors; `vecNNormalize` is cglm's `normalize_to`; `vecNLerp` takes any t.       |
   | `vec3Cross`                                                                         | The cross product.                                                                                   |
   | `mat4Identity`, `mat4Mul`, `mat4Mulv`, `mat4Mulv3`, `mat4Transpose`, `mat4Det`, `mat4Inv` | cglm's functions of matrices; `mat4Transpose` is `transpose_to`.                                     |
@@ -343,10 +345,11 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `perlinVec2`, `perlinVec3`, `perlinVec4`                                           | Perlin noise at a point.                                                                             |
 
 - The projections give a depth from 0, near, to 1, far, as SDL's GPU API takes it: the plugin and its header define `CGLM_FORCE_DEPTH_ZERO_TO_ONE` before cglm's header. They see down -z, as cglm's do.
-- A buffer of the wrong size is reported, and the function gives an empty buffer; so does `mat4Inv` for a matrix whose determinant is 0, which cglm would invert anyway.
+- `mat4Inv` gives zeros for a matrix whose determinant is 0, which cglm would invert anyway.
 - cglm is a submodule in `dependencies/`, at a release tag. Its functions are inline, in its headers, so the plugin compiles the ones it uses into itself.
-- A C plugin calls the plugin's functions through `cglm.h` (OpenECS DESIGN 10.10), with buffers as Lua does: `CglmFunctions_Get(plugin, &cglm)`, then `cglm.mat4Mul(m1, m2)`. Neither cglm's headers nor its types reach other plugins.
-- The plugin's functions for Lua keep each result until the next call, as Lua copies it.
+- A C plugin calls the plugin's functions through `cglm.h` (OpenECS DESIGN 10.10), which declares the struct types, such as `CglmVec3` and `CglmMat4`: `CglmFunctions_Get(plugin, &cglm)`, then `cglm.mat4Mul(&m1, &m2, &product)`. Neither cglm's headers nor its types reach other plugins.
+- The functions copy each struct into cglm's own type, which may need more alignment than the struct has.
+- The bytes functions keep their buffer until the next call, as Lua copies it.
 
 ## 17. parse
 
