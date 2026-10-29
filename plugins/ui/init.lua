@@ -215,17 +215,18 @@ local function ellipsize(font, text, textSize, width)
   return prefix(text, low) .. "…"
 end
 
--- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own
+-- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own,
+-- and a line keeps the blanks it starts with, so indented text stays indented
 local function wrap(font, text, textSize, width)
   local lines = {}
 
   for paragraph in (text .. "\n"):gmatch("(.-)\n") do
-    local current = nil
+    local current = paragraph:match("^%s+")
 
     for word in paragraph:gmatch("%S+") do
-      local joined = current and current .. " " .. word or word
+      local joined = current and (current:find("%S") and current .. " " or current) .. word or word
 
-      if current and measureText(font, joined, textSize) > width then
+      if current and current:find("%S") and measureText(font, joined, textSize) > width then
         lines[#lines + 1] = current
         current = word
       else
@@ -670,6 +671,17 @@ function measure(node, state, room)
     for _, text in ipairs(layout.lines) do
       width = math.max(width, measureText(font, text, textSize))
     end
+  elseif node.type == "text" and node.text:find("\n") then
+    -- a text of many lines without wrap keeps its own lines, each cut with an ellipsis when it is drawn
+    layout.lines = {}
+    width = 0
+
+    for text in (node.text .. "\n"):gmatch("(.-)\n") do
+      layout.lines[#layout.lines + 1] = text
+      width = math.max(width, measureText(font, text, textSize))
+    end
+
+    height = #layout.lines * line
   elseif node.type == "text" then
     width, height = measureText(font, node.text, textSize), line
   elseif node.type == "button" then

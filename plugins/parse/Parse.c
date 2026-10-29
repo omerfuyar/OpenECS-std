@@ -213,54 +213,54 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"readJson", (ECSFunction)ParseReadJson, "void(buffer text, out value<any> data, out string error)",
+        {"json.read", (ECSFunction)ParseReadJson, "void(buffer text, out value<any> data, out string error)",
          "Read a JSON text: objects become tables of named fields, arrays lists, and null nil; comments and trailing commas are allowed\n"
          "@param text The JSON text\n"
          "@param data What the text holds; nothing if it cannot be read\n"
          "@param error Why the text cannot be read, with its line and column; nothing if it can"},
-        {"writeJson", (ECSFunction)ParseWriteJson, "string(value data, bool pretty, out string error)",
+        {"json.write", (ECSFunction)ParseWriteJson, "string(value data, bool pretty, out string error)",
          "Write a value as a JSON text: a table of named fields as an object, with its names sorted, and a list as an array\n"
          "@param data The value; a table is either a list or named fields, and an empty table is written as {}\n"
          "@param pretty True to write each item on a line of its own, indented by four spaces\n"
          "@param error Why the value cannot be written, such as a handle or an infinite number in it; nothing if it can\n"
          "@return The text, kept until the plugin's next write; nothing if the value cannot be written"},
-        {"readToml", (ECSFunction)ParseReadToml, "void(buffer text, out value<table?> data, out string error)",
+        {"toml.read", (ECSFunction)ParseReadToml, "void(buffer text, out value<table?> data, out string error)",
          "Read a TOML text into a table: tables become tables of named fields, and arrays lists; dates and times become texts, as TOML writes them\n"
          "@param text The TOML text\n"
          "@param data What the text holds; nothing if it cannot be read\n"
          "@param error Why the text cannot be read, with its line; nothing if it can"},
-        {"writeToml", (ECSFunction)ParseWriteToml, "string(value<table> data, out string error)",
+        {"toml.write", (ECSFunction)ParseWriteToml, "string(value<table> data, out string error)",
          "Write a table as a TOML text: its values first, then its tables as [sections], with names sorted\n"
          "@param data The table of named fields; its lists hold values of one kind, and a list of tables is written as [[sections]]\n"
          "@param error Why the table cannot be written, such as a handle in it; nothing if it can\n"
          "@return The text, kept until the plugin's next write; nothing if the table cannot be written"},
-        {"readIni", (ECSFunction)ParseReadIni, "void(buffer text, out value<table?> data, out string error)",
+        {"ini.read", (ECSFunction)ParseReadIni, "void(buffer text, out value<table?> data, out string error)",
          "Read an INI text into a table: each [section] is a table of its keys, and the keys before the first section are fields of the table itself; every value is a text\n"
          "@param text The INI text: key = value lines, and comments on lines that start with ; or #\n"
          "@param data What the text holds; nothing if it cannot be read\n"
          "@param error Why the text cannot be read, with its line; nothing if it can"},
-        {"writeIni", (ECSFunction)ParseWriteIni, "string(value<table> data, out string error)",
+        {"ini.write", (ECSFunction)ParseWriteIni, "string(value<table> data, out string error)",
          "Write a table as an INI text: its texts, numbers and booleans first, then each of its tables as a [section], with names sorted\n"
          "@param data The table of named fields\n"
          "@param error Why the table cannot be written, such as a list or a table inside a section; nothing if it can\n"
          "@return The text, kept until the plugin's next write; nothing if the table cannot be written"},
-        {"readEnv", (ECSFunction)ParseReadEnv, "void(buffer text, out value<parse.Env?> data, out string error)",
+        {"env.read", (ECSFunction)ParseReadEnv, "void(buffer text, out value<parse.Env?> data, out string error)",
          "Read a .env text into a table of texts: KEY=value lines, which may start with export; values may be in quotes, and # starts a comment\n"
          "@param text The .env text\n"
          "@param data Each key's value, as a text; nothing if the text cannot be read\n"
          "@param error Why the text cannot be read, with its line; nothing if it can"},
-        {"writeEnv", (ECSFunction)ParseWriteEnv, "string(value<table> data, out string error)",
+        {"env.write", (ECSFunction)ParseWriteEnv, "string(value<table> data, out string error)",
          "Write a table as a .env text: a KEY=value line for each field, with names sorted, and values in double quotes when they need them\n"
          "@param data The table of named fields, each a text, a number or a boolean\n"
          "@param error Why the table cannot be written, such as a key that is not a name; nothing if it can\n"
          "@return The text, kept until the plugin's next write; nothing if the table cannot be written"},
-        {"readCsv", (ECSFunction)ParseReadCsv, "void(buffer text, string separator, out value<string[][]?> rows, out string error)",
+        {"csv.read", (ECSFunction)ParseReadCsv, "void(buffer text, string separator, out value<string[][]?> rows, out string error)",
          "Read a CSV text into a list of rows, each a list of texts; fields may be in double quotes, which hold separators, line breaks and doubled quotes\n"
          "@param text The CSV text\n"
          "@param separator The character between fields; empty for a comma\n"
          "@param rows The rows; nothing if the text cannot be read\n"
          "@param error Why the text cannot be read, with its line; nothing if it can"},
-        {"writeCsv", (ECSFunction)ParseWriteCsv, "string(value<any[][]> rows, string separator, out string error)",
+        {"csv.write", (ECSFunction)ParseWriteCsv, "string(value<any[][]> rows, string separator, out string error)",
          "Write a list of rows as a CSV text, each row a list of texts, numbers or booleans; a field goes in double quotes when it holds a separator, a quote or a line break\n"
          "@param rows The rows\n"
          "@param separator The character between fields; empty for a comma\n"
