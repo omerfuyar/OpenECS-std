@@ -431,7 +431,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
         return;
     }
 
-    SHU_UtilLog(SHUM_LOG_NAME("%s") " (CMake): building", library->name);
+    SHU_UtilLog(SHUM_LOG_NAME("%s") " (" SHUM_COLOR_BLUE("CMake") "): building", library->name);
     char *compilers = SHU_UtilFormat("-DCMAKE_C_COMPILER=\"%s\" -DCMAKE_CXX_COMPILER=\"%s\"", CONFIG.compiler, SHU_CompilerGetTool("g++", "clang++"));
 
     // a cross compiler builds for its system
@@ -447,7 +447,7 @@ static void BuildCMakeLibrary(const CMakeLibrary *library)
                       "-DCMAKE_C_VISIBILITY_PRESET=hidden -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON %s",
                       SHU_UtilGetScriptDirectory(), library->name, folder, compilers, library->options);
     SHU_UtilRunLogged(SHU_UtilFormat("%sbuild.log", logs), "cmake --build \"%s\" --parallel", folder);
-    SHU_UtilLog(SHUM_LOG_NAME("%s") " (CMake): built", library->name);
+    SHU_UtilLog(SHUM_LOG_NAME("%s") " (" SHUM_COLOR_BLUE("CMake") "): built", library->name);
 }
 
 /// @brief The C++ compiler's own static library, which C++ libraries need: libc++ for LLVM-MinGW's clang, libstdc++ elsewhere.

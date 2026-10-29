@@ -351,6 +351,29 @@ static void CompressUnpack(const char *format, SHUSlice data, ECSValue *retData,
     arrfree(unpacked);
 }
 
+/// @brief Defines a format's pack and unpack functions, which Lua finds in the format's namespace, such as compress.gzip.pack.
+#define COMPRESS_FORMAT_FUNCTIONS(Name, format)                                                            \
+    static void Compress##Name##Pack(SHUSlice data, int level, ECSValue *retPacked, const char **retError) \
+    {                                                                                                      \
+        CompressPack(format, data, level, retPacked, retError);                                            \
+    }                                                                                                      \
+                                                                                                           \
+    static void Compress##Name##Unpack(SHUSlice data, ECSValue *retData, const char **retError)            \
+    {                                                                                                      \
+        CompressUnpack(format, data, retData, retError);                                                   \
+    }
+
+COMPRESS_FORMAT_FUNCTIONS(Gzip, "gzip")
+COMPRESS_FORMAT_FUNCTIONS(Zlib, "zlib")
+COMPRESS_FORMAT_FUNCTIONS(Deflate, "deflate")
+COMPRESS_FORMAT_FUNCTIONS(Zstd, "zstd")
+
+/// @brief Unpacks data whose format its first bytes tell: gzip, zlib or zstd.
+static void CompressUnpackAny(SHUSlice data, ECSValue *retData, const char **retError)
+{
+    CompressUnpack("", data, retData, retError);
+}
+
 #pragma endregion Streams
 
 #pragma region Files
@@ -756,37 +779,73 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"pack", (ECSFunction)CompressPack, "void(string format, buffer data, int level, out value<string?> packed, out string error)",
-         "Pack data with gzip, zlib, deflate or zstd\n"
-         "@param format \"gzip\", \"zlib\" or \"deflate\", which zlib packs, or \"zstd\"\n"
+        {"gzip.pack", (ECSFunction)CompressGzipPack, "void(buffer data, int level, out value<string?> packed, out string error)",
+         "Pack data with gzip, which zlib makes\n"
          "@param data The data\n"
-         "@param level How hard to pack: 1 to 9 for zlib's formats, -7 to 22 for zstd, higher being smaller and slower; 0 for the format's default\n"
+         "@param level How hard to pack: 1 to 9, higher being smaller and slower; 0 for the default\n"
          "@param packed The packed data; nothing if it cannot be packed\n"
          "@param error Why the data cannot be packed; nothing if it can"},
-        {"unpack", (ECSFunction)CompressUnpack, "void(string format, buffer data, out value<string?> unpacked, out string error)",
-         "Unpack data that gzip, zlib, deflate or zstd packed\n"
-         "@param format \"gzip\", \"zlib\", \"deflate\" or \"zstd\"; an empty text tells gzip, zlib and zstd by the data's first bytes\n"
-         "@param data The packed data; zstd's may hold many frames, one after another\n"
+        {"gzip.unpack", (ECSFunction)CompressGzipUnpack, "void(buffer data, out value<string?> unpacked, out string error)",
+         "Unpack data that gzip packed\n"
+         "@param data The packed data\n"
          "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
          "@param error Why the data cannot be unpacked, such as when it is damaged or ends too early; nothing if it can"},
-        {"zipList", (ECSFunction)CompressZipList, "void(string path, out value<compress.ZipEntry[]?> entries, out string error)",
+        {"zlib.pack", (ECSFunction)CompressZlibPack, "void(buffer data, int level, out value<string?> packed, out string error)",
+         "Pack data with zlib's format: deflate with a small header and a checksum\n"
+         "@param data The data\n"
+         "@param level How hard to pack: 1 to 9, higher being smaller and slower; 0 for the default\n"
+         "@param packed The packed data; nothing if it cannot be packed\n"
+         "@param error Why the data cannot be packed; nothing if it can"},
+        {"zlib.unpack", (ECSFunction)CompressZlibUnpack, "void(buffer data, out value<string?> unpacked, out string error)",
+         "Unpack data in zlib's format\n"
+         "@param data The packed data\n"
+         "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
+         "@param error Why the data cannot be unpacked, such as when it is damaged or ends too early; nothing if it can"},
+        {"deflate.pack", (ECSFunction)CompressDeflatePack, "void(buffer data, int level, out value<string?> packed, out string error)",
+         "Pack data with deflate, without a header or a checksum\n"
+         "@param data The data\n"
+         "@param level How hard to pack: 1 to 9, higher being smaller and slower; 0 for the default\n"
+         "@param packed The packed data; nothing if it cannot be packed\n"
+         "@param error Why the data cannot be packed; nothing if it can"},
+        {"deflate.unpack", (ECSFunction)CompressDeflateUnpack, "void(buffer data, out value<string?> unpacked, out string error)",
+         "Unpack data that deflate packed, without a header or a checksum\n"
+         "@param data The packed data\n"
+         "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
+         "@param error Why the data cannot be unpacked, such as when it is damaged or ends too early; nothing if it can"},
+        {"zstd.pack", (ECSFunction)CompressZstdPack, "void(buffer data, int level, out value<string?> packed, out string error)",
+         "Pack data with zstd\n"
+         "@param data The data\n"
+         "@param level How hard to pack: -7 to 22, higher being smaller and slower; 0 for the default\n"
+         "@param packed The packed data; nothing if it cannot be packed\n"
+         "@param error Why the data cannot be packed; nothing if it can"},
+        {"zstd.unpack", (ECSFunction)CompressZstdUnpack, "void(buffer data, out value<string?> unpacked, out string error)",
+         "Unpack data that zstd packed, which may hold many frames, one after another\n"
+         "@param data The packed data\n"
+         "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
+         "@param error Why the data cannot be unpacked, such as when it is damaged or ends too early; nothing if it can"},
+        {"unpack", (ECSFunction)CompressUnpackAny, "void(buffer data, out value<string?> unpacked, out string error)",
+         "Unpack data that gzip, zlib or zstd packed, telling the format by the data's first bytes\n"
+         "@param data The packed data; deflate's has no header, so deflate.unpack unpacks it\n"
+         "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
+         "@param error Why the data cannot be unpacked, such as an unknown format; nothing if it can"},
+        {"zip.list", (ECSFunction)CompressZipList, "void(string path, out value<compress.ZipEntry[]?> entries, out string error)",
          "List the files and folders of a zip archive, in the archive's order\n"
          "@param path The archive's path; a relative path starts at the executable's folder\n"
          "@param entries Each entry's name, size and packed size; nothing if the archive cannot be read\n"
          "@param error Why the archive cannot be read; nothing if it can"},
-        {"zipRead", (ECSFunction)CompressZipRead, "void(string path, string name, out value<string?> data, out string error)",
+        {"zip.read", (ECSFunction)CompressZipRead, "void(string path, string name, out value<string?> data, out string error)",
          "Read a file of a zip archive, unpacked, and check it against its checksum\n"
          "@param path The archive's path; a relative path starts at the executable's folder\n"
-         "@param name The file's name in the archive, as zipList gives it\n"
+         "@param name The file's name in the archive, as zip.list gives it\n"
          "@param data What the file holds; nothing if it cannot be read\n"
          "@param error Why the file cannot be read, such as when the archive has no such file; nothing if it can"},
-        {"zipExtract", (ECSFunction)CompressZipExtract, "bool(string path, string folder, out string error)",
+        {"zip.extract", (ECSFunction)CompressZipExtract, "bool(string path, string folder, out string error)",
          "Extract every file and folder of a zip archive into a folder, replacing files that are there\n"
          "@param path The archive's path; a relative path starts at the executable's folder\n"
          "@param folder The folder, which is made if it is missing; a relative path starts at the executable's folder\n"
          "@param error Why it stopped, such as an entry whose name would go outside the folder; nothing if every entry was extracted\n"
          "@return False if an entry cannot be extracted; the entries before it stay extracted"},
-        {"zipWrite", (ECSFunction)CompressZipWrite, "bool(string path, value<compress.ZipFile[]> files, int level, out string error)",
+        {"zip.write", (ECSFunction)CompressZipWrite, "bool(string path, value<compress.ZipFile[]> files, int level, out string error)",
          "Write a zip archive of files, packed with deflate, replacing a file that is at the path\n"
          "@param path The archive's path; a relative path starts at the executable's folder\n"
          "@param files Each file's name in the archive and what it holds; a name that ends with / is a folder\n"
