@@ -284,17 +284,22 @@ static i32 GamepadVirtualId(GamepadVirtual *handle)
     return (i32)handle->id;
 }
 
-// a virtual gamepad's buttons and axes are in SDL's gamepad order, as it is a gamepad; SDL tells the change in the main loop's next pass
+// a virtual gamepad's buttons and axes are in SDL's gamepad order, as it is a gamepad. SDL reads a virtual gamepad once in each pass of the main loop,
+// so a press and a release in one pass would give no event; it reads it at once instead, and each change gives its event
 static bool GamepadVirtualPress(GamepadVirtual *handle, const char *button, bool down)
 {
     SDL_GamepadButton index = SDL_GetGamepadButtonFromString(button);
-    return index != SDL_GAMEPAD_BUTTON_INVALID && SDL_SetJoystickVirtualButton(handle->joystick, index, down);
+    bool set = index != SDL_GAMEPAD_BUTTON_INVALID && SDL_SetJoystickVirtualButton(handle->joystick, index, down);
+    SDL_UpdateJoysticks();
+    return set;
 }
 
 static bool GamepadVirtualMove(GamepadVirtual *handle, const char *axis, f32 value)
 {
     SDL_GamepadAxis index = SDL_GetGamepadAxisFromString(axis);
-    return index != SDL_GAMEPAD_AXIS_INVALID && SDL_SetJoystickVirtualAxis(handle->joystick, index, (i16)(SDL_clamp(value, -1.0F, 1.0F) * (f32)SDL_JOYSTICK_AXIS_MAX));
+    bool set = index != SDL_GAMEPAD_AXIS_INVALID && SDL_SetJoystickVirtualAxis(handle->joystick, index, (i16)(SDL_clamp(value, -1.0F, 1.0F) * (f32)SDL_JOYSTICK_AXIS_MAX));
+    SDL_UpdateJoysticks();
+    return set;
 }
 
 static void GamepadFree(void *data)
