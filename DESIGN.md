@@ -27,6 +27,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 21. gamepad
 22. hash
 23. sqlite
+24. notify
 
 ## 1. Rules
 
@@ -422,6 +423,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - A function that fails gives nothing, or false, and why, with SQLite's message. A database that another program writes makes a call wait up to five seconds before it fails.
 - Each call runs to its end on the main thread, so a tool keeps its queries short; many changes are fast inside one transaction, `BEGIN` to `COMMIT`.
 - The plugin gives SQLite SDL's allocator.
+
+## 24. notify
+
+- The `notify` plugin shows desktop notifications and tray icons, which OpenECS gives to plugins (OpenECS OVERVIEW 11). It is a native plugin, on SDL's notification and tray functions: notifications go through the desktop's notification service on Linux and toasts on Windows, and tray icons through the desktop's tray.
+- `notify.send(notification)` shows a notification and gives its id, or nothing and why. The notification is a table: its `title`, and optionally its `message`, an `image` file, a `priority` (`low`, `normal`, `high` or `critical`), `buttons`, each with an `id` and a `label`, the id of one it `replaces`, and `transient`, which leaves it out of the system's list once it is gone. `notify.remove(id)` takes it away. The system decides how and whether the user sees it, such as in a do-not-disturb mode.
+- `notify.tray(tray)` shows a tray icon and gives a handle of type `notify.tray`, or nothing and why, such as on a desktop without a tray. The tray is a table: its `name`, and optionally its `icon` file, its `tooltip` and its menu `entries`, each with an `id` and a `label`; an entry with `checked` is a checkbox, one with `disabled` is greyed, and one without a label is a separator. `tray:setEntries(entries)`, `tray:setTooltip(text)` and `tray:setIcon(path)` change it. The icon stays until its handle is gone.
+- What the user clicks comes back as the plugin's events: `notify.action` with the notification's `id` and the button's id as `action`, or `"default"` for the notification itself; `notify.trayEntry` with the tray's name as `tray`, the entry's id as `entry`, and `checked` for a checkbox; and `notify.trayClicked` for a left click on the icon, as the menu opens with a right click. An event watch turns SDL's events into these; on Windows a notification's click comes on a thread of the system's, so it reaches the main thread with `ECS_RunOnMainThread`.
+- Image paths follow 1.3; SDL reads PNG, JPG and BMP files.
 
 ---
 
