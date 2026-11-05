@@ -24,6 +24,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 18. compress
 19. The plugin list
 20. process
+21. gamepad
 
 ## 1. Rules
 
@@ -394,6 +395,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `process.exited(program)` tells whether it exited, with its exit code, without waiting. What it wrote before it exited can still be read. `process.kill(program, force)` asks it to stop, or stops it at once.
 - These are methods of the handle too: `program:read()`. A program whose handle is gone is killed, so none is left behind.
 - `process.run(command, folder, input)` runs a program to its end and gives its output and errors together, with its exit code, or nothing and why it cannot run. The program waits for it, so it suits short programs. The input is written first and closed, then the output is read; the buffer is kept until the next run.
+
+## 21. gamepad
+
+- The `gamepad` plugin reads game controllers, for games, emulators and tools driven by a controller. It is a native plugin, on SDL's gamepad functions, which map most controllers to one layout of buttons and axes. It starts SDL's gamepads itself, as the core starts only its video.
+- `gamepad.list()` lists the gamepads that are plugged in, each with its `id`, `name` and `type`, such as `"xbox360"` or `"ps5"`. `gamepad.open(id)` gives a handle of type `gamepad.gamepad`, or nothing and why it cannot open.
+- `gamepad.button(pad, name)` tells whether a button is down, and `gamepad.axis(pad, name)` where a stick or a trigger is: -1 to 1 for a stick, with y growing down, and 0 to 1 for a trigger. Buttons and axes have SDL's names, such as `a`, `start`, `dpup`, `leftx` and `righttrigger`. `gamepad.rumble(pad, low, high, seconds)` rumbles its two motors. `gamepad.name(pad)`, `gamepad.id(pad)` and `gamepad.connected(pad)` tell the rest. These are methods of the handle too: `pad:button("a")`.
+- The plugin emits `gamepad.added` and `gamepad.removed` when a gamepad is plugged in or out, `gamepad.button` when a button goes down or up, and `gamepad.axis` when an axis moves; each value holds the gamepad's `id` and what changed. A plugin reads a gamepad when it wants, such as each frame of a game, or takes these events, so nothing polls. SDL reads the devices in the core's main loop, and the plugin turns SDL's events into its own there, with an event watch.
+- `gamepad.attachVirtual(name)` plugs in a virtual gamepad, of type `gamepad.virtual`, whose buttons and axes the plugin sets with `virtualPress(pad, button, down)` and `virtualMove(pad, axis, value)`; it shows as any gamepad does, with its events. It serves tests, and tools that turn other input into a gamepad's. A virtual gamepad whose handle is gone is unplugged.
 
 ---
 
