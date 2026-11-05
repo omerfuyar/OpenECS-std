@@ -19,6 +19,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
+- **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 

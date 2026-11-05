@@ -22,6 +22,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 16. cglm
 17. parse
 18. compress
+19. The plugin list
 
 ## 1. Rules
 
@@ -373,6 +374,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - A function that fails gives nothing, or false, and why: `local data, problem = compress.unpack(packed)`. The reason is kept until the plugin's next call.
 - Data passes whole, in memory: a call reads or writes all of it. Paths follow 1.3; minizip reads and writes files through SDL's streams, so paths are UTF-8 on every system.
 - The plugin gives zlib and zstd SDL's allocator; minizip allocates with the C library.
+
+## 19. The plugin list
+
+- It shows every plugin in the plugin folders, loaded or not, so the user enables and disables plugins while the tool runs (OpenECS DESIGN 9.10). The first-party Lua plugin `plugins` gives the panel type `plugins.list`, titled "Plugins".
+- The core's settings file loads it for every tool, and binds `plugins.open` to Alt+W, then `;` (OpenECS DESIGN 12.3).
+- It reads the list with `ecs.plugins.list()` each time it is opened or shown, and again on `ecs.pluginsChanged`. It leaves out itself and the plugins it needs, through others too, as disabling them would close the list. The plugins are sorted by name; each row shows the name, the version, whether the plugin is enabled, disabled or failed, and the description.
+- A click on a row, or Return on the chosen one, disables an enabled plugin, with the plugins that need it, and enables any other, with the plugins it needs.
+- `plugins.open` opens the list, or focuses it if it is open.
+- The panel's saved state is the chosen plugin.
+- It is built with ui (5), as the panel list is (14).
 
 ---
 
