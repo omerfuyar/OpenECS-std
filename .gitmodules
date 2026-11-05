@@ -43,3 +43,6 @@
 [submodule "dependencies/nghttp2"]
 	path = dependencies/nghttp2
 	url = https://github.com/nghttp2/nghttp2.git
+[submodule "dependencies/xxHash"]
+	path = dependencies/xxHash
+	url = https://github.com/Cyan4973/xxHash.git

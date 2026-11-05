@@ -18,6 +18,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **compress:** packs and unpacks gzip, zlib, deflate and zstd, and reads, writes and extracts zip archives: `compress.zstd.pack(data, level)`, `compress.zip.list(path)` and so on.
 - **process:** runs programs, with their input, output and errors as streams that never block the program, or a whole run that gives the output.
 - **gamepad:** game controllers: their buttons, sticks and triggers, read at any time or as events, rumble, and virtual gamepads for tests.
+- **hash:** checksums and hashes of data, whole or in parts: CRC-32, MD5, SHA-1, SHA-256, SHA-512 and xxHash's XXH64, XXH3 and XXH128.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.

@@ -25,6 +25,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 19. The plugin list
 20. process
 21. gamepad
+22. hash
 
 ## 1. Rules
 
@@ -34,7 +35,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson and tomlc17. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17 and xxHash. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
 - Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header.
@@ -403,6 +404,13 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `gamepad.button(pad, name)` tells whether a button is down, and `gamepad.axis(pad, name)` where a stick or a trigger is: -1 to 1 for a stick, with y growing down, and 0 to 1 for a trigger. Buttons and axes have SDL's names, such as `a`, `start`, `dpup`, `leftx` and `righttrigger`. `gamepad.rumble(pad, low, high, seconds)` rumbles its two motors. `gamepad.name(pad)`, `gamepad.id(pad)` and `gamepad.connected(pad)` tell the rest. These are methods of the handle too: `pad:button("a")`.
 - The plugin emits `gamepad.added` and `gamepad.removed` when a gamepad is plugged in or out, `gamepad.button` when a button goes down or up, and `gamepad.axis` when an axis moves; each value holds the gamepad's `id` and what changed. A plugin reads a gamepad when it wants, such as each frame of a game, or takes these events, so nothing polls. SDL reads the devices in the core's main loop, and the plugin turns SDL's events into its own there, with an event watch.
 - `gamepad.attachVirtual(name)` plugs in a virtual gamepad, of type `gamepad.virtual`, whose buttons and axes the plugin sets with `virtualPress(pad, button, down)` and `virtualMove(pad, axis, value)`; it shows as any gamepad does, with its events. It serves tests, and tools that turn other input into a gamepad's. A virtual gamepad whose handle is gone is unplugged.
+
+## 22. hash
+
+- The `hash` plugin gives checksums and hashes of data, for checking downloads and files, caches and content addresses. It is a native plugin: mbedTLS gives MD5, SHA-1, SHA-256 and SHA-512, zlib CRC-32, and xxHash its fast hashes XXH64, XXH3 and XXH128; all are compiled into it (1).
+- `hash.of(algorithm, data)` hashes data that is all in memory. The algorithm is `crc32`, `md5`, `sha1`, `sha256`, `sha512`, `xxh64`, `xxh3` or `xxh128`.
+- `hash.new(algorithm)` gives a hasher, a handle of type `hash.hasher`, which takes the data in parts, such as a large file's: `hasher:update(data)` adds a part, and `hasher:digest()` ends the hash and gives it. A hasher that gave its digest takes no more data.
+- A hash is hexadecimal text in lower case, as tools such as `sha256sum` and `xxhsum` write it: a number, as CRC-32 and xxHash give, is written with its highest byte first. A function that fails gives nothing and why, such as for an unknown algorithm.
 
 ---
 

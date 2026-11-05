@@ -128,6 +128,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"gpu", {NULL}, NULL, {NULL}, {NULL}, true, {&GLSLANG, &SPIRV_CROSS, NULL}},
     {"parse", {NULL}, NULL, {&YYJSON, &TOMLC17, NULL}, {NULL}, true},
     {"compress", {NULL}, NULL, {&MINIZIP, &ZLIB, &ZSTD, NULL}, {NULL}, true},
+    {"hash", {"xxHash", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, &ZLIB, NULL}, {NULL}, false},
 };
 
 #pragma endregion Setup
