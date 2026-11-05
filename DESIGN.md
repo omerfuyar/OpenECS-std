@@ -24,6 +24,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 18. compress
 19. The plugin list
 20. process
+21. gamepad
+22. hash
+23. sqlite
+24. notify
 
 ## 1. Rules
 
@@ -33,10 +37,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson and tomlc17. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash and SQLite. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
-- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header.
+- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header. SQLite's own repository holds its sources without the amalgamation, its one C file, which its release makes with Tcl, so `dependencies/sqlite` is a mirror of the released amalgamations, at the commit of a release whose files are the same as the release's on sqlite.org.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
 ### 1.1 Building
@@ -394,6 +398,39 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `process.exited(program)` tells whether it exited, with its exit code, without waiting. What it wrote before it exited can still be read. `process.kill(program, force)` asks it to stop, or stops it at once.
 - These are methods of the handle too: `program:read()`. A program whose handle is gone is killed, so none is left behind.
 - `process.run(command, folder, input)` runs a program to its end and gives its output and errors together, with its exit code, or nothing and why it cannot run. The program waits for it, so it suits short programs. The input is written first and closed, then the output is read; the buffer is kept until the next run.
+
+## 21. gamepad
+
+- The `gamepad` plugin reads game controllers, for games, emulators and tools driven by a controller. It is a native plugin, on SDL's gamepad functions, which map most controllers to one layout of buttons and axes. It starts SDL's gamepads itself, as the core starts only its video.
+- `gamepad.list()` lists the gamepads that are plugged in, each with its `id`, `name` and `type`, such as `"xbox360"` or `"ps5"`. `gamepad.open(id)` gives a handle of type `gamepad.gamepad`, or nothing and why it cannot open.
+- `gamepad.button(pad, name)` tells whether a button is down, and `gamepad.axis(pad, name)` where a stick or a trigger is: -1 to 1 for a stick, with y growing down, and 0 to 1 for a trigger. Buttons and axes have SDL's names, such as `a`, `start`, `dpup`, `leftx` and `righttrigger`. `gamepad.rumble(pad, low, high, seconds)` rumbles its two motors. `gamepad.name(pad)`, `gamepad.id(pad)` and `gamepad.connected(pad)` tell the rest. These are methods of the handle too: `pad:button("a")`.
+- The plugin emits `gamepad.added` and `gamepad.removed` when a gamepad is plugged in or out, `gamepad.button` when a button goes down or up, and `gamepad.axis` when an axis moves; each value holds the gamepad's `id` and what changed. A plugin reads a gamepad when it wants, such as each frame of a game, or takes these events, so nothing polls. SDL reads the devices in the core's main loop, and the plugin turns SDL's events into its own there, with an event watch. As games want, SDL ignores the gamepads while none of the tool's windows has the keyboard's focus; the setting `gamepad.background` reads them then too.
+- `gamepad.attachVirtual(name)` plugs in a virtual gamepad, of type `gamepad.virtual`, whose buttons and axes the plugin sets with `virtualPress(pad, button, down)` and `virtualMove(pad, axis, value)`; it shows as any gamepad does, with its events. It serves tests, and tools that turn other input into a gamepad's. SDL reads a virtual gamepad at once after each change, so each change gives its event. A virtual gamepad whose handle is gone is unplugged.
+
+## 22. hash
+
+- The `hash` plugin gives checksums and hashes of data, for checking downloads and files, caches and content addresses. It is a native plugin: mbedTLS gives MD5, SHA-1, SHA-256 and SHA-512, zlib CRC-32, and xxHash its fast hashes XXH64, XXH3 and XXH128; all are compiled into it (1).
+- `hash.of(algorithm, data)` hashes data that is all in memory. The algorithm is `crc32`, `md5`, `sha1`, `sha256`, `sha512`, `xxh64`, `xxh3` or `xxh128`.
+- `hash.new(algorithm)` gives a hasher, a handle of type `hash.hasher`, which takes the data in parts, such as a large file's: `hasher:update(data)` adds a part, and `hasher:digest()` ends the hash and gives it. A hasher that gave its digest takes no more data.
+- A hash is hexadecimal text in lower case, as tools such as `sha256sum` and `xxhsum` write it: a number, as CRC-32 and xxHash give, is written with its highest byte first. A function that fails gives nothing and why, such as for an unknown algorithm.
+
+## 23. sqlite
+
+- The `sqlite` plugin keeps SQLite databases, for tools that keep many records, such as notes, logs, caches and catalogues. It is a native plugin: SQLite is compiled into it (1), with full-text search and the math functions, and without loading extensions from libraries.
+- `sqlite.open(path)` opens a database file, and creates it if it is missing, and gives a handle of type `sqlite.database`, or nothing and why it cannot open. The path follows 1.3; `":memory:"` is a database in memory, which is gone once it closes. A database whose handle is gone closes, and `sqlite.close(database)` closes it at once.
+- `sqlite.exec(database, sql)` runs statements separated by semicolons that give no rows, such as `CREATE TABLE`. `sqlite.query(database, sql, parameters)` runs one statement and gives its rows, a list of tables of the columns by name, empty for a statement without rows. The parameters are a list for `?`, or a table of named fields for `:name`, `@name` and `$name`, so a value never becomes part of the SQL. `sqlite.changes(database)` gives how many rows the last change changed, and `sqlite.lastId(database)` the rowid of the last row an `INSERT` added. These are methods of the handle too: `database:query(sql, parameters)`.
+- SQLite's integers are integers, its reals numbers, its texts texts and its blobs buffers. A NULL is nil, so a row leaves its field out, and a nil parameter is NULL; a bool parameter is 0 or 1.
+- A function that fails gives nothing, or false, and why, with SQLite's message. A database that another program writes makes a call wait up to five seconds before it fails.
+- Each call runs to its end on the main thread, so a tool keeps its queries short; many changes are fast inside one transaction, `BEGIN` to `COMMIT`.
+- The plugin gives SQLite SDL's allocator.
+
+## 24. notify
+
+- The `notify` plugin shows desktop notifications and tray icons, which OpenECS gives to plugins (OpenECS OVERVIEW 11). It is a native plugin, on SDL's notification and tray functions: notifications go through the desktop's notification service on Linux and toasts on Windows, and tray icons through the desktop's tray.
+- `notify.send(notification)` shows a notification and gives its id, or nothing and why. The notification is a table: its `title`, and optionally its `message`, an `image` file, a `priority` (`low`, `normal`, `high` or `critical`), `buttons`, each with an `id` and a `label`, the id of one it `replaces`, and `transient`, which leaves it out of the system's list once it is gone. `notify.remove(id)` takes it away. The system decides how and whether the user sees it, such as in a do-not-disturb mode.
+- `notify.tray(tray)` shows a tray icon and gives a handle of type `notify.tray`, or nothing and why, such as on a desktop without a tray. The tray is a table: its `name`, and optionally its `icon` file, its `tooltip` and its menu `entries`, each with an `id` and a `label`; an entry with `checked` is a checkbox, one with `disabled` is greyed, and one without a label is a separator. `tray:setEntries(entries)`, `tray:setTooltip(text)` and `tray:setIcon(path)` change it. The icon stays until its handle is gone.
+- What the user clicks comes back as the plugin's events: `notify.action` with the notification's `id` and the button's id as `action`, or `"default"` for the notification itself; `notify.trayEntry` with the tray's name as `tray`, the entry's id as `entry`, and `checked` for a checkbox; and `notify.trayClicked` for a left click on the icon, as the menu opens with a right click. An event watch turns SDL's events into these; on Windows a notification's click comes on a thread of the system's, so it reaches the main thread with `ECS_RunOnMainThread`.
+- Image paths follow 1.3; SDL reads PNG, JPG and BMP files.
 
 ---
 
