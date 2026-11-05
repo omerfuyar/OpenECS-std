@@ -302,10 +302,19 @@ static bool GamepadVirtualMove(GamepadVirtual *handle, const char *axis, f32 val
     return set;
 }
 
+// SDL ignores gamepads while none of the tool's windows has the keyboard's focus, as games want, unless this setting says otherwise
+static void GamepadBackgroundChanged(void *data)
+{
+    (void)data;
+    bool background = ECSValue_GetBool(ECSSetting_Get("gamepad.background"), false);
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, background ? "1" : "0");
+}
+
 static void GamepadFree(void *data)
 {
     (void)data;
     SDL_RemoveEventWatch(GamepadWatch, nullptr);
+    SDL_ResetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
 
     if (GAMEPAD.sdlStarted)
     {
@@ -420,6 +429,13 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "gamepad", GamepadDestroy));
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "virtual", GamepadVirtualDestroy));
     SHU_ReturnResult(GamepadRegister(plugin));
+
+    const ECSSettingDesc background = {.name = "background",
+                                       .type = ECSSettingType_Bool,
+                                       .description = "Read the gamepads while another program has the keyboard's focus",
+                                       .Changed = GamepadBackgroundChanged};
+    SHU_ReturnResult(ECSSetting_Declare(plugin, &background));
+    GamepadBackgroundChanged(nullptr);
 
     // the core starts only SDL's video; the gamepads are this plugin's, and SDL counts each start, so another plugin may start them too
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD))
