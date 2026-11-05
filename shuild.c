@@ -363,7 +363,7 @@ static void BuildLibrary(const Library *library, const char *folder)
         BuildLibrary(library->links[i], folder);
     }
 
-    SHU_MODULE(library->name, "dependencies/", SHUModuleType_LibraryStatic, folder)
+    SHU_Module(library->name, "dependencies/", SHUModuleType_LibraryStatic, folder)
     {
         SetBuildFlags(false);
         SHU_CompilerAddFlags(library->flags);
@@ -530,7 +530,7 @@ static void BuildNative(const char *name, const char *root, const char *output)
         BuildCMakeLibrary(needs->cmake[i]);
     }
 
-    SHU_MODULE(name, root, SHUModuleType_LibraryDynamic, output)
+    SHU_Module(name, root, SHUModuleType_LibraryDynamic, output)
     {
         SetBuildFlags(true);
 
