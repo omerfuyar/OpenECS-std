@@ -16,9 +16,11 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **cglm:** [cglm](https://github.com/recp/cglm)'s vectors, matrices, quaternions, cameras and noise for 3D scenes and shaders: structs with methods and operators in Lua, such as `m1 * m2`, that C plugins pass too.
 - **parse:** reads and writes JSON, TOML, INI, .env and CSV texts as Lua tables: `parse.json.read(text)`, `parse.toml.write(data)` and so on.
 - **compress:** packs and unpacks gzip, zlib, deflate and zstd, and reads, writes and extracts zip archives: `compress.zstd.pack(data, level)`, `compress.zip.list(path)` and so on.
+- **process:** runs programs, with their input, output and errors as streams that never block the program, or a whole run that gives the output.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
+- **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 
