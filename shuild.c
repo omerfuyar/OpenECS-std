@@ -102,6 +102,9 @@ static const Library CURL = {"curl",
 static const Library YYJSON = {"yyjson", {"yyjson/src/yyjson.c", NULL}, {NULL}, {"yyjson/src", NULL}, "", {NULL}, {NULL}};
 static const Library TOMLC17 = {"tomlc17", {"tomlc17/src/tomlc17.c", NULL}, {NULL}, {"tomlc17/src", NULL}, "", {NULL}, {NULL}};
 
+// SQLite's amalgamation, one C file, without loading extensions from libraries, with full-text search and the math functions
+static const Library SQLITE = {"sqlite", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
+
 // glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
 static const CMakeLibrary GLSLANG = {"glslang",
                                      "-DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=OFF -DBUILD_SHARED_LIBS=OFF "
@@ -129,6 +132,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"parse", {NULL}, NULL, {&YYJSON, &TOMLC17, NULL}, {NULL}, true},
     {"compress", {NULL}, NULL, {&MINIZIP, &ZLIB, &ZSTD, NULL}, {NULL}, true},
     {"hash", {"xxHash", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, &ZLIB, NULL}, {NULL}, false},
+    {"sqlite", {NULL}, NULL, {&SQLITE, NULL}, {NULL}, true},
 };
 
 #pragma endregion Setup

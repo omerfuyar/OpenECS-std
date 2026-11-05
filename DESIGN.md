@@ -26,6 +26,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 20. process
 21. gamepad
 22. hash
+23. sqlite
 
 ## 1. Rules
 
@@ -35,10 +36,10 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17 and xxHash. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash and SQLite. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
 - `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
-- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header.
+- Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header. SQLite's own repository holds its sources without the amalgamation, its one C file, which its release makes with Tcl, so `dependencies/sqlite` is a mirror of the released amalgamations, at the commit of a release whose files are the same as the release's on sqlite.org.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
 ### 1.1 Building
@@ -411,6 +412,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `hash.of(algorithm, data)` hashes data that is all in memory. The algorithm is `crc32`, `md5`, `sha1`, `sha256`, `sha512`, `xxh64`, `xxh3` or `xxh128`.
 - `hash.new(algorithm)` gives a hasher, a handle of type `hash.hasher`, which takes the data in parts, such as a large file's: `hasher:update(data)` adds a part, and `hasher:digest()` ends the hash and gives it. A hasher that gave its digest takes no more data.
 - A hash is hexadecimal text in lower case, as tools such as `sha256sum` and `xxhsum` write it: a number, as CRC-32 and xxHash give, is written with its highest byte first. A function that fails gives nothing and why, such as for an unknown algorithm.
+
+## 23. sqlite
+
+- The `sqlite` plugin keeps SQLite databases, for tools that keep many records, such as notes, logs, caches and catalogues. It is a native plugin: SQLite is compiled into it (1), with full-text search and the math functions, and without loading extensions from libraries.
+- `sqlite.open(path)` opens a database file, and creates it if it is missing, and gives a handle of type `sqlite.database`, or nothing and why it cannot open. The path follows 1.3; `":memory:"` is a database in memory, which is gone once it closes. A database whose handle is gone closes, and `sqlite.close(database)` closes it at once.
+- `sqlite.exec(database, sql)` runs statements separated by semicolons that give no rows, such as `CREATE TABLE`. `sqlite.query(database, sql, parameters)` runs one statement and gives its rows, a list of tables of the columns by name, empty for a statement without rows. The parameters are a list for `?`, or a table of named fields for `:name`, `@name` and `$name`, so a value never becomes part of the SQL. `sqlite.changes(database)` gives how many rows the last change changed, and `sqlite.lastId(database)` the rowid of the last row an `INSERT` added. These are methods of the handle too: `database:query(sql, parameters)`.
+- SQLite's integers are integers, its reals numbers, its texts texts and its blobs buffers. A NULL is nil, so a row leaves its field out, and a nil parameter is NULL; a bool parameter is 0 or 1.
+- A function that fails gives nothing, or false, and why, with SQLite's message. A database that another program writes makes a call wait up to five seconds before it fails.
+- Each call runs to its end on the main thread, so a tool keeps its queries short; many changes are fast inside one transaction, `BEGIN` to `COMMIT`.
+- The plugin gives SQLite SDL's allocator.
 
 ---
 
