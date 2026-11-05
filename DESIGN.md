@@ -23,6 +23,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 17. parse
 18. compress
 19. The plugin list
+20. process
 
 ## 1. Rules
 
@@ -384,6 +385,15 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `plugins.open` opens the list, or focuses it if it is open.
 - The panel's saved state is the chosen plugin.
 - It is built with ui (5), as the panel list is (14).
+
+## 20. process
+
+- The `process` plugin runs programs, for terminals, build tools and linters. It is a native plugin, on SDL's process functions, so it works on Linux and Windows alike. A command is a list of texts: the program, found on the `PATH` unless it is a path, then its arguments. No shell reads it; a plugin that wants a shell runs `sh -c` or `cmd /c` itself.
+- `process.start(command, folder)` starts a program in a folder, or in the tool's for an empty one, and gives a handle of type `process.process`, or nothing and why it cannot start. Nothing it does blocks the program, as with net (9): a plugin takes what arrived when it wants, such as from a timer.
+- `process.read(program)` takes what the program wrote to its output since the last read, and `process.readErrors(program)` what it wrote to its errors; each gives an empty buffer if nothing came, and keeps its buffer until its next call on the program. `process.write(program, data)` writes to its input, and `process.closeInput(program)` closes it, for a program that reads to the end of its input.
+- `process.exited(program)` tells whether it exited, with its exit code, without waiting. What it wrote before it exited can still be read. `process.kill(program, force)` asks it to stop, or stops it at once.
+- These are methods of the handle too: `program:read()`. A program whose handle is gone is killed, so none is left behind.
+- `process.run(command, folder, input)` runs a program to its end and gives its output and errors together, with its exit code, or nothing and why it cannot run. The program waits for it, so it suits short programs. The input is written first and closed, then the output is read; the buffer is kept until the next run.
 
 ---
 
