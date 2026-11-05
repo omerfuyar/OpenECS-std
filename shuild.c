@@ -3,6 +3,7 @@
 // It builds each plugin into bin/plugins/ and copies the presets into bin/presets/.
 #define SHU_IMPLEMENTATION
 #define SHUC_ENABLE_INCREMENTAL
+#define SHUC_COMPILE_DATABASE // compile_commands.json, which clangd and check.sh's clang-tidy read
 #include "shuild/shuild.h"
 
 #pragma region Setup
