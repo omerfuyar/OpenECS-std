@@ -1,5 +1,6 @@
 # Checks every change to dev and main: the plugins' C files keep their format, and OpenECS's dev is checked out with its submodules, this repository's commit is put in its std/ folder,
 # OpenECS is built in Debug and Release with this repository and the examples, and the examples' tests run, on SDL's offscreen driver and on Wayland: the examples are the tests of these plugins.
+# The Release builds, on Linux and Windows, run only for a release: on pull requests into main, pushes to main and by hand.
 name: Checks
 
 on:
@@ -94,8 +95,10 @@ jobs:
           name: debug-linux-logs
           path: build/*.log
 
+  # the Release builds run for a release: on pull requests into main, pushes to main and by hand; a skipped job counts as passed
   release-linux:
     name: Release (Linux)
+    if: github.event_name == 'workflow_dispatch' || github.base_ref == 'main' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -200,6 +203,7 @@ jobs:
         run: .github/scripts/test.sh
 
       - name: Build Release with LLVM-MinGW
+        if: github.event_name == 'workflow_dispatch' || github.base_ref == 'main' || github.ref == 'refs/heads/main'
         run: .github/scripts/build.sh R
 
       - name: Keep the build log
