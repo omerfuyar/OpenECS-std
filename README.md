@@ -10,13 +10,21 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **audio:** reads WAV, MP3, FLAC and Ogg Vorbis files into sounds that mixer plays, whole or as streams while they play.
 - **gltf:** reads glTF 2.0 models, and gives their parts and vertex data.
 - **net:** TCP connections and servers, TLS connections and servers, and UDP sockets, that never block the program.
-- **web:** HTTP and HTTPS requests, and WebSocket connections, that never block the program.
+- **web:** HTTP and HTTPS requests, and WebSocket connections, that never block the program, over HTTP/2 when the server offers it, with compressed answers.
 - **fs:** lists, makes and watches folders, copies files and tells what a path is, which Lua's `io` and `os` cannot.
 - **gpu:** draws into GPU surfaces on the GPU, from Lua or C: shapes, lines, textures and text, with the functions draw has for pixels, and vertex buffers with a plugin's own shaders, which it compiles from GLSL.
-- **cglm:** [cglm](https://github.com/recp/cglm)'s vectors, matrices, quaternions, cameras and noise for 3D scenes and shaders, in Lua; C plugins call cglm itself.
+- **cglm:** [cglm](https://github.com/recp/cglm)'s vectors, matrices, quaternions, cameras and noise for 3D scenes and shaders: structs with methods and operators in Lua, such as `m1 * m2`, that C plugins pass too.
+- **parse:** reads and writes JSON, TOML, INI, .env and CSV texts as Lua tables: `parse.json.read(text)`, `parse.toml.write(data)` and so on.
+- **compress:** packs and unpacks gzip, zlib, deflate and zstd, and reads, writes and extracts zip archives: `compress.zstd.pack(data, level)`, `compress.zip.list(path)` and so on.
+- **process:** runs programs, with their input, output and errors as streams that never block the program, or a whole run that gives the output.
+- **gamepad:** game controllers: their buttons, sticks and triggers, read at any time or as events, rumble, and virtual gamepads for tests.
+- **hash:** checksums and hashes of data, whole or in parts: CRC-32, MD5, SHA-1, SHA-256, SHA-512 and xxHash's XXH64, XXH3 and XXH128.
+- **sqlite:** SQLite databases, in files or in memory: statements with parameters, whose rows are Lua tables.
+- **notify:** desktop notifications with buttons, and tray icons with menus, whose clicks come back as events.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
+- **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 
