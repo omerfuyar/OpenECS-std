@@ -37,7 +37,7 @@ static struct
 typedef struct Library
 {
     const char *name;
-    const char *sources[20];        // its C files and the folders of them, in dependencies/, ending with NULL
+    const char *sources[32];        // its C files and the folders of them, in dependencies/, ending with NULL
     const char *includes[3];        // the folders of dependencies/ that only its own files include, ending with NULL
     const char *headers[3];         // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
     const char *flags;              // the definitions it is configured with
@@ -105,6 +105,15 @@ static const Library TOMLC17 = {"tomlc17", {"tomlc17/src/tomlc17.c", NULL}, {NUL
 // SQLite's amalgamation, one C file, without loading extensions from libraries, with full-text search and the math functions
 static const Library SQLITE = {"sqlite", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
 
+// PCRE2's library for 8-bit text, without its JIT, its tests and its tools; glue files in dependencies/other/pcre2 stand for what its configure script writes
+static const Library PCRE2 = {"pcre2",
+                              {"pcre2/src/pcre2_auto_possess.c", "pcre2/src/pcre2_chkdint.c", "pcre2/src/pcre2_compile.c", "pcre2/src/pcre2_compile_cgroup.c", "pcre2/src/pcre2_compile_class.c", "pcre2/src/pcre2_config.c", "pcre2/src/pcre2_context.c", "pcre2/src/pcre2_convert.c", "pcre2/src/pcre2_dfa_match.c", "pcre2/src/pcre2_error.c", "pcre2/src/pcre2_extuni.c", "pcre2/src/pcre2_find_bracket.c", "pcre2/src/pcre2_maketables.c", "pcre2/src/pcre2_match.c", "pcre2/src/pcre2_match_data.c", "pcre2/src/pcre2_match_next.c", "pcre2/src/pcre2_newline.c", "pcre2/src/pcre2_ord2utf.c", "pcre2/src/pcre2_pattern_info.c", "pcre2/src/pcre2_script_run.c", "pcre2/src/pcre2_serialize.c", "pcre2/src/pcre2_string_utils.c", "pcre2/src/pcre2_study.c", "pcre2/src/pcre2_substitute.c", "pcre2/src/pcre2_substring.c", "pcre2/src/pcre2_tables.c", "pcre2/src/pcre2_ucd.c", "pcre2/src/pcre2_valid_utf.c", "pcre2/src/pcre2_xclass.c", "other/pcre2/pcre2_chartables.c", NULL},
+                              {"other/pcre2", "pcre2/src", NULL},
+                              {"other/pcre2", "pcre2/src", NULL},
+                              "-DHAVE_CONFIG_H -DPCRE2_CODE_UNIT_WIDTH=8 -DPCRE2_STATIC",
+                              {NULL},
+                              {NULL}};
+
 // glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
 static const CMakeLibrary GLSLANG = {"glslang",
                                      "-DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=OFF -DBUILD_SHARED_LIBS=OFF "
@@ -133,6 +142,8 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"compress", {NULL}, NULL, {&MINIZIP, &ZLIB, &ZSTD, NULL}, {NULL}, true},
     {"hash", {"xxHash", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, &ZLIB, NULL}, {NULL}, false},
     {"sqlite", {NULL}, NULL, {&SQLITE, NULL}, {NULL}, true},
+    {"regex", {NULL}, NULL, {&PCRE2, NULL}, {NULL}, true},
+    {"markdown", {"md4c/src", NULL}, NULL, {NULL}, {NULL}, false},
 };
 
 #pragma endregion Setup

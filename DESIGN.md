@@ -28,6 +28,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 22. hash
 23. sqlite
 24. notify
+25. regex
+26. markdown
 
 ## 1. Rules
 
@@ -37,9 +39,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash and SQLite. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash, SQLite, PCRE2 and md4c. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
-- `dependencies/other/` holds the glue headers that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does.
+- `dependencies/other/` holds the glue files that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does: for PCRE2, its configuration, its header and its character tables, each made from the generic file PCRE2 ships.
 - Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header. SQLite's own repository holds its sources without the amalgamation, its one C file, which its release makes with Tcl, so `dependencies/sqlite` is a mirror of the released amalgamations, at the commit of a release whose files are the same as the release's on sqlite.org.
 - SDL_image and SDL_mixer are not used: their own submodules bring large codec libraries, and these plugins need only what the small ones read.
 
@@ -431,6 +433,22 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `notify.tray(tray)` shows a tray icon and gives a handle of type `notify.tray`, or nothing and why, such as on a desktop without a tray. The tray is a table: its `name`, and optionally its `icon` file, its `tooltip` and its menu `entries`, each with an `id` and a `label`; an entry with `checked` is a checkbox, one with `disabled` is greyed, and one without a label is a separator. `tray:setEntries(entries)`, `tray:setTooltip(text)` and `tray:setIcon(path)` change it. The icon stays until its handle is gone.
 - What the user clicks comes back as the plugin's events: `notify.action` with the notification's `id` and the button's id as `action`, or `"default"` for the notification itself; `notify.trayEntry` with the tray's name as `tray`, the entry's id as `entry`, and `checked` for a checkbox; and `notify.trayClicked` for a left click on the icon, as the menu opens with a right click. An event watch turns SDL's events into these; on Windows a notification's click comes on a thread of the system's, so it reaches the main thread with `ECS_RunOnMainThread`.
 - Image paths follow 1.3; SDL reads PNG, JPG and BMP files.
+
+## 25. regex
+
+- The `regex` plugin matches regular expressions in UTF-8 text, for searching and filtering, such as a log's lines. It is a native plugin: PCRE2 is compiled into it (1), for 8-bit text with Unicode and without its JIT, with SDL's allocator.
+- `regex.compile(pattern, options)` reads a pattern in Perl's syntax once, and gives a handle of type `regex.pattern`, or nothing and why, with the byte where it went wrong. The options are letters: `i` ignores case, `m` makes `^` and `$` match at each line, `s` makes `.` match a newline, and `x` ignores spaces and `#` comments. Text that is not valid UTF-8 can still be searched; a match never starts inside a character.
+- `regex.escape(text)` gives a pattern that matches a text exactly, such as what the user typed in a search field.
+- The other functions take the pattern first, and are methods of the handle too: `pattern:test(text)` tells whether it matches anywhere, the fastest way to filter; `pattern:match(text, start)` gives the first match from a byte; `pattern:matchAll(text)` every match, each after the last; `pattern:replace(text, replacement)` replaces every match, and `pattern:replaceFirst` the first, giving the new text and how many it replaced; and `pattern:split(text)` the parts between the matches.
+- A match is a table: `start` and `stop`, the bytes of the match from 1, as Lua's `string.find` gives them; `text`; `groups`, each group's text in order, or false for a group that matched nothing; and `named`, the texts of named groups, `(?<name>...)`, by name. In a replacement, `$1` or `${name}` is a group's text, and `$$` a dollar.
+- After an empty match, the next one must not be empty at the same place, or it starts a character later, as in Perl, so `matchAll` and `split` always end.
+- A function that fails gives nothing and why, such as a pattern that reached PCRE2's limit of steps.
+
+## 26. markdown
+
+- The `markdown` plugin reads Markdown as GitHub writes it, with tables, struck text, task lists and bare links, for notes and help panels. It is a native plugin: md4c is compiled into it (1).
+- `markdown.parse(text)` gives the document as a tree: each node is a table with its `type` and, for a node that holds others, its `children`. Blocks are `heading` with its `level`, `paragraph`, `quote`, `list` with `ordered`, `start` and `tight`, `item` with `checked` for a task, `codeBlock` with its `language` and `text`, `html` with its `text`, `rule`, `table`, `row` with `head`, and `cell` with its `align`. Parts of a line are `text` and `code` with their `text`, `emphasis`, `strong`, `strike`, `link` and `image` with their `url` and `title`, and `break`. Entities such as `&amp;` become their characters.
+- `markdown.elements(text)` gives a description of ui's elements (5), which `ui.showDescription` shows: a column of wrapped texts for paragraphs and headings, larger by level; rows of a mark and the item's blocks for lists; a dimmed, indented column for a quote; the mono font on the colour of tabs for code; rows of equal cells for a table, under a head on the colour of the tab row; and a separator for a rule. A text element shows a paragraph in one style, so emphasis, links and code inside it show as plain text. A panel puts the description in a scroll element, to scroll what does not fit.
 
 ---
 
