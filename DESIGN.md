@@ -31,6 +31,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 25. regex
 26. markdown
 27. syntax
+28. video
 
 ## 1. Rules
 
@@ -40,7 +41,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Plugins name their dependencies in their manifests and get their functions with `require` (OpenECS DESIGN 10.5). Their signatures name their parameters, for definition files (OpenECS DESIGN 10.10).
 - In Lua, the functions that act on one of a plugin's handles are also methods of the handle (OpenECS DESIGN 10.6): `connection:send(data)` is `net.send(connection, data)`. A method's name leaves out the type, so `image:size()` is `draw.imageSize(image)`, `watch:stop()` is `fs.unwatch(watch)` and `socket:close()` is `web.socketClose(socket)`. C calls the functions. The definition files list each type's methods.
 - A plugin needs nothing but OpenECS: it links no library. Its calls to SDL and SDL_ttf are resolved against the libraries beside OpenECS (OpenECS DESIGN 17.2), and the code of any other library it uses is compiled into it. Copying a plugin's folder into another OpenECS's `plugins/` is all it takes to install it.
-- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash, SQLite, PCRE2, md4c, and tree-sitter with its grammars of C, Lua and JSON. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
+- The libraries are submodules in `dependencies/`, which is never edited: stb_image and stb_vorbis from stb, nanosvg, dr_libs, cgltf, cglm, glslang, SPIRV-Cross, SDL_net, libcurl, mbedTLS, nghttp2, zlib with its minizip, zstd, yyjson, tomlc17, xxHash, SQLite, PCRE2, md4c, tree-sitter with its grammars of C, Lua and JSON, and pl_mpeg. A plugin includes a library's code in one of its C files, after defining what the library asks for, such as `STB_IMAGE_IMPLEMENTATION`, so the code is compiled into the plugin and its functions stay inside it.
 - A library of many C files, such as libcurl and mbedTLS, is compiled into a static archive instead, and the plugin's library takes the archive's code. Its files are compiled with hidden symbols, so its functions stay inside the plugin too. Two plugins that take one archive, as web and compress take zlib's, each get their own copy of its code, as no plugin uses another's libraries (OpenECS DESIGN 20.1).
 - `dependencies/other/` holds the glue files that configure a library in place of its own configure script, as OpenECS's `dependencies/other/` does: for PCRE2, its configuration, its header and its character tables, each made from the generic file PCRE2 ships.
 - Submodules are at fixed commits, as OpenECS DESIGN 17.4 says. mbedTLS is at a release tag of its long-term branch, 3.6, because its branch lacks the C files that its release makes with Python scripts. nghttp2's tags lack its version header too, so it follows its branch, and `dependencies/other/` holds that header. SQLite's own repository holds its sources without the amalgamation, its one C file, which its release makes with Tcl, so `dependencies/sqlite` is a mirror of the released amalgamations, at the commit of a release whose files are the same as the release's on sqlite.org.
@@ -95,6 +96,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `line`, `circle`                           | Draw a line in a thickness, and a circle: a ring of a thickness, at least a pixel, or filled with a thickness of 0.                        |
   | `triangles`, `lines`                       | Fill triangles, or draw lines, between points: a buffer of x and y floats, and indices, three or two 32-bit numbers each, or none for points in order. |
   | `newImage`, `imageSize`, `imagePixel`, `imagePixels`, `freeImage` | Make an image of type `draw.image` from ARGB pixels, give its size, a pixel or all its pixels, and free it.          |
+  | `setImagePixels`                           | Replace an image's pixels with as many others, such as a video's next frame (28). |
   | `image`                                    | Draw an image stretched to a rectangle.                                                                                                    |
   | `imageTransformed`                         | Draw an image stretched to a rectangle, turned clockwise by an angle in degrees around its centre, with each pixel's colour multiplied by a colour: white leaves it as it is, and a lower alpha fades it. Its edges are smooth. |
   | `font`                                     | Give a font of type `draw.font`: `"ui"`, the core's `ecs.font`; `"mono"`, a monospace font; or the path of a TrueType file.                |
@@ -462,6 +464,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The colours are settings, `syntax.colorKeyword` to `syntax.colorPunctuation`, whose defaults read on dark and light backgrounds; a theme or the user's settings file may set them.
 - A query's predicates `eq?`, `any-of?` and `match?`, and their `not-` forms, are checked. `match?` reads the few regular expressions that the queries use: `^` and `$`, `.`, classes such as `[A-Z\d_]`, the escapes `\d`, `\w` and `\s`, and the quantifiers `*`, `+` and `?`. Directives, which end in `!`, are left out.
 - A function that fails gives nothing and why, such as for a language it does not know. Each call parses the whole text.
+
+## 28. video
+
+- The `video` plugin plays video files, for intros, tutorials and previews in a tool. It is a native plugin: pl_mpeg is compiled into it (1), with SDL's allocator. It reads MPEG-1 video, with MP2 sound or none, in an MPEG program stream, such as a `.mpg` file that `ffmpeg -c:v mpeg1video -c:a mp2 -f mpeg` writes.
+- `video.open(path)` opens a file and gives a handle of type `video.video`, paused at its start with its first frame, or nothing and why. The path follows 1.3.
+- The other functions take the video first, and are methods of the handle too: `play` and `pause`, `playing`, `seek(seconds)`, `time`, `duration`, `size`, `setLoop(loop)` and `setVolume(volume)`. A video at its end stops, unless it loops, and `play` starts it again.
+- `video:draw(surface, x, y, width, height)` draws its frame stretched to a rectangle in layout units, with draw (2): video keeps its frame in an image of draw's, whose pixels it replaces with each new frame, and no handle of it reaches Lua. A panel that shows a playing video draws every frame, as a continuous panel does.
+- Its sound plays in a stream of mixer's (3), which video fills as it decodes, a little ahead of the frames. A paused video stops its stream, and playing starts a new one.
+- A timer decodes the playing videos while there are some, by the time since its last tick.
+- `video.free(video)` closes a video at once; its handle is gone otherwise, when no one uses it.
 
 ---
 

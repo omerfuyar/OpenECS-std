@@ -67,3 +67,6 @@
 [submodule "dependencies/tree-sitter-json"]
 	path = dependencies/tree-sitter-json
 	url = https://github.com/tree-sitter/tree-sitter-json.git
+[submodule "dependencies/pl_mpeg"]
+	path = dependencies/pl_mpeg
+	url = https://github.com/phoboslab/pl_mpeg.git

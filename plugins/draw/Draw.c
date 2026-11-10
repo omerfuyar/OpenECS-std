@@ -571,6 +571,24 @@ static void *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
     return image;
 }
 
+static bool DrawSetImagePixels(void *imageHandle, SHUSlice pixels)
+{
+    DrawImage *image = imageHandle;
+    SDL_Surface *surface = image->surface;
+
+    if (pixels.size != (usz)surface->w * (usz)surface->h * sizeof(u32))
+    {
+        return false;
+    }
+
+    for (i32 row = 0; row < surface->h; row++)
+    {
+        SDL_memcpy((u8 *)surface->pixels + (usz)row * (usz)surface->pitch, (const u8 *)pixels.data + (usz)row * (usz)surface->w * sizeof(u32), (usz)surface->w * sizeof(u32));
+    }
+
+    return true;
+}
+
 static void DrawImageSize(void *imageHandle, i32 *retWidth, i32 *retHeight)
 {
     DrawImage *image = imageHandle;
@@ -1073,6 +1091,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param height The image's height, in pixels; more than 0\n"
          "@param pixels Four bytes for each pixel, not premultiplied, or none; they are copied\n"
          "@return The image, or nothing if the pixels do not match the size or memory runs out"},
+        {"setImagePixels", (ECSFunction)DrawSetImagePixels, "bool(handle<draw.image> image, buffer pixels)",
+         "Replace an image's pixels, such as with a video's next frame\n"
+         "@param image The image\n"
+         "@param pixels ARGB8888 pixels in native byte order, not premultiplied, row after row, as many as the image has\n"
+         "@return false if the pixels are not as many as the image's"},
         {"imageSize", (ECSFunction)DrawImageSize, "void(handle<draw.image> image, out int width, out int height)",
          "Give an image's size in pixels\n"
          "@param image The image\n"

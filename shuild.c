@@ -151,6 +151,7 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"sqlite", {NULL}, NULL, {&SQLITE, NULL}, {NULL}, true},
     {"regex", {NULL}, NULL, {&PCRE2, NULL}, {NULL}, true},
     {"markdown", {"md4c/src", NULL}, NULL, {NULL}, {NULL}, false},
+    {"video", {"pl_mpeg", NULL}, NULL, {NULL}, {NULL}, false},
     {"syntax",
      {NULL},
      NULL,
