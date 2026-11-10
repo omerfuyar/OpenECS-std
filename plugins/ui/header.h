@@ -398,6 +398,59 @@ static inline void Ui_Text(const char *text, const UiProps *props)
     Ui_SetString(Ui_Add("text", props), "value", text);
 }
 
+/// @brief A part of a text in its own style, as ui.Span is. A false field is off, and a colour left nullptr is the text's.
+typedef struct UiSpan
+{
+    const char *text;
+    bool bold;
+    bool italic;
+    bool mono; // in the mono font, for code
+    bool underline;
+    bool strike;
+    const char *color;
+    const char *link; // underlined, in the accent; UI_SPANS gives it when it is clicked
+} UiSpan;
+
+/// @brief A text of spans, each in its own style. Gives the link that a click, or Return, gave since the last draw, or nullptr; it is valid until the
+/// next take. A text without an id takes the links of every such text.
+static inline const char *Ui_Spans(const UiSpan *spans, usz count, const UiProps *props)
+{
+    const char *link = ECSValue_GetString(ECSValue_GetTableField(Ui_Take(props->id != nullptr ? props->id : "", "onLink"), "value"), nullptr);
+    ECSValue *description = Ui_Add("text", props);
+    ECSValue *list = description == nullptr ? nullptr : Ui_SetTable(description, "value");
+
+    for (usz i = 0; list != nullptr && i < count; i++)
+    {
+        ECSValue *span = nullptr;
+
+        if (ECSValue_AddListItem(list, &span))
+        {
+            Ui_current->failed = true;
+            break;
+        }
+
+        ECSValue_SetTable(span);
+        Ui_SetString(span, "text", spans[i].text != nullptr ? spans[i].text : "");
+        Ui_SetString(span, "color", spans[i].color);
+        Ui_SetString(span, "link", spans[i].link);
+        const struct
+        {
+            const char *name;
+            bool on;
+        } flags[] = {{"bold", spans[i].bold}, {"italic", spans[i].italic}, {"mono", spans[i].mono}, {"underline", spans[i].underline}, {"strike", spans[i].strike}};
+
+        for (usz j = 0; j < UI__COUNT(flags); j++)
+        {
+            if (flags[j].on)
+            {
+                Ui_SetBool(span, flags[j].name, true);
+            }
+        }
+    }
+
+    return link;
+}
+
 static inline bool Ui_Button(const char *label, const UiProps *props)
 {
     UiProps named = *props;
@@ -639,6 +692,7 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
 
 /// @brief Elements without children. Those that take a pointer write what the user changed into it, and give whether it changed.
 #define UI_TEXT(text, ...) Ui_Text((text), &(UiProps){__VA_ARGS__})
+#define UI_SPANS(spans, count, ...) Ui_Spans((spans), (count), &(UiProps){__VA_ARGS__})
 #define UI_BUTTON(label, ...) Ui_Button((label), &(UiProps){__VA_ARGS__})
 #define UI_TOGGLE(on, ...) Ui_Toggle((on), &(UiProps){__VA_ARGS__})
 #define UI_SLIDER(value, ...) Ui_Number("slider", (value), &(UiProps){__VA_ARGS__})
