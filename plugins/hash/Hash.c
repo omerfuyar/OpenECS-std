@@ -13,6 +13,10 @@
 
 // xxHash's code is compiled into this file, with its functions static
 #define XXH_INLINE_ALL
+#ifdef DEBUG
+// gcc 16 with -Og fails to inline the functions that xxHash forces inline, so a Debug build lets gcc choose
+#define XXH_NO_INLINE_HINTS 1
+#endif
 #include "xxhash.h"
 
 #pragma region Source Only
