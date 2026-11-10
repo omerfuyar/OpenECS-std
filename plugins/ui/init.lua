@@ -81,14 +81,17 @@ local function fontOf(node)
   return font
 end
 
+-- the scale of the surface that the panel being shown or handled draws into: text is measured at the size it is drawn at
+local textScale = 1
+
 -- the width of a text alone; draw.measure gives the line height too, which a call such as math.max(...) would take as well
 local function measureText(font, text, textSize)
-  local width = draw.measure(font, text, textSize)
+  local width = draw.measure(font, text, textSize, textScale)
   return width
 end
 
 local function lineHeight(font, textSize)
-  local _, line = draw.measure(font, "Ag", textSize)
+  local _, line = draw.measure(font, "Ag", textSize, textScale)
   return line
 end
 
@@ -1165,9 +1168,11 @@ function paint(node, surface, state)
     draw.outline(surface, box.x, box.y, box.width, box.height, 1, node.border)
   end
 
-  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline
-  if state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] then
+  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline; a list shows it on its chosen item
+  if state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
     draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
+  elseif state.showRing and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
+    draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
   end
 
   if node.type == "text" and box.spanLines then
@@ -1288,21 +1293,6 @@ local function findById(node, id)
 
   for _, child in ipairs(node.children or {}) do
     local found = findById(child, id)
-
-    if found then
-      return found
-    end
-  end
-end
-
--- the first element of the tree that passes a test, or nil
-local function findFirst(node, test)
-  if test(node) then
-    return node
-  end
-
-  for _, child in ipairs(node.children or {}) do
-    local found = findFirst(child, test)
 
     if found then
       return found
@@ -1633,9 +1623,9 @@ local function handleTyping(panel, state, event)
   return editField(panel, state, node, event)
 end
 
--- the interactive elements in the order of the tree, which Tab goes through
+-- the elements that Tab goes through, in the order of the tree: the interactive ones, and each list once, in place of its items
 local function tabOrder(node, list)
-  if interactive(node) then
+  if isList(node) or (interactive(node) and not isListItem(node)) then
     list[#list + 1] = node
   end
 
@@ -1748,7 +1738,7 @@ local function expandTreeNode(state, list, open)
   end
 end
 
--- the list that Up, Down and Return act on: the one that has the keys or holds the element that has them, or else the panel's first list
+-- the list that Up, Down and Return act on: the one that has the keys or holds the element that has them
 local function keyList(state)
   local target = state.keyTarget and findById(state.root, state.keyTarget)
 
@@ -1756,12 +1746,24 @@ local function keyList(state)
     return target
   end
 
-  return target and findAround(state.root, target.id, isList, nil) or findFirst(state.root, isList)
+  return target and findAround(state.root, target.id, isList, nil)
+end
+
+-- what Return does on a list's chosen item: the list's onActivate, or else the item's onClick
+local function activateItem(list)
+  local item = list.selected and list.items[list.selected]
+
+  if item and list.onActivate then
+    list.onActivate(list.selected)
+  elseif item and item.onClick then
+    item.onClick()
+  end
+
+  return item ~= nil and (list.onActivate ~= nil or item.onClick ~= nil)
 end
 
 -- handles a key press when no field is edited: Tab moves the keys, Return or Space activates the element that has them, Left and Right change a
--- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it if the list has onActivate,
--- and Escape takes the keys away
+-- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it, and Escape takes the keys away
 local function handleKeyDown(panel, state, event)
   if event.key == "Tab" then
     return moveKeyTarget(panel, state, event.shift)
@@ -1784,9 +1786,7 @@ local function handleKeyDown(panel, state, event)
     moveSelection(state, list, event.key == "Up" and -1 or 1)
   elseif list and list.tree and leftOrRight then
     expandTreeNode(state, list, event.key == "Right")
-  elseif list and isEnter(event) and list.onActivate and list.selected and list.items[list.selected] then
-    list.onActivate(list.selected)
-  else
+  elseif not (list and isEnter(event) and activateItem(list)) then
     return false
   end
 
@@ -1966,9 +1966,10 @@ local function handlePointerDown(panel, state, event, x, y)
     stopEditing(panel, state)
   end
 
-  -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item that takes no press gives the keys to its list
+  -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item gives the keys to its list
+  local target = (node and not isListItem(node)) and node or item and item.list or node
   state.pressed = node
-  state.keyTarget, state.showRing = node and node.id or item and item.list.id, false
+  state.keyTarget, state.showRing = target and target.id, false
 
   if node and node.type == "field" then
     -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
@@ -2013,6 +2014,8 @@ local function handleEvent(panel, event)
   if not state.root then
     return false
   end
+
+  textScale = state.scale
 
   -- a tooltip goes when anything but a move happens, and follows the pointer onto other elements
   if event.type == "pointerMove" then
@@ -2083,6 +2086,7 @@ function services.show(panel, surface, root)
   local state = panelState(panel)
   local width, height = surface.width / surface.scale, surface.height / surface.scale
   state.scale = surface.scale
+  textScale = surface.scale
   fonts = {}
   readSizes()
   assignIds(root, "root")
@@ -2094,6 +2098,10 @@ function services.show(panel, surface, root)
   state.hover = state.hover and state.pointerX and find(root, state.pointerX, state.pointerY, interactive) or nil
   state.pressed = state.pressed and findById(root, state.pressed.id) or nil
   state.root = root
+
+  if state.editAtShow then
+    services.edit(panel, state.editAtShow)
+  end
 
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state)
@@ -2141,15 +2149,21 @@ function services.tooltip(panel)
   return state.tooltipShown and state.tooltip or nil
 end
 
--- starts editing a field or key element, as a click on it does
+-- gives a field, a key element or a list the keys, as a click on it does; before the panel's first show, the element gets them at that show
 function services.edit(panel, id)
   local state = panelState(panel)
   local node = state.root and findById(state.root, id)
+  state.editAtShow = not state.root and id or nil
 
   -- the keyboard's target follows, without its ring, as after a click
   if node and TAKES_TYPING[node.type] then
+    textScale = state.scale
     state.keyTarget, state.showRing = node.id, false
     startEditing(panel, state, node)
+    panel:redraw()
+  elseif node and isList(node) then
+    stopEditing(panel, state)
+    state.keyTarget, state.showRing = node.id, false
     panel:redraw()
   end
 end
@@ -2318,9 +2332,10 @@ assert(ecs.service.register({
   },
   edit = {
     sig = "void(handle<ecs.panel> panel, string id)",
-    doc = "Give a field the focus\n"
-        .. "@param panel The panel that shows the field, often the focused panel that a key passes\n"
-        .. "@param id The id of a field or key element in the last layout; another id does nothing",
+    doc = "Give an element the keys\n"
+        .. "@param panel The panel that shows the element, often the focused panel that a key passes\n"
+        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or in the first one when the panel was not"
+        .. " shown yet; another id does nothing",
     fn = services.edit,
   },
   reveal = {

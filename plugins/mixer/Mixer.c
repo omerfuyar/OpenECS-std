@@ -18,6 +18,7 @@ typedef struct MixerSound
     u64 frames;
     SDL_AudioSpec spec; // 32-bit float samples, the sound's channels and rate
     u32 users;          // its handle, unless it was freed, each voice that plays it, and each keepSound
+    u32 kept;           // the keepSound calls that no releaseSound has answered yet
 
     // a stream: the queue that the main thread fills and its voice empties, which SDL keeps thread-safe
     SDL_AudioStream *queue;
@@ -112,7 +113,7 @@ static struct
 #pragma region Sounds
 
 /// @brief Lets go of a sound, and frees it once nothing uses it. It is the Destroy function of the handle type mixer.sound, whose handle uses the
-/// sound, and mixer.releaseSound.
+/// sound.
 static void MixerReleaseSound(void *object)
 {
     MixerSound *sound = object;
@@ -235,6 +236,22 @@ static void MixerKeepSound(void *soundHandle)
     MixerSound *sound = soundHandle;
 
     sound->users++;
+    sound->kept++;
+}
+
+/// @brief Lets go of a sound that keepSound kept. A call without a keepSound before it is refused, as the sound's handle still uses the sound.
+static void MixerReleaseKeptSound(void *soundHandle)
+{
+    MixerSound *sound = soundHandle;
+
+    if (sound->kept == 0)
+    {
+        ECS_LogWarn(MIXER.plugin, "releaseSound is called for a sound that keepSound did not keep; nothing is released.");
+        return;
+    }
+
+    sound->kept--;
+    MixerReleaseSound(sound);
 }
 
 /// @brief Lets go of a sound now; it is freed once the voices that play it end.
@@ -1082,8 +1099,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)",
          "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away\n"
          "@param sound The sound to keep; each keepSound needs its own releaseSound"},
-        {"releaseSound", (ECSFunction)MixerReleaseSound, "void(handle<mixer.sound> sound)",
-         "Let go of a sound that keepSound kept\n"
+        {"releaseSound", (ECSFunction)MixerReleaseKeptSound, "void(handle<mixer.sound> sound)",
+         "Let go of a sound that keepSound kept; without a keepSound before it, it is reported and releases nothing\n"
          "@param sound The sound that keepSound kept"},
         {"freeSound", (ECSFunction)MixerFreeSound, "void(handle<mixer.sound> sound)",
          "Free a sound now, instead of when no one uses its handle; voices that play it finish first\n"

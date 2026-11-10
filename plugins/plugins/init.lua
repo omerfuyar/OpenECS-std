@@ -121,6 +121,9 @@ ecs.panel.registerType({
     lists[panel] = list
     refresh(list)
 
+    -- the list has the keys from the start, so Up, Down and Return work at once
+    ui.edit(panel, "list")
+
     -- the plugin chosen last time is chosen again
     if version == STATE_VERSION and saved and saved.selected then
       for i, entry in ipairs(list.plugins) do

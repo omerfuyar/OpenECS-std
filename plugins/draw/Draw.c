@@ -872,9 +872,11 @@ static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f3
     return (f32)width / surface->scale;
 }
 
-static void DrawMeasure(void *font, const char *text, f32 size, f32 *retWidth, f32 *retLineHeight)
+static void DrawMeasure(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight)
 {
-    TTF_Font *opened = DrawFindOrOpenSize(font, size);
+    // the text is measured at the size it is drawn at, as a font's glyphs do not grow evenly with its size
+    scale = scale > 0.0f ? scale : 1.0f;
+    TTF_Font *opened = DrawFindOrOpenSize(font, size * scale);
     int width = 0;
 
     if (opened != nullptr)
@@ -882,8 +884,8 @@ static void DrawMeasure(void *font, const char *text, f32 size, f32 *retWidth, f
         TTF_GetStringSize(opened, text, 0, &width, nullptr);
     }
 
-    *retWidth = (f32)width;
-    *retLineHeight = opened == nullptr ? 0.0f : (f32)TTF_GetFontHeight(opened);
+    *retWidth = (f32)width / scale;
+    *retLineHeight = opened == nullptr ? 0.0f : (f32)TTF_GetFontHeight(opened) / scale;
 }
 
 #pragma endregion Text
@@ -1156,13 +1158,14 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param size The font size, in layout units\n"
          "@param color The colour, blended by its alpha\n"
          "@return The text's width, in layout units, or 0 if nothing is drawn"},
-        {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)",
+        {"measure", (ECSFunction)DrawMeasure, "void(handle<draw.font> font, string text, float size, float scale, out float width, out float lineHeight)",
          "Give the width and the line height of a text\n"
          "@param font The font\n"
          "@param text The text, in UTF-8\n"
-         "@param size The font size; the width and the line height are in the same units\n"
-         "@param width Gets the text's width, or 0 if the font cannot be opened\n"
-         "@param lineHeight Gets the font's line height, or 0 if the font cannot be opened"},
+         "@param size The font size, in layout units\n"
+         "@param scale The scale of the surface the text is drawn into, as the text is measured at the size it is drawn at; 1 without a surface\n"
+         "@param width Gets the text's width, in layout units, or 0 if the font cannot be opened\n"
+         "@param lineHeight Gets the font's line height, in layout units, or 0 if the font cannot be opened"},
         {"clip", (ECSFunction)DrawClipTo, "void(handle<ecs.surface> surface, float x, float y, float width, float height, fn<void()> body)",
          "Draw only inside a rectangle while a function runs\n"
          "@param surface The panel's surface, as its Draw gives it\n"

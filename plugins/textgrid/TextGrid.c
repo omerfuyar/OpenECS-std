@@ -49,7 +49,7 @@ typedef struct TextGrid
 typedef void *(*TextGridFontFunction)(const char *name);
 typedef void (*TextGridFillFunction)(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, ECSColor color);
 typedef f32 (*TextGridTextFunction)(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color);
-typedef void (*TextGridMeasureFunction)(void *font, const char *text, f32 size, f32 *retWidth, f32 *retLineHeight);
+typedef void (*TextGridMeasureFunction)(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight);
 
 static struct
 {
@@ -599,7 +599,7 @@ static void TextGridPrint(void *gridHandle, const char *text)
 /// @brief Gives the size of a cell at a font size, in layout units: the width of a character of the monospace font, and its line height.
 static void TextGridCellSize(f32 size, f32 *retWidth, f32 *retHeight)
 {
-    TEXTGRID.Measure(TEXTGRID.font, "M", size, retWidth, retHeight);
+    TEXTGRID.Measure(TEXTGRID.font, "M", size, 1.0f, retWidth, retHeight);
 }
 
 static void TextGridFit(f32 width, f32 height, f32 size, i32 *retColumns, i32 *retRows)
@@ -654,9 +654,7 @@ static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f3
     f32 scale = surface->scale > 0.0f ? surface->scale : 1.0f;
     f32 cellWidth = 0.0f;
     f32 cellHeight = 0.0f;
-    TextGridCellSize(size * scale, &cellWidth, &cellHeight);
-    cellWidth /= scale;
-    cellHeight /= scale;
+    TEXTGRID.Measure(TEXTGRID.font, "M", size, scale, &cellWidth, &cellHeight);
 
     // a run of a row's cells in one colour and style is drawn at once: its backgrounds in one fill, and its characters in one text
     char *text = SDL_malloc((usz)grid->columns * 4 + 1);
@@ -718,7 +716,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&Font, "draw.font", "handle<draw.font>(string name)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Fill, "draw.fill", "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Text, "draw.text", "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)"));
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Measure, "draw.measure", "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Measure, "draw.measure", "void(handle<draw.font> font, string text, float size, float scale, out float width, out float lineHeight)"));
     TEXTGRID.font = Font("mono");
 
     if (TEXTGRID.font == nullptr)
