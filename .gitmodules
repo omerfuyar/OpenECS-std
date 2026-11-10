@@ -55,3 +55,15 @@
 [submodule "dependencies/md4c"]
 	path = dependencies/md4c
 	url = https://github.com/mity/md4c.git
+[submodule "dependencies/tree-sitter"]
+	path = dependencies/tree-sitter
+	url = https://github.com/tree-sitter/tree-sitter.git
+[submodule "dependencies/tree-sitter-c"]
+	path = dependencies/tree-sitter-c
+	url = https://github.com/tree-sitter/tree-sitter-c.git
+[submodule "dependencies/tree-sitter-lua"]
+	path = dependencies/tree-sitter-lua
+	url = https://github.com/tree-sitter-grammars/tree-sitter-lua.git
+[submodule "dependencies/tree-sitter-json"]
+	path = dependencies/tree-sitter-json
+	url = https://github.com/tree-sitter/tree-sitter-json.git

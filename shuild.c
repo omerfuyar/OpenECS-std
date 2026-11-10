@@ -66,6 +66,7 @@ typedef struct PluginNeeds
     const char *windowsLinks[4];  // the Windows libraries it uses, ending with NULL
     bool analyze;                 // its C files hold only its own code and headers, so the static analyzer can afford them
     const CMakeLibrary *cmake[3]; // the C++ libraries it takes, ending with NULL
+    const char *copies[7];        // files of dependencies/, each before the folder of the plugin's that it is copied into, ending with NULL
 } PluginNeeds;
 
 // mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
@@ -114,6 +115,12 @@ static const Library PCRE2 = {"pcre2",
                               {NULL},
                               {NULL}};
 
+// tree-sitter's library, one C file of all its own, without its WebAssembly; and the grammars of C, Lua and JSON, which syntax highlights
+static const Library TREE_SITTER = {"tree-sitter", {"tree-sitter/lib/src/lib.c", NULL}, {"tree-sitter/lib/src", "tree-sitter/lib/include", NULL}, {"tree-sitter/lib/include", NULL}, "-D_DEFAULT_SOURCE", {NULL}, {NULL}};
+static const Library TREE_SITTER_C = {"tree-sitter-c", {"tree-sitter-c/src/parser.c", NULL}, {"tree-sitter-c/src", NULL}, {NULL}, "", {NULL}, {NULL}};
+static const Library TREE_SITTER_LUA = {"tree-sitter-lua", {"tree-sitter-lua/src/parser.c", "tree-sitter-lua/src/scanner.c", NULL}, {"tree-sitter-lua/src", NULL}, {NULL}, "", {NULL}, {NULL}};
+static const Library TREE_SITTER_JSON = {"tree-sitter-json", {"tree-sitter-json/src/parser.c", NULL}, {"tree-sitter-json/src", NULL}, {NULL}, "", {NULL}, {NULL}};
+
 // glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
 static const CMakeLibrary GLSLANG = {"glslang",
                                      "-DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DGLSLANG_TESTS=OFF -DENABLE_GLSLANG_BINARIES=OFF -DBUILD_SHARED_LIBS=OFF "
@@ -144,6 +151,14 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"sqlite", {NULL}, NULL, {&SQLITE, NULL}, {NULL}, true},
     {"regex", {NULL}, NULL, {&PCRE2, NULL}, {NULL}, true},
     {"markdown", {"md4c/src", NULL}, NULL, {NULL}, {NULL}, false},
+    {"syntax",
+     {NULL},
+     NULL,
+     {&TREE_SITTER, &TREE_SITTER_C, &TREE_SITTER_LUA, &TREE_SITTER_JSON, NULL},
+     {NULL},
+     true,
+     {NULL},
+     {"tree-sitter-c/queries/highlights.scm", "queries/c/", "tree-sitter-lua/queries/highlights.scm", "queries/lua/", "tree-sitter-json/queries/highlights.scm", "queries/json/", NULL}},
 };
 
 #pragma endregion Setup
@@ -673,5 +688,14 @@ static void BuildPlugin(const char *path, const char *name)
     char *root = SHU_UtilFormat("%s%s/", path, name);
     char *output = SHU_UtilFormat("%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilListDirectory(root, false, CopyPluginFile, (void *)output);
+
+    // the files a plugin reads from its libraries, such as syntax's highlight queries
+    const PluginNeeds *needs = FindNeeds(name);
+
+    for (usz i = 0; needs != NULL && needs->copies[i] != NULL && needs->copies[i + 1] != NULL; i += 2)
+    {
+        SHU_UtilCopyFile(SHU_UtilFormat("dependencies/%s", needs->copies[i]), SHU_UtilFormat("%s%s", output, needs->copies[i + 1]));
+    }
+
     BuildNative(name, root, output);
 }

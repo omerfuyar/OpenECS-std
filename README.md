@@ -23,6 +23,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **notify:** desktop notifications with buttons, and tray icons with menus, whose clicks come back as events.
 - **regex:** regular expressions in UTF-8 text with PCRE2: test, match, find every match, replace and split.
 - **markdown:** Markdown read into a tree, or into ui's elements for notes and help panels.
+- **syntax:** syntax highlighting of C, Lua and JSON with tree-sitter, as ranges or as ui's spans.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
