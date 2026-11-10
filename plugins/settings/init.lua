@@ -272,6 +272,9 @@ ecs.panel.registerType({
     windows[panel] = window
     refresh(window)
 
+    -- the list has the keys from the start, so Up, Down and Return work at once
+    ui.edit(panel, "list")
+
     if version == STATE_VERSION and saved and saved.selected then
       for i, setting in ipairs(window.settings) do
         if setting.name == saved.selected then
