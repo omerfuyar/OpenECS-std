@@ -391,8 +391,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - It shows every plugin in the plugin folders, loaded or not, so the user enables and disables plugins while the tool runs (OpenECS DESIGN 9.10). The first-party Lua plugin `plugins` gives the panel type `plugins.list`, titled "Plugins".
 - The core's settings file loads it for every tool, and binds `plugins.open` to Alt+W, then `;` (OpenECS DESIGN 12.3).
-- It reads the list with `ecs.plugins.list()` each time it is opened or shown, and again on `ecs.pluginsChanged`. It leaves out itself and the plugins it needs, through others too, as disabling them would close the list. The plugins are sorted by name; each row shows the name, the version, whether the plugin is enabled, disabled or failed, and the description.
-- A click on a row, or Return on the chosen one, disables an enabled plugin, with the plugins that need it, and enables any other, with the plugins it needs.
+- It reads the list with `ecs.plugins.list()` each time it is opened or shown, and again on `ecs.pluginsChanged`. It leaves out itself and the plugins it needs, through others too, as disabling them would close the list. The plugins are sorted by name; each row shows the name, the version, whether the plugin is enabled, disabled or failed, and the description. An enabled plugin that an enabled plugin needs shows one that needs it.
+- A click on a row, or Return on the chosen one, disables an enabled plugin, unless an enabled plugin needs it (OpenECS DESIGN 9.10), and enables any other, with the plugins it needs.
 - `plugins.open` opens the list, or focuses it if it is open.
 - The panel's saved state is the chosen plugin.
 - It is built with ui (5), as the panel list is (14).
