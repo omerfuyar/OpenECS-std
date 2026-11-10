@@ -558,12 +558,124 @@ static void MarkdownDescribeText(MarkdownReader *reader, ECSValue *description, 
 
 static void MarkdownDescribeBlock(MarkdownReader *reader, ECSValue *description, const ECSValue *node, const char *color);
 
-/// @brief Describes a text element of a node's plain text.
-static void MarkdownDescribeNode(MarkdownReader *reader, ECSValue *description, const ECSValue *node, i64 size, const char *color, const char *font)
+/// @brief The style that the nodes around a part of a line give it, as ui's spans name it.
+typedef struct MarkdownStyle
+{
+    bool bold;
+    bool italic;
+    bool strike;
+    const char *link; // the address of the link around it, or nullptr
+} MarkdownStyle;
+
+/// @brief Adds a span of ui's: a text in a style, with mono for code.
+static void MarkdownAddSpan(MarkdownReader *reader, ECSValue *spans, const char *text, MarkdownStyle style, bool mono)
+{
+    ECSValue *span = nullptr;
+
+    if (ECSValue_AddListItem(spans, &span))
+    {
+        reader->failed = true;
+        return;
+    }
+
+    ECSValue_SetTable(span);
+    MarkdownSetText(reader, span, "text", text, SDL_strlen(text));
+    const struct
+    {
+        const char *name;
+        bool on;
+    } FLAGS[] = {{"bold", style.bold}, {"italic", style.italic}, {"strike", style.strike}, {"mono", mono}};
+
+    for (usz i = 0; i < SDL_arraysize(FLAGS); i++)
+    {
+        if (FLAGS[i].on)
+        {
+            MarkdownSetBool(reader, span, FLAGS[i].name, true);
+        }
+    }
+
+    if (style.link != nullptr)
+    {
+        MarkdownSetText(reader, span, "link", style.link, SDL_strlen(style.link));
+    }
+}
+
+/// @brief Adds the spans of a part of a line, and of the parts inside it, in the style of the nodes around them.
+static void MarkdownAddSpans(MarkdownReader *reader, ECSValue *spans, const ECSValue *node, MarkdownStyle style)
+{
+    const char *type = MarkdownTypeOf(node);
+    const char *text = ECSValue_GetString(ECSValue_GetTableField(node, "text"), nullptr);
+
+    if (SDL_strcmp(type, "break") == 0)
+    {
+        MarkdownAddSpan(reader, spans, "\n", style, false);
+        return;
+    }
+
+    if (text != nullptr)
+    {
+        MarkdownAddSpan(reader, spans, text, style, SDL_strcmp(type, "code") == 0);
+        return;
+    }
+
+    style.bold = style.bold || SDL_strcmp(type, "strong") == 0;
+    style.italic = style.italic || SDL_strcmp(type, "emphasis") == 0;
+    style.strike = style.strike || SDL_strcmp(type, "strike") == 0;
+
+    if (SDL_strcmp(type, "link") == 0)
+    {
+        style.link = ECSValue_GetString(ECSValue_GetTableField(node, "url"), "");
+    }
+
+    const ECSValue *children = ECSValue_GetTableField(node, "children");
+
+    for (usz i = 0; i < ECSValue_GetListCount(children); i++)
+    {
+        MarkdownAddSpans(reader, spans, ECSValue_GetListItem(children, i), style);
+    }
+}
+
+/// @brief Describes a wrapped text element of spans: the parts of a line from first to before end, in a size, 0 for the default one, and a colour.
+static void MarkdownDescribeSpans(MarkdownReader *reader, ECSValue *description, const ECSValue *parts, usz first, usz end, i64 size, const char *color)
+{
+    ECSValue *props = MarkdownDescribe(reader, description, "text");
+    ECSValue *spans = nullptr;
+
+    if (props == nullptr || ECSValue_SetTableField(description, "value", &spans))
+    {
+        reader->failed = true;
+        return;
+    }
+
+    ECSValue_SetTable(spans);
+
+    for (usz i = first; i < end; i++)
+    {
+        MarkdownAddSpans(reader, spans, ECSValue_GetListItem(parts, i), (MarkdownStyle){0});
+    }
+
+    MarkdownSetBool(reader, props, "wrap", true);
+    MarkdownSetText(reader, props, "color", color, SDL_strlen(color));
+
+    if (size > 0)
+    {
+        MarkdownSetInteger(reader, props, "size", size);
+    }
+}
+
+/// @brief Describes a text element of a node's parts of a line, in their styles.
+static void MarkdownDescribeNode(MarkdownReader *reader, ECSValue *description, const ECSValue *node, i64 size, const char *color)
+{
+    const ECSValue *children = ECSValue_GetTableField(node, "children");
+    MarkdownDescribeSpans(reader, description, children, 0, ECSValue_GetListCount(children), size, color);
+}
+
+/// @brief Describes a text element of a node's plain text, such as an HTML block's, in a font, which keeps its lines.
+static void MarkdownDescribePlain(MarkdownReader *reader, ECSValue *description, const ECSValue *node, const char *color, const char *font)
 {
     MarkdownReader buffer = {0};
     MarkdownAddPlainText(&buffer, node);
-    MarkdownDescribeText(reader, description, buffer.text, buffer.length, size, color, font);
+    MarkdownDescribeText(reader, description, buffer.text, buffer.length, 0, color, font);
     reader->failed = reader->failed || buffer.failed;
     SDL_free(buffer.text);
 }
@@ -584,21 +696,15 @@ static bool MarkdownIsBlock(const char *type)
     return false;
 }
 
-/// @brief Describes the text that gathered from a run of inline nodes, and empties it.
-static void MarkdownDescribeRun(MarkdownReader *reader, ECSValue *column, MarkdownReader *run, const char *color)
+/// @brief Describes a run of a node's parts of a line that are not in a block, as in a tight list's item, as one paragraph.
+static void MarkdownDescribeRun(MarkdownReader *reader, ECSValue *column, const ECSValue *parts, usz first, usz end, const char *color)
 {
-    if (run->length > 0)
+    ECSValue *described = first < end ? MarkdownAddChild(reader, column) : nullptr;
+
+    if (described != nullptr)
     {
-        ECSValue *described = MarkdownAddChild(reader, column);
-
-        if (described != nullptr)
-        {
-            MarkdownDescribeText(reader, described, run->text, run->length, 0, color, nullptr);
-        }
+        MarkdownDescribeSpans(reader, described, parts, first, end, 0, color);
     }
-
-    reader->failed = reader->failed || run->failed;
-    run->length = 0;
 }
 
 /// @brief Describes a column of a node's blocks; runs of text that are not in a block, as in a tight list's item, become a paragraph.
@@ -609,7 +715,7 @@ static void MarkdownDescribeBlocks(MarkdownReader *reader, ECSValue *column, con
     MarkdownSetBool(reader, props, "stretch", true);
 
     const ECSValue *children = ECSValue_GetTableField(node, "children");
-    MarkdownReader run = {0}; // the text of inline nodes in a row, as in a tight list's item, which become one paragraph
+    usz runStart = 0; // the first of the parts of a line in a row, which become one paragraph
 
     for (usz i = 0; i < ECSValue_GetListCount(children) && !reader->failed; i++)
     {
@@ -617,11 +723,11 @@ static void MarkdownDescribeBlocks(MarkdownReader *reader, ECSValue *column, con
 
         if (!MarkdownIsBlock(MarkdownTypeOf(child)))
         {
-            MarkdownAddPlainText(&run, child);
             continue;
         }
 
-        MarkdownDescribeRun(reader, column, &run, color);
+        MarkdownDescribeRun(reader, column, children, runStart, i, color);
+        runStart = i + 1;
         ECSValue *described = MarkdownAddChild(reader, column);
 
         if (described != nullptr)
@@ -630,8 +736,7 @@ static void MarkdownDescribeBlocks(MarkdownReader *reader, ECSValue *column, con
         }
     }
 
-    MarkdownDescribeRun(reader, column, &run, color);
-    SDL_free(run.text);
+    MarkdownDescribeRun(reader, column, children, runStart, ECSValue_GetListCount(children), color);
 }
 
 /// @brief Describes a list: a row for each item, of its mark and a column of its blocks.
@@ -715,7 +820,7 @@ static void MarkdownDescribeTable(MarkdownReader *reader, ECSValue *description,
             if (cell != nullptr)
             {
                 // a cell grows from no width, so the columns share the row equally and line up; a text too long is cut
-                MarkdownDescribeNode(reader, cell, ECSValue_GetListItem(cells, j), 0, head ? "textDim" : "text", nullptr);
+                MarkdownDescribeNode(reader, cell, ECSValue_GetListItem(cells, j), 0, head ? "textDim" : "text");
                 ECSValue *cellProps = (ECSValue *)ECSValue_GetTableField(cell, "props");
                 MarkdownSetInteger(reader, cellProps, "grow", 1);
                 MarkdownSetInteger(reader, cellProps, "width", 1);
@@ -733,7 +838,7 @@ static void MarkdownDescribeBlock(MarkdownReader *reader, ECSValue *description,
     if (SDL_strcmp(type, "heading") == 0)
     {
         i64 level = SDL_clamp(ECSValue_GetInteger(ECSValue_GetTableField(node, "level"), 1), 1, 6);
-        MarkdownDescribeNode(reader, description, node, HEADING_SIZES[level - 1], "text", nullptr);
+        MarkdownDescribeNode(reader, description, node, HEADING_SIZES[level - 1], "text");
     }
     else if (SDL_strcmp(type, "list") == 0)
     {
@@ -773,11 +878,11 @@ static void MarkdownDescribeBlock(MarkdownReader *reader, ECSValue *description,
     else if (SDL_strcmp(type, "html") == 0)
     {
         // HTML shows as it is written, dimmed
-        MarkdownDescribeNode(reader, description, node, 0, "textDim", "mono");
+        MarkdownDescribePlain(reader, description, node, "textDim", "mono");
     }
     else
     {
-        MarkdownDescribeNode(reader, description, node, 0, color, nullptr);
+        MarkdownDescribeNode(reader, description, node, 0, color);
     }
 }
 

@@ -240,6 +240,90 @@ local function wrap(font, text, textSize, width)
   return lines
 end
 
+-- a span's font: mono for code, else the text's; draw makes bold, italic, underline and struck text from the font itself, and a link is underlined
+local function spanFont(node, span)
+  local name = span.mono and "mono" or node.font or "ui"
+  local style = {}
+
+  for _, word in ipairs({ "bold", "italic", "underline", "strike" }) do
+    if span[word] or (word == "underline" and span.link) then
+      style[#style + 1] = word
+    end
+  end
+
+  local key = name .. "\0" .. table.concat(style, " ")
+  local font = fonts[key]
+
+  if font == nil then
+    font = #style == 0 and fontOf({ font = name }) or draw.styledFont(name, table.concat(style, " ")) or fontOf(node)
+    fonts[key] = font
+  end
+
+  return font
+end
+
+-- the lines of a text of spans: each line is runs of one span, at x from the line's start; with a width, it breaks between words as wrap does,
+-- and a line after a break leaves out the blanks it would start with
+local function layoutSpans(node, textSize, width)
+  local lines, x, wrapped = { { runs = {}, width = 0 } }, 0, false
+
+  local function add(text, span, blank)
+    local font = spanFont(node, span)
+    local runWidth = measureText(font, text, textSize)
+    local line = lines[#lines]
+
+    if not blank and width and x > 0 and x + runWidth > width then
+      lines[#lines + 1] = { runs = {}, width = 0 }
+      line, x, wrapped = lines[#lines], 0, true
+    end
+
+    if blank and x == 0 and wrapped then
+      return
+    end
+
+    local last = line.runs[#line.runs]
+
+    -- runs of one span in a row are one run, so it is drawn with one call
+    if last and last.span == span then
+      last.text = last.text .. text
+      last.width = last.width + runWidth
+    else
+      line.runs[#line.runs + 1] = { x = x, text = text, span = span, width = runWidth }
+    end
+
+    x = x + runWidth
+
+    if not blank then
+      line.width = x
+    end
+  end
+
+  for _, span in ipairs(node.spans) do
+    local first = true
+
+    for part in (span.text .. "\n"):gmatch("(.-)\n") do
+      if not first then
+        lines[#lines + 1] = { runs = {}, width = 0 }
+        x, wrapped = 0, false
+      end
+
+      first = false
+
+      for blanks, word in part:gmatch("(%s*)(%S*)") do
+        if blanks ~= "" then
+          add(blanks, span, true)
+        end
+
+        if word ~= "" then
+          add(word, span, false)
+        end
+      end
+    end
+  end
+
+  return lines
+end
+
 -- images read once for each path and scale, so that they are drawn sharp.
 -- The cache starts again when it is full, so that images no longer shown are collected; a shown image stays in its node's layout.
 local IMAGES_KEPT = 64
@@ -483,9 +567,25 @@ function elements.separator(props)
   return element("separator", props)
 end
 
+-- a text, or a list of spans: each a text, or a table of its text and its style; text keeps the plain text either way
 function elements.text(text, props)
   local node = element("text", props)
-  node.text = tostring(text)
+
+  if type(text) == "table" then
+    local plain = {}
+    node.spans = {}
+
+    for i, span in ipairs(text) do
+      span = type(span) == "table" and span or { text = span }
+      node.spans[i] = setmetatable({ text = tostring(span.text or "") }, { __index = span })
+      plain[i] = node.spans[i].text
+    end
+
+    node.text = table.concat(plain)
+  else
+    node.text = tostring(text)
+  end
+
   return node
 end
 
@@ -664,7 +764,14 @@ function measure(node, state, room)
   local width, height
   node.layout = layout
 
-  if node.type == "text" and node.wrap and (node.width or room) then
+  if node.type == "text" and node.spans then
+    layout.spanLines = layoutSpans(node, textSize, node.wrap and (node.width or room) or nil)
+    width, height = 0, #layout.spanLines * line
+
+    for _, spanLine in ipairs(layout.spanLines) do
+      width = math.max(width, spanLine.width)
+    end
+  elseif node.type == "text" and node.wrap and (node.width or room) then
     layout.lines = wrap(font, node.text, textSize, node.width or room)
     width, height = 0, #layout.lines * line
 
@@ -1063,7 +1170,17 @@ function paint(node, surface, state)
     draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
   end
 
-  if node.type == "text" and box.lines then
+  if node.type == "text" and box.spanLines then
+    -- runs past the box are cut at its edge
+    draw.clip(surface, box.x, box.y, box.width, box.height, function()
+      for i, spanLine in ipairs(box.spanLines) do
+        for _, run in ipairs(spanLine.runs) do
+          local color = run.span.color or (run.span.link and "accent") or node.color or "text"
+          draw.text(surface, spanFont(node, run.span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
+        end
+      end
+    end)
+  elseif node.type == "text" and box.lines then
     for i, text in ipairs(box.lines) do
       draw.text(surface, font, ellipsize(font, text, textSize, box.width), box.x, box.y + (i - 1) * line, textSize, node.color or "text")
     end
@@ -1132,7 +1249,24 @@ end
 
 -- the elements that take the pointer: buttons, fields and the like, and containers with onClick
 local function interactive(node)
-  return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil)
+  return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil) or (node.type == "text" and node.onLink ~= nil)
+end
+
+-- the link of a text's span at a place, or of its first link without one, as Return on the text takes
+local function linkAt(node, x, y)
+  local box = node.layout
+  local lines = box.spanLines or {}
+  local line = #lines > 0 and box.height / #lines or 0
+
+  for i, spanLine in ipairs(lines) do
+    for _, run in ipairs(spanLine.runs) do
+      local inside = x and y and x >= box.x + run.x and x < box.x + run.x + run.width and y >= box.y + (i - 1) * line and y < box.y + i * line
+
+      if run.span.link and (inside or not x) then
+        return run.span.link
+      end
+    end
+  end
 end
 
 local function scrollable(node)
@@ -1314,9 +1448,15 @@ local function startEditing(panel, state, node)
   end
 end
 
--- does what a click on an element does; x is where across it, for a selector
-local function activate(panel, state, node, x)
-  if node.type == "button" or CONTAINERS[node.type] then
+-- does what a click on an element does; x and y are where, for a selector and a text's links, and nil for a key
+local function activate(panel, state, node, x, y)
+  if node.type == "text" then
+    local link = linkAt(node, x, y)
+
+    if link then
+      call(node.onLink, link)
+    end
+  elseif node.type == "button" or CONTAINERS[node.type] then
     call(node.onClick)
   elseif node.type == "toggle" then
     call(node.onChange, not node.on)
@@ -1639,7 +1779,7 @@ local function handleKeyDown(panel, state, event)
   elseif node and node.type == "slider" and leftOrRight then
     nudgeSlider(node, event.key == "Right")
   elseif node and enter and node.type ~= "selector" and node.type ~= "slider" and not isList(node) then
-    activate(panel, state, node, node.layout.x)
+    activate(panel, state, node, node.type ~= "text" and node.layout.x or nil)
   elseif list and (event.key == "Up" or event.key == "Down") then
     moveSelection(state, list, event.key == "Up" and -1 or 1)
   elseif list and list.tree and leftOrRight then
@@ -1859,7 +1999,7 @@ local function handlePointerUp(panel, state, x, y)
   local node = find(state.root, x, y, interactive)
 
   if pressed and node and node.id == pressed.id and node.type == pressed.type and not TAKES_TYPING[node.type] and node.type ~= "slider" then
-    activate(panel, state, node, x)
+    activate(panel, state, node, x, y)
   end
 
   panel:redraw()
@@ -2072,6 +2212,23 @@ local function build(panel, description)
     end
   end
 
+  -- a described text with a link keeps the link a click gave, under its id, or under "" without one, so a panel takes the links of every text,
+  -- such as markdown's; a text without a link takes no keys
+  if elementType == "text" and type(description.value) == "table" then
+    for _, span in ipairs(description.value) do
+      if type(span) == "table" and span.link then
+        local key = (props.id or "") .. "\0onLink"
+
+        props.onLink = function(value)
+          panelState(panel).taken[key] = { value = value }
+          panel:redraw()
+        end
+
+        break
+      end
+    end
+  end
+
   local takes = TAKES[elementType]
   local make = elements[elementType]
   assert(make, ("no element of type '%s'"):format(tostring(elementType)))
@@ -2108,7 +2265,7 @@ end
 -- takes what a callback of a described element got since the last draw, or nil if it did not run
 function services.take(panel, id, callback)
   local taken = panelState(panel).taken
-  local key = id .. "\0" .. callback
+  local key = (id or "") .. "\0" .. callback
   local got = taken[key]
   taken[key] = nil
   return got
@@ -2239,9 +2396,9 @@ assert(ecs.service.register({
     fn = elements.separator,
   },
   text = {
-    sig = "value<ui.Element>(string text, value<ui.TextProps?> props)",
-    doc = "A line of text\n"
-        .. "@param text The text, cut with an ellipsis when it does not fit unless props has wrap = true\n"
+    sig = "value<ui.Element>(value<ui.Text> text, value<ui.TextProps?> props)",
+    doc = "A line of text, or of spans in their own styles\n"
+        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true\n"
         .. "@param props The text's properties (ui.TextProps)\n"
         .. "@return The text element",
     fn = elements.text,
@@ -2348,7 +2505,7 @@ assert(ecs.service.register({
     sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)",
     doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run\n"
         .. "@param panel The panel that showed the description\n"
-        .. "@param id The described element's id\n"
+        .. "@param id The described element's id; \"\" for the link that a click gave in a described text without an id\n"
         .. "@param callback The callback's name, such as \"onClick\", \"onChange\" or \"onToggle\"\n"
         .. "@return What the callback got, as value and, for onToggle, open; nil if it did not run or was taken already",
     fn = services.take,
