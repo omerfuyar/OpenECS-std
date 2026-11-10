@@ -85,6 +85,21 @@
 
 ---@class ui.TextProps: ui.Props
 ---@field wrap? boolean Breaks into lines at the width of its column, or its own width.
+---@field onLink? fun(link: string) A click on a span with a link, or Return while the text has the keys, gives the link.
+
+---A part of a text in its own style. draw makes bold, italic, underline and struck text from the text's font.
+---@class ui.Span
+---@field text string
+---@field bold? boolean
+---@field italic? boolean
+---@field mono? boolean In the mono font, for code.
+---@field underline? boolean
+---@field strike? boolean
+---@field color? ecs.Color The span's colour; the text's if missing, and the accent for a link.
+---@field link? string Underlined, in the accent; a click gives it to the text's onLink.
+
+---A text, or a list of spans, each a text or a table.
+---@alias ui.Text string|(string|ui.Span)[]
 
 ---@class ui.ButtonProps: ui.Props
 ---@field onClick? fun()

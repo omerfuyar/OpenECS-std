@@ -26,9 +26,10 @@ typedef struct DrawFontSize
 /// @brief A font: a TrueType file, opened at each size asked for. Its handle, draw.font, lives as long as the plugin.
 typedef struct DrawFont
 {
-    char *name;          // the name it was asked by: "ui", "mono" or a path
-    char *path;          // the file
-    DrawFontSize *sizes; // stb_ds array of the sizes opened so far
+    char *name;               // the name it was asked by: "ui", "mono" or a path
+    char *path;               // the file
+    TTF_FontStyleFlags style; // bold, italic, underline and struck, which SDL_ttf makes from the file
+    DrawFontSize *sizes;      // stb_ds array of the sizes opened so far
 } DrawFont;
 
 /// @brief A picture that draw can draw: pixels in ARGB8888, not premultiplied. Its handle is draw.image.
@@ -667,13 +668,51 @@ static void DrawCloseSizes(DrawFont *font)
     arrfree(font->sizes);
 }
 
-/// @brief Finds the font of a name, and adds it the first time it is asked for.
+/// @brief Reads a style's words, separated by spaces: bold, italic, underline and strike.
+/// @return false if a word is not one of them.
+static bool DrawReadStyle(const char *text, TTF_FontStyleFlags *retStyle)
+{
+    static const struct
+    {
+        const char *word;
+        TTF_FontStyleFlags flag;
+    } WORDS[] = {{"bold", TTF_STYLE_BOLD}, {"italic", TTF_STYLE_ITALIC}, {"underline", TTF_STYLE_UNDERLINE}, {"strike", TTF_STYLE_STRIKETHROUGH}};
+
+    *retStyle = TTF_STYLE_NORMAL;
+
+    while (*text != '\0')
+    {
+        const char *space = SDL_strchr(text, ' ');
+        usz length = space == nullptr ? SDL_strlen(text) : (usz)(space - text);
+        bool known = length == 0;
+
+        for (usz i = 0; i < SDL_arraysize(WORDS) && !known; i++)
+        {
+            if (SDL_strlen(WORDS[i].word) == length && SDL_strncmp(WORDS[i].word, text, length) == 0)
+            {
+                *retStyle |= WORDS[i].flag;
+                known = true;
+            }
+        }
+
+        if (!known)
+        {
+            return false;
+        }
+
+        text += length + (text[length] == ' ' ? 1 : 0);
+    }
+
+    return true;
+}
+
+/// @brief Finds the font of a name in a style, and adds it the first time it is asked for.
 /// @return The font, or nullptr if out of memory.
-static void *DrawFindOrAddFont(const char *name)
+static DrawFont *DrawFindOrAddStyledFont(const char *name, TTF_FontStyleFlags style)
 {
     for (usz i = 0; i < arrlenu(DRAW.fonts); i++)
     {
-        if (SDL_strcmp(DRAW.fonts[i]->name, name) == 0)
+        if (DRAW.fonts[i]->style == style && SDL_strcmp(DRAW.fonts[i]->name, name) == 0)
         {
             return DRAW.fonts[i];
         }
@@ -686,6 +725,7 @@ static void *DrawFindOrAddFont(const char *name)
         return nullptr;
     }
 
+    font->style = style;
     font->name = SDL_strdup(name);
     font->path = DrawFontPath(name);
 
@@ -699,6 +739,25 @@ static void *DrawFindOrAddFont(const char *name)
 
     arrput(DRAW.fonts, font);
     return font;
+}
+
+static void *DrawFindOrAddFont(const char *name)
+{
+    return DrawFindOrAddStyledFont(name, TTF_STYLE_NORMAL);
+}
+
+static void *DrawStyledFont(const char *name, const char *style, const char **retError)
+{
+    TTF_FontStyleFlags flags = TTF_STYLE_NORMAL;
+    *retError = nullptr;
+
+    if (!DrawReadStyle(style, &flags))
+    {
+        *retError = "the style is words of bold, italic, underline and strike";
+        return nullptr;
+    }
+
+    return DrawFindOrAddStyledFont(name, flags);
 }
 
 /// @brief Finds a font at a size in pixels, and opens it the first time.
@@ -723,6 +782,7 @@ static TTF_Font *DrawFindOrOpenSize(DrawFont *font, f32 pixels)
         return nullptr;
     }
 
+    TTF_SetFontStyle(opened, font->style);
     arrput(font->sizes, ((DrawFontSize){.pixels = size, .font = opened}));
     return opened;
 }
@@ -1053,6 +1113,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file\n"
          "@param name \"ui\", \"mono\" or a path; a relative path starts at the executable's folder\n"
          "@return The font, the same handle for the same name, or nothing if memory runs out; a file that cannot be opened is reported when text is drawn"},
+        {"styledFont", (ECSFunction)DrawStyledFont, "handle<draw.font>(string name, string style, out string error)",
+         "Give a font in a style, which SDL_ttf makes from the font's file, so it follows any font\n"
+         "@param name \"ui\", \"mono\" or a path, as font takes\n"
+         "@param style Words separated by spaces: bold, italic, underline and strike, such as \"bold italic\"; empty for the font itself\n"
+         "@param error Why there is no font, such as a word it does not know; nothing if there is one\n"
+         "@return The font, the same handle for the same name and style; nothing if the style cannot be read or memory runs out"},
         {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)",
          "Give the file a font is read from; a setting that names another file changes it\n"
          "@param font The font\n"
