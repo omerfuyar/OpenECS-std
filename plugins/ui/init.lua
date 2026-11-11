@@ -625,27 +625,40 @@ function elements.slider(value, props)
 end
 
 -- one of a few choices, side by side, or of a list of them in a popup
-local function choiceElement(elementType, value, choices, props)
+-- selected is the chosen one's number, from 1, and onSelect gets the number of the one the user chooses
+local function choiceElement(elementType, selected, choices, props)
   local node = element(elementType, props)
-  node.value, node.choices = value, choices or {}
+  local onSelect = node.onSelect
+  node.choices = choices or {}
+  node.value, node.selected, node.onSelect = node.choices[selected], nil, nil
+
+  node.onChange = onSelect and function(choice)
+    for i, each in ipairs(node.choices) do
+      if each == choice then
+        onSelect(i)
+        return
+      end
+    end
+  end
+
   return node
 end
 
-function elements.selector(value, choices, props)
-  return choiceElement("selector", value, choices, props)
+function elements.selector(selected, choices, props)
+  return choiceElement("selector", selected, choices, props)
 end
 
 -- tabs: a selector whose choices are headers of their natural widths from the left, with a line under the chosen one;
 -- the panel shows below them what the chosen tab holds
-function elements.tabs(value, choices, props)
-  local node = elements.selector(value, choices, props)
+function elements.tabs(selected, choices, props)
+  local node = elements.selector(selected, choices, props)
   node.look = "tabs"
   return node
 end
 
 -- one of a list of choices, which a click opens in a popup
-function elements.dropdown(value, choices, props)
-  return choiceElement("dropdown", value, choices, props)
+function elements.dropdown(selected, choices, props)
+  return choiceElement("dropdown", selected, choices, props)
 end
 
 function elements.field(text, props)
@@ -655,15 +668,22 @@ function elements.field(text, props)
   return node
 end
 
--- a field for a number, kept from min to max if they are given and rounded to step if it is given;
--- Return gives the typed number to onNumber, the props' onChange, and Up and Down change it by step, or by 1
+-- a field for a number, kept from min to max if they are given and rounded to step if it is given; onChange gets the number at each edit
+-- that is a number, and onSubmit at Return; Up and Down change it by step, or by 1, and give it to both
 function elements.number(value, props)
   local node = elements.field("", props)
+  local onChange, onSubmit = node.onChange, node.onSubmit
   node.isNumber = true
-  node.onNumber = node.onChange or function(_) end
-  node.onChange = nil
   node.value = snapNumber(node, tonumber(value) or 0)
   node.text = formatNumber(node.value)
+
+  node.onChange = function(text)
+    local number = tonumber(text)
+
+    if number ~= nil and onChange then
+      onChange(snapNumber(node, number))
+    end
+  end
 
   -- a text that is not a number keeps the field typing
   node.onSubmit = function(text)
@@ -673,7 +693,9 @@ function elements.number(value, props)
       return false
     end
 
-    node.onNumber(snapNumber(node, number))
+    if onSubmit then
+      onSubmit(snapNumber(node, number))
+    end
   end
 
   return node
@@ -1584,7 +1606,8 @@ local function stepNumber(node, state, up)
   local number = snapNumber(node, (tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
   state.typed = formatNumber(number)
   state.cursorPosition, state.anchor = #state.typed + 1, nil
-  node.onNumber(number)
+  node.onChange(state.typed)
+  node.onSubmit(state.typed)
 end
 
 -- the cursor's place after a move key in an edited field: Home and End go to the ends, Ctrl moves by words, and the arrows by characters
@@ -2302,14 +2325,16 @@ end
 -- descriptions, for plugins in C -------------------------------------------
 
 -- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+-- those of ASKED are kept only by an element whose props have them as true, since they change how the element behaves
+local ASKED = { onActivate = true, onSort = true }
 local CALLBACKS = {
   button = { "onClick" },
   toggle = { "onChange" },
   slider = { "onChange" },
-  selector = { "onChange" },
-  tabs = { "onChange" },
-  dropdown = { "onChange" },
-  number = { "onChange" },
+  selector = { "onSelect" },
+  tabs = { "onSelect" },
+  dropdown = { "onSelect" },
+  number = { "onChange", "onSubmit" },
   key = { "onChange" },
   field = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
@@ -2333,10 +2358,19 @@ local function build(panel, description)
   local callbacks = CALLBACKS[elementType] or (props.clickable and { "onClick" }) or {}
   props.clickable = nil
 
+  -- a field with valid = false refuses the submit, as a Lua onSubmit that returns false does
+  local refuses = elementType == "field" and props.valid == false
+
   for _, callback in ipairs(callbacks) do
     local id = props.id
+    local asked = props[callback] == true
+    props[callback] = nil
 
-    if id then
+    if refuses and callback == "onSubmit" then
+      props.onSubmit = function()
+        return false
+      end
+    elseif id and (asked or not ASKED[callback]) then
       props[callback] = function(value, open)
         local taken = panelState(panel).taken
         taken[id .. "\0" .. callback] = { value = value, open = open }
@@ -2375,7 +2409,7 @@ local function build(panel, description)
 
     return make(props, children)
   elseif takes == "choices" then
-    return make(description.value, description.choices, props)
+    return make(description.selected, description.choices, props)
   elseif takes == "table" then
     return make(props, description.columns, description.rows)
   elseif takes == "tree" then
@@ -2562,27 +2596,27 @@ assert(ecs.service.register({
     fn = elements.slider,
   },
   selector = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "One of a few choices, side by side; onChange gets the clicked one\n"
-        .. "@param value The chosen text\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a few choices, side by side; onSelect gets the number of the clicked one\n"
+        .. "@param selected The chosen one's number, from 1; 0 for none\n"
         .. "@param choices The texts to choose from, from the left; none if nil\n"
         .. "@param props The selector's properties (ui.ChoiceProps)\n"
         .. "@return The selector",
     fn = elements.selector,
   },
   tabs = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one\n"
-        .. "@param value The chosen tab's text\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "Tabs: headers of the choices, with a line under the chosen one; onSelect gets the number of the clicked one\n"
+        .. "@param selected The chosen tab's number, from 1\n"
         .. "@param choices The tabs' texts, from the left; none if nil\n"
         .. "@param props The tabs' properties (ui.ChoiceProps)\n"
         .. "@return The tabs",
     fn = elements.tabs,
   },
   dropdown = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "One of a list of choices, which a click opens; onChange gets the chosen one\n"
-        .. "@param value The chosen text, which the closed dropdown shows\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a list of choices, which a click opens; onSelect gets the number of the chosen one\n"
+        .. "@param selected The chosen one's number, from 1, whose text the closed dropdown shows; 0 for none\n"
         .. "@param choices The texts to choose from, from the top; none if nil\n"
         .. "@param props The dropdown's properties (ui.ChoiceProps)\n"
         .. "@return The dropdown",
@@ -2598,7 +2632,7 @@ assert(ecs.service.register({
   },
   number = {
     sig = "value<ui.Element>(double value, value<ui.NumberProps?> props)",
-    doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange\n"
+    doc = "A number that the user types, from min to max, rounded to step; onChange gets it at each edit, and onSubmit at Return; Up and Down give it to both\n"
         .. "@param value The number it shows, kept from min to max and rounded to step; 0 if it is not a number\n"
         .. "@param props The field's properties (ui.NumberProps), which must have an id\n"
         .. "@return The number field",

@@ -164,7 +164,13 @@ local function control(window, setting)
   if setting.type == "bool" then
     return ui.toggle(setting.value, { id = id, look = "switch", onChange = function(on) set(window, setting, on) end })
   elseif setting.type == "choice" then
-    return ui.dropdown(setting.value, setting.choices, { id = id, grow = 1, onChange = function(value) set(window, setting, value) end })
+    local selected = 0
+
+    for i, choice in ipairs(setting.choices) do
+      selected = choice == setting.value and i or selected
+    end
+
+    return ui.dropdown(selected, setting.choices, { id = id, grow = 1, onSelect = function(choice) set(window, setting, setting.choices[choice]) end })
   elseif setting.type == "key" then
     return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) set(window, setting, key) end })
   end

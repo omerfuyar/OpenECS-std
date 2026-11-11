@@ -25,20 +25,31 @@
 /// @brief grow = UI_FIXED keeps an element from growing where it would by default, as a scroll or a space does.
 #define UI_FIXED (-1.0)
 
+/// @brief A number of the props that is 0, such as padding = UI_ZERO; a number left 0 is left to ui.
+#define UI_ZERO (-1.0e300)
+
+/// @brief A flag of the props: left to ui, true or false. true and false set it too, as stretch = true does; UI_FALSE says false.
+typedef enum UiFlag
+{
+    UI_UNSET,
+    UI_TRUE,
+    UI_FALSE,
+} UiFlag;
+
 /// @brief How deep containers may be nested.
 #define UI_DEPTH 32
 
 /// @brief The number of items of an array.
 #define UI__COUNT(array) (sizeof(array) / sizeof((array)[0]))
 
-/// @brief The props of an element, in the manner of ui.Props. A number left 0 or a text left nullptr is left to ui. Each element uses the ones it knows.
+/// @brief The props of an element, in the manner of ui.Props. A number left 0, a flag left unset or a text left nullptr is left to ui. Each element uses the ones it knows.
 typedef struct UiProps
 {
     const char *id;              // names the element; an element whose macro takes what it got needs one, and a button's label is its id if it has none
     f64 width;                   // a fixed width, in layout units
     f64 height;                  // a fixed height, in layout units
     f64 grow;                    // a share of the room left along the parent's direction; UI_FIXED for none
-    bool stretch;                // takes the parent's whole cross size
+    UiFlag stretch;              // takes the parent's whole cross size
     f64 padding;                 // room inside a container's edges
     f64 gap;                     // room between a container's children
     const char *align;           // where a container puts children that do not stretch: "start", "center" or "end"
@@ -49,20 +60,22 @@ typedef struct UiProps
     f64 size;                    // the font size of its text
     const char *font;            // a font name of draw, such as "ui" or "mono"
     const char *tooltip;         // a text that shows when the pointer rests on it
-    bool heading;                // a list's child that is not an item
-    bool clickable;              // a column or row that is clicked like a button; UI_CLICKED takes the click
+    UiFlag selectable;           // UI_FALSE for a list's child that is not an item, such as a heading
+    UiFlag clickable;            // a column or row that is clicked like a button; UI_CLICKED takes the click
     const char *title;           // a group's title
-    bool wrap;                   // text that breaks into lines at its width
-    bool vertical;               // a separator up a row
+    UiFlag wrap;                 // text that breaks into lines at its width
+    UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
     const char *look;            // a toggle's look: "check" or "switch"
     f64 min;                     // a slider's or number's least value; min and max count when they differ
     f64 max;                     // a slider's or number's greatest value
     f64 step;                    // what a slider's or number's value is rounded to
-    bool invalid;                // a field's text is wrong
+    UiFlag valid;                // UI_FALSE marks a field's text as wrong, and keeps Return from giving it
     const char *sort;            // the id of the column a table is sorted by
-    bool ascending;              // a table's sort arrow points up
+    UiFlag ascending;            // a table's sort arrow points up
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
+    bool onActivate;             // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
+    bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
 } UiProps;
 
 /// @brief A column of a table: the id names its cells, and the title shows in the header, the id if it is nullptr; a width of 0 is the widest cell's.
@@ -212,7 +225,7 @@ static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
     {
         if (numbers[i].number != 0.0)
         {
-            Ui_SetNumber(table, numbers[i].name, numbers[i].number);
+            Ui_SetNumber(table, numbers[i].name, numbers[i].number == UI_ZERO ? 0.0 : numbers[i].number);
         }
     }
 
@@ -230,15 +243,14 @@ static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
     const struct
     {
         const char *name;
-        bool set;
-        bool value;
-    } booleans[] = {{"stretch", props->stretch, true}, {"selectable", props->heading, false}, {"clickable", props->clickable, true}, {"wrap", props->wrap, true}, {"vertical", props->vertical, true}, {"valid", props->invalid, false}, {"ascending", props->ascending, true}};
+        UiFlag flag;
+    } flags[] = {{"stretch", props->stretch}, {"selectable", props->selectable}, {"clickable", props->clickable}, {"wrap", props->wrap}, {"vertical", props->vertical}, {"valid", props->valid}, {"ascending", props->ascending}, {"onActivate", props->onActivate ? UI_TRUE : UI_UNSET}, {"onSort", props->onSort ? UI_TRUE : UI_UNSET}};
 
-    for (usz i = 0; i < UI__COUNT(booleans); i++)
+    for (usz i = 0; i < UI__COUNT(flags); i++)
     {
-        if (booleans[i].set)
+        if (flags[i].flag != UI_UNSET)
         {
-            Ui_SetBool(table, booleans[i].name, booleans[i].value);
+            Ui_SetBool(table, flags[i].name, flags[i].flag == UI_TRUE);
         }
     }
 }
@@ -467,7 +479,7 @@ static inline bool Ui_Toggle(bool *on, const UiProps *props)
     return taken != nullptr;
 }
 
-/// @brief A slider or a number field: type is "slider" or "number".
+/// @brief A slider or a number field: type is "slider" or "number". A number field's value changes at each edit that is a number.
 static inline bool Ui_Number(const char *type, f64 *value, const UiProps *props)
 {
     const ECSValue *taken = Ui_Take(props->id, "onChange");
@@ -476,31 +488,28 @@ static inline bool Ui_Number(const char *type, f64 *value, const UiProps *props)
     return taken != nullptr;
 }
 
-/// @brief A selector, tabs or a dropdown: type is "selector", "tabs" or "dropdown". The choices end with nullptr, and index is the chosen one's, from 0.
-static inline bool Ui_Choice(const char *type, i32 *index, const char *const *choices, const UiProps *props)
+/// @brief Whether Return was pressed in the number field with an id since the last draw.
+static inline bool Ui_Submitted(const char *id)
 {
-    const ECSValue *taken = Ui_Take(props->id, "onChange");
-    const char *chosen = taken == nullptr ? nullptr : ECSValue_GetString(ECSValue_GetTableField(taken, "value"), nullptr);
-    i32 count = 0;
+    return Ui_Take(id, "onSubmit") != nullptr;
+}
 
-    for (; choices[count] != nullptr; count++)
-    {
-        if (chosen != nullptr && strcmp(chosen, choices[count]) == 0)
-        {
-            *index = count;
-        }
-    }
-
+/// @brief A selector, tabs or a dropdown: type is "selector", "tabs" or "dropdown". The choices end with nullptr, and selected is the chosen one's
+/// number, from 1; 0 for none.
+static inline bool Ui_Choice(const char *type, i32 *selected, const char *const *choices, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onSelect");
+    *selected = taken != nullptr ? (i32)ECSValue_GetInteger(ECSValue_GetTableField(taken, "value"), *selected) : *selected;
     ECSValue *description = Ui_Add(type, props);
-    Ui_SetString(description, "value", *index >= 0 && *index < count ? choices[*index] : "");
+    Ui_SetNumber(description, "selected", *selected);
     ECSValue *list = Ui_SetTable(description, "choices");
 
-    for (i32 i = 0; i < count; i++)
+    for (i32 i = 0; choices[i] != nullptr; i++)
     {
         Ui_AddString(list, choices[i]);
     }
 
-    return chosen != nullptr;
+    return taken != nullptr;
 }
 
 /// @brief Copies a text into a buffer of a capacity, cut to fit, which always ends with a zero.
@@ -548,7 +557,7 @@ static inline void Ui_OpenList(i32 *selected, const UiProps *props)
     Ui_Open("list", &chosen);
 }
 
-/// @brief The item of a list that was activated, with a click or Return, from 1, or 0 if none was.
+/// @brief The item of a list or the row of a table that was activated, with a click or Return, from 1, or 0 if none was. Its props need onActivate = true.
 static inline i32 Ui_Activated(const char *id)
 {
     return (i32)ECSValue_GetInteger(ECSValue_GetTableField(Ui_Take(id, "onActivate"), "value"), 0);
@@ -601,6 +610,7 @@ static inline void Ui_Table(i32 *selected, const UiColumn *columns, const char *
 }
 
 /// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr. It is valid until the next take.
+/// The table's props need onSort = true.
 static inline const char *Ui_Sorted(const char *id)
 {
     return ECSValue_GetString(ECSValue_GetTableField(Ui_Take(id, "onSort"), "value"), nullptr);
@@ -672,6 +682,14 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
     return chosen != nullptr || opened != nullptr;
 }
 
+/// @brief The id of the node of the tree with an id that was activated, with a click or Return, one of the nodes' own, or nullptr if none was.
+/// The tree's props need onActivate = true.
+static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nodes)
+{
+    const UiTreeNode *node = Ui_FindTreeNode(nodes, ECSValue_GetString(ECSValue_GetTableField(Ui_Take(id, "onActivate"), "value"), nullptr));
+    return node != nullptr ? node->id : nullptr;
+}
+
 #pragma endregion Elements
 
 #define UI__JOIN2(first, second) first##second
@@ -697,9 +715,9 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
 #define UI_TOGGLE(on, ...) Ui_Toggle((on), &(UiProps){__VA_ARGS__})
 #define UI_SLIDER(value, ...) Ui_Number("slider", (value), &(UiProps){__VA_ARGS__})
 #define UI_NUMBER(value, ...) Ui_Number("number", (value), &(UiProps){__VA_ARGS__})
-#define UI_SELECTOR(index, choices, ...) Ui_Choice("selector", (index), (choices), &(UiProps){__VA_ARGS__})
-#define UI_TABS(index, choices, ...) Ui_Choice("tabs", (index), (choices), &(UiProps){__VA_ARGS__})
-#define UI_DROPDOWN(index, choices, ...) Ui_Choice("dropdown", (index), (choices), &(UiProps){__VA_ARGS__})
+#define UI_SELECTOR(selected, choices, ...) Ui_Choice("selector", (selected), (choices), &(UiProps){__VA_ARGS__})
+#define UI_TABS(selected, choices, ...) Ui_Choice("tabs", (selected), (choices), &(UiProps){__VA_ARGS__})
+#define UI_DROPDOWN(selected, choices, ...) Ui_Choice("dropdown", (selected), (choices), &(UiProps){__VA_ARGS__})
 #define UI_FIELD(buffer, capacity, ...) Ui_Field((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_KEY(buffer, capacity, ...) Ui_Key((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_TABLE(selected, columns, cells, rowCount, ...) Ui_Table((selected), (columns), (cells), (rowCount), &(UiProps){__VA_ARGS__})
@@ -713,6 +731,12 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
 
 /// @brief The item of the list with an id that was activated since the last draw, from 1, or 0.
 #define UI_ACTIVATED(id) Ui_Activated(id)
+
+/// @brief The id of the node of the tree with an id that was activated since the last draw, or nullptr.
+#define UI_ACTIVATED_NODE(id, nodes) Ui_ActivatedNode((id), (nodes))
+
+/// @brief Whether Return was pressed in the number field with an id since the last draw.
+#define UI_SUBMITTED(id) Ui_Submitted(id)
 
 /// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr.
 #define UI_SORTED(id) Ui_Sorted(id)

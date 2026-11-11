@@ -117,7 +117,7 @@
 
 ---A selector, tabs or a dropdown.
 ---@class ui.ChoiceProps: ui.Props
----@field onChange? fun(choice: string)
+---@field onSelect? fun(choice: integer) Gets the number of the chosen one, from 1.
 
 ---A field; it needs an id, which keeps what is typed.
 ---@class ui.FieldProps: ui.Props
@@ -131,7 +131,8 @@
 ---@field min? number
 ---@field max? number
 ---@field step? number
----@field onChange? fun(value: number)
+---@field onChange? fun(value: number) Gets the number at each edit that is one.
+---@field onSubmit? fun(value: number) Gets the number when Return is pressed.
 
 ---@class ui.KeyProps: ui.Props
 ---@field id string
@@ -140,14 +141,15 @@
 ---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description
 ---@field type string The element's type, which names its function, such as "column" or "button".
----@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button.
+---@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button, onActivate = true
+---and onSort = true ask a list, table or tree for those callbacks, and a field with valid = false refuses Return.
 ---@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number or a path.
 ---@field choices? string[] A selector's, tabs' or dropdown's choices.
 ---@field columns? ui.TableColumn[] A table's columns.
 ---@field rows? ui.TableRow[] A table's rows.
 ---@field nodes? ui.TreeNode[] A tree's nodes.
 ---@field open? table<any, boolean> A tree's open nodes, by id.
----@field selected? any A tree's chosen node's id.
+---@field selected? any A tree's chosen node's id, or the number of a selector's, tabs' or dropdown's chosen one.
 ---@field children? ui.Description[] A container's children.
 
 ---What a callback of a described element got, which ui.take gives.
