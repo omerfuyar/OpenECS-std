@@ -152,6 +152,15 @@
 ---@field selected? any A tree's chosen node's id, or the number of a selector's, tabs' or dropdown's chosen one.
 ---@field children? ui.Description[] A container's children.
 
+---The element under the pointer, which ui.inspected gives.
+---@class ui.Inspected
+---@field type string The element's type, such as "button".
+---@field id string The element's id: its own, or the one ui gave it from its place.
+---@field x number
+---@field y number
+---@field width number
+---@field height number
+
 ---What a callback of a described element got, which ui.take gives.
 ---@class ui.Taken
 ---@field value boolean|number|string|nil The callback's first argument: a new state, number, text or choice, an item's number, or a node's or column's id.

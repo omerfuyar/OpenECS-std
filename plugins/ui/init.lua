@@ -421,10 +421,44 @@ end
 
 -- element constructors -------------------------------------------------------
 
+-- every prop an element may have; one that is not here is a mistake, such as onchange for onChange
+local PROPS = {}
+
+for name in ("id width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+  .. "sort ascending vertical wrap label look min max step valid clickable open "
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
+  PROPS[name] = true
+end
+
+local reportedProps = {}
+
 local function element(elementType, props, children)
   local node = shallowCopy(props)
+
+  for name in pairs(node) do
+    if not PROPS[name] and not reportedProps[name] then
+      reportedProps[name] = true
+      ecs.log.warn(("ui does not know the prop '%s' of a %s; it does nothing."):format(tostring(name), elementType))
+    end
+  end
+
   node.type = elementType
-  node.children = children
+
+  -- a child that is false is left out, so a list of children may hold `shown and ui.text(...)`; each child keeps its place in the list for its id,
+  -- so the children after one that is left out keep theirs
+  if children then
+    node.children = {}
+
+    for place = 1, #children do
+      local child = children[place]
+
+      if child then
+        child.place = place
+        node.children[#node.children + 1] = child
+      end
+    end
+  end
+
   return node
 end
 
@@ -2050,10 +2084,108 @@ local function paintTooltip(surface, state, width, height)
   end
 end
 
+-- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
+local inspecting = false
+
+-- the element under the pointer, the innermost one; a scroll element's children outside it are not under the pointer
+local function inspected(state)
+  if not (state.root and state.pointerX) then
+    return nil
+  end
+
+  return find(state.root, state.pointerX, state.pointerY, function()
+    return true
+  end)
+end
+
+-- outlines an element and its children; those of a scroll element only inside it, as they are drawn
+local function paintOutlines(node, surface)
+  local box = node.layout
+  draw.outline(surface, box.x, box.y, box.width, box.height, 1, "tabShown")
+
+  if node.type == "scroll" then
+    draw.clip(surface, box.x, box.y, box.width, box.height, function()
+      for _, child in ipairs(node.children) do
+        if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
+          paintOutlines(child, surface)
+        end
+      end
+    end)
+  else
+    for _, child in ipairs(node.children or {}) do
+      paintOutlines(child, surface)
+    end
+  end
+end
+
+-- a number as the inspector shows it: whole, or with one decimal
+local function inspectNumber(number)
+  return number == math.floor(number) and ("%d"):format(number) or ("%.1f"):format(number)
+end
+
+-- draws the inspector over a panel's elements: every element's outline, and the type, id, place and size of the one under the pointer, in layout units
+local function paintInspector(surface, state, width, height)
+  paintOutlines(state.root, surface)
+  local node = inspected(state)
+
+  if not node then
+    return
+  end
+
+  local box = node.layout
+  draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
+
+  local lines = {
+    ("%s  id = %q"):format(node.type, node.id),
+    ("at %s, %s  size %s x %s"):format(inspectNumber(box.x), inspectNumber(box.y), inspectNumber(box.width), inspectNumber(box.height)),
+  }
+
+  local set = {}
+
+  for _, name in ipairs({ "width", "height", "grow", "stretch", "padding", "gap", "align" }) do
+    if node[name] ~= nil then
+      set[#set + 1] = name .. " = " .. tostring(node[name])
+    end
+  end
+
+  if #set > 0 then
+    lines[#lines + 1] = table.concat(set, ", ")
+  end
+
+  local font, textSize = draw.font("ui"), size.noteSize
+  local line = lineHeight(font, textSize)
+  local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
+
+  for _, text in ipairs(lines) do
+    boxWidth = math.max(boxWidth, measureText(font, text, textSize))
+  end
+
+  boxWidth = boxWidth + 2 * size.paddingX
+  local x = clamp(state.pointerX + 12, 0, math.max(0, width - boxWidth))
+  local y = state.pointerY + 18
+
+  -- a label that does not fit below the pointer goes above it
+  if y + boxHeight > height then
+    y = math.max(0, state.pointerY - 6 - boxHeight)
+  end
+
+  draw.fill(surface, x, y, boxWidth, boxHeight, "tabRow")
+  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "accent")
+
+  for i, text in ipairs(lines) do
+    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")
+  end
+end
+
 -- a move of the pointer: a drag of a scroll bar, of a field's selection or of a slider goes on; otherwise the element under it is hovered
 local function handlePointerMove(panel, state, x, y)
   local root = state.root
   state.pointerX, state.pointerY = x, y
+
+  -- the inspector names the element under the pointer, which may be another now
+  if inspecting then
+    panel:redraw()
+  end
 
   -- the dragged scroll element may be gone since the press, when the view changed; the drag ends then
   local dragged = state.dragging and findById(root, state.dragging)
@@ -2252,7 +2384,7 @@ local function assignIds(node, path, seen)
   seen[node.id] = true
 
   for i, child in ipairs(node.children or {}) do
-    assignIds(child, path .. "." .. i, seen)
+    assignIds(child, path .. "." .. (child.place or i), seen)
   end
 end
 
@@ -2298,7 +2430,12 @@ function services.show(panel, surface, root)
 
   draw.fill(surface, 0, 0, width, height, "background")
   paint(root, surface, state)
-  paintTooltip(surface, state, width, height)
+
+  if inspecting then
+    paintInspector(surface, state, width, height)
+  else
+    paintTooltip(surface, state, width, height)
+  end
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
@@ -2313,6 +2450,28 @@ end
 ecs.event.subscribe("ecs.settingChanged", function()
   settingsChanged = true
 end)
+
+-- turns the inspector on or off, for every panel that ui shows
+function services.inspect()
+  inspecting = not inspecting
+
+  -- a panel whose plugin did not call ui.forget may be gone
+  for panel in pairs(panels) do
+    pcall(panel.redraw, panel)
+  end
+end
+
+-- the element under the pointer in a panel, as the inspector names it, or nil
+function services.inspected(panel)
+  local node = inspected(panelState(panel))
+
+  if not node then
+    return nil
+  end
+
+  local box = node.layout
+  return { type = node.type, id = node.id, x = box.x, y = box.y, width = box.width, height = box.height }
+end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
@@ -2554,6 +2713,19 @@ assert(ecs.service.register({
         .. "@return The element's id, or nil if no tooltip shows",
     fn = services.tooltip,
   },
+  inspect = {
+    sig = "void()",
+    doc = "Turn the inspector on or off: it outlines every element of every panel that ui shows, and names the one under the pointer "
+        .. "with its type, id, place and size in layout units, and the layout props it has",
+    fn = services.inspect,
+  },
+  inspected = {
+    sig = "value<ui.Inspected?>(handle<ecs.panel> panel)",
+    doc = "Give the element under the pointer in a panel, the innermost one, as the inspector names it\n"
+        .. "@param panel The panel that shows the elements\n"
+        .. "@return The element's type, id, place and size in layout units, or nil if the pointer is over none",
+    fn = services.inspected,
+  },
   edit = {
     sig = "void(handle<ecs.panel> panel, string id)",
     doc = "Give an element the keys\n"
@@ -2574,7 +2746,7 @@ assert(ecs.service.register({
     sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
     doc = "Elements below each other\n"
         .. "@param props The column's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
-        .. "@param children The elements, from the top; none if nil\n"
+        .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
         .. "@return The column",
     fn = elements.column,
   },
@@ -2582,7 +2754,7 @@ assert(ecs.service.register({
     sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
     doc = "Elements beside each other\n"
         .. "@param props The row's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
-        .. "@param children The elements, from the left; none if nil\n"
+        .. "@param children The elements, from the left; one that is false is left out; none if nil\n"
         .. "@return The row",
     fn = elements.row,
   },
@@ -2590,7 +2762,7 @@ assert(ecs.service.register({
     sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)",
     doc = "Elements below each other, which scroll\n"
         .. "@param props The scroll element's properties (ui.ScrollProps), which must have an id; it grows unless grow says otherwise\n"
-        .. "@param children The elements, from the top; none if nil\n"
+        .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
         .. "@return The scroll element",
     fn = elements.scroll,
   },
