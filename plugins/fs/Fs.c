@@ -51,6 +51,7 @@ typedef struct FsWatch
     int descriptor; // inotify's watch, which watches of the same folder share, or -1
     FsChangedFunction Changed;
     bool stopped;     // stopped while changes were being told; freed after them
+    bool gone;        // its folder was removed or can no longer be watched, which it was told once
     char *fullPath;   // the folder's full path, ending with a separator, which is read again where there is no inotify
     FsEntry *entries; // stb_ds array of its entries as they were last read, sorted by name, where there is no inotify
 #ifdef _WIN32
@@ -157,36 +158,52 @@ static SHUResult FsFillEntries(const char *folder, char **names, int count, ECSV
     return SHUResult_Ok;
 }
 
-static void FsList(const char *path, const char *pattern, ECSValue *retEntries)
+/// @brief Gives a call's error: nullptr when it worked, or else SDL's message, or a plain one when SDL has none.
+static const char *FsError(bool worked)
+{
+    const char *message = worked ? nullptr : SDL_GetError();
+    return worked ? nullptr : message[0] != '\0' ? message
+                                                 : "the path is not valid";
+}
+
+static void FsList(const char *path, const char *pattern, ECSValue *retEntries, const char **retError)
 {
     char *fullPath = nullptr;
     int count = 0;
+    SDL_ClearError();
 
     // an empty pattern matches every name; a star stops at a slash, so the list holds the folder's own entries, not those of its folders
     char **names = ECSPath_GetFull(&fullPath, path) ? nullptr : SDL_GlobDirectory(fullPath, pattern[0] == '\0' ? "*" : pattern, 0, &count);
 
+    *retError = FsError(names != nullptr);
+
     if (names == nullptr || FsFillEntries(fullPath, names, count, retEntries) != SHUResult_Ok)
     {
         ECSValue_SetNil(retEntries);
+        *retError = *retError != nullptr ? *retError : "out of memory";
     }
 
     SDL_free(names);
     ECSPath_Free(fullPath);
 }
 
-static bool FsMakeFolder(const char *path)
+static bool FsMakeFolder(const char *path, const char **retError)
 {
     char *fullPath = nullptr;
+    SDL_ClearError();
     bool made = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && SDL_CreateDirectory(fullPath);
+    *retError = FsError(made);
     ECSPath_Free(fullPath);
     return made;
 }
 
-static bool FsCopy(const char *source, const char *destination)
+static bool FsCopy(const char *source, const char *destination, const char **retError)
 {
     char *fullSource = nullptr;
     char *fullDestination = nullptr;
+    SDL_ClearError();
     bool copied = ECSPath_GetFull(&fullSource, source) == SHUResult_Ok && ECSPath_GetFull(&fullDestination, destination) == SHUResult_Ok && SDL_CopyFile(fullSource, fullDestination);
+    *retError = FsError(copied);
     ECSPath_Free(fullSource);
     ECSPath_Free(fullDestination);
     return copied;
@@ -315,6 +332,19 @@ static void FsFreeStoppedWatches(void)
     }
 }
 
+/// @brief Tells a watch that it lost changes ("overflow") or its folder ("gone"), with an empty name, and reports it.
+static void FsTellLost(FsWatch *watch, const char *change, bool gone)
+{
+    if (watch->stopped || watch->gone)
+    {
+        return;
+    }
+
+    watch->gone = gone;
+    ECS_LogWarn(FILESYSTEM.plugin, gone ? "The folder '%s' is gone or can no longer be watched." : "Changes of the folder '%s' were lost; read it again.", watch->folder);
+    watch->Changed(watch->folder, "", change);
+}
+
 #ifdef __linux__
 /// @brief Starts watching a folder with inotify.
 static bool FsStartWatching(FsWatch *watch, const char *fullPath)
@@ -325,8 +355,46 @@ static bool FsStartWatching(FsWatch *watch, const char *fullPath)
     }
 
     // IN_ONLYDIR: a file is not a folder to watch
-    watch->descriptor = FILESYSTEM.inotify < 0 ? -1 : inotify_add_watch(FILESYSTEM.inotify, fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB);
+    watch->descriptor = FILESYSTEM.inotify < 0 ? -1 : inotify_add_watch(FILESYSTEM.inotify, fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
     return watch->descriptor >= 0;
+}
+
+/// @brief Tells the watches what an inotify event says.
+static void FsTellEvent(const struct inotify_event *event)
+{
+    const char *change = nullptr;
+
+    if (event->mask & (IN_CREATE | IN_MOVED_TO))
+    {
+        change = "added";
+    }
+    else if (event->mask & (IN_DELETE | IN_MOVED_FROM))
+    {
+        change = "removed";
+    }
+    else if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
+    {
+        change = "changed";
+    }
+
+    // inotify dropped changes of some watched folder, or the folder of a watch is gone
+    bool overflow = (event->mask & IN_Q_OVERFLOW) != 0;
+    bool gone = (event->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0;
+
+    // the watches may change while they are told, so they are counted again each time
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
+    {
+        FsWatch *watch = FILESYSTEM.watches[i];
+
+        if (overflow || (gone && watch->descriptor == event->wd))
+        {
+            FsTellLost(watch, overflow ? "overflow" : "gone", gone);
+        }
+        else if (change != nullptr && event->len > 0 && !watch->stopped && watch->descriptor == event->wd)
+        {
+            watch->Changed(watch->folder, event->name, change);
+        }
+    }
 }
 
 /// @brief Reads the changes of the watched folders, and tells each watch of its folder's.
@@ -344,21 +412,7 @@ static void FsReadChanges(void *data)
         for (char *cursor = buffer; cursor < buffer + length;)
         {
             const struct inotify_event *event = (const struct inotify_event *)(void *)cursor;
-            const char *change = event->mask & (IN_CREATE | IN_MOVED_TO) ? "added" : event->mask & (IN_DELETE | IN_MOVED_FROM)            ? "removed"
-                                                                                 : event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB) ? "changed"
-                                                                                                                                          : nullptr;
-
-            // the watches may change while they are told, so they are counted again each time
-            for (usz i = 0; change != nullptr && event->len > 0 && i < arrlenu(FILESYSTEM.watches); i++)
-            {
-                FsWatch *watch = FILESYSTEM.watches[i];
-
-                if (!watch->stopped && watch->descriptor == event->wd)
-                {
-                    watch->Changed(watch->folder, event->name, change);
-                }
-            }
-
+            FsTellEvent(event);
             cursor += sizeof(struct inotify_event) + event->len;
         }
     }
@@ -458,16 +512,18 @@ static void FsReadChanges(void *data)
             if (error != ERROR_NOTIFY_ENUM_DIR)
             {
                 watch->reading = false;
-                ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)error);
+                FsTellLost(watch, "gone", true);
                 continue;
             }
+
+            FsTellLost(watch, "overflow", false);
         }
 
         FsTellChanges(watch, length);
 
         if (!watch->stopped && !FsStartRead(watch))
         {
-            ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s' any more: error %lu", watch->folder, (unsigned long)GetLastError());
+            FsTellLost(watch, "gone", true);
         }
     }
 
@@ -578,8 +634,14 @@ static void FsReadChanges(void *data)
         FsWatch *watch = FILESYSTEM.watches[i];
         FsEntry *entries = nullptr;
 
-        if (watch->stopped || !FsReadFolder(watch->fullPath, &entries))
+        if (watch->stopped)
         {
+            continue;
+        }
+
+        if (!FsReadFolder(watch->fullPath, &entries))
+        {
+            FsTellLost(watch, "gone", true);
             continue;
         }
 
@@ -594,13 +656,14 @@ static void FsReadChanges(void *data)
 }
 #endif
 
-static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
+static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const char **retError)
 {
     FsWatch *watch = Changed == nullptr ? nullptr : SDL_calloc(1, sizeof(FsWatch));
+    *retError = nullptr;
 
     if (watch == nullptr)
     {
-        ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s'", folder);
+        *retError = Changed == nullptr ? "changed is missing" : "out of memory";
 
         if (Changed != nullptr)
         {
@@ -621,7 +684,7 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed)
 
     if (!watching)
     {
-        ECS_LogWarn(FILESYSTEM.plugin, "Cannot watch the folder '%s'", folder);
+        *retError = "the folder cannot be watched, or it is a file";
         FsStop(watch);
         return nullptr;
     }
@@ -685,24 +748,29 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Tell what a path is: its type (file, folder or other), size and when it changed; nothing if it does not exist\n"
          "@param path The path; a relative path starts at the executable's folder\n"
          "@param info Its type, \"file\", \"folder\" or \"other\", its size in bytes, and modified, when it last changed, in seconds since 1970; nothing if the path does not exist"},
-        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value<fs.Entry[]?> entries)",
+        {"list", (ECSFunction)FsList, "void(string folder, string pattern, out value<fs.Entry[]?> entries, out string error)",
          "List the entries of a folder whose names match a pattern, such as *.lua, by name; an empty pattern matches every name\n"
          "@param folder The folder's path; a relative path starts at the executable's folder\n"
          "@param pattern The names to list: * stands for any characters but /, and ? for one; empty for every name\n"
-         "@param entries The entries, sorted by name, each with its name and the fields of info; the entries of the folder's folders are not listed; nothing if the folder cannot be read"},
-        {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path)",
+         "@param entries The entries, sorted by name, each with its name and the fields of info; the entries of the folder's folders are not listed; nothing if the folder cannot be read\n"
+         "@param error Why the folder cannot be read, or nothing"},
+        {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path, out string error)",
          "Make a folder, and the folders above it that are missing\n"
          "@param path The folder's path; a relative path starts at the executable's folder\n"
+         "@param error Why it failed, or nothing\n"
          "@return False if it fails"},
-        {"copy", (ECSFunction)FsCopy, "bool(string from, string to)",
+        {"copy", (ECSFunction)FsCopy, "bool(string from, string to, out string error)",
          "Copy a file, replacing what is at the new path\n"
          "@param from The file's path; a relative path starts at the executable's folder\n"
          "@param to The new path; a relative path starts at the executable's folder\n"
+         "@param error Why it failed, or nothing\n"
          "@return False if it fails"},
-        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed)",
+        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed, out string error)",
          "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change\n"
          "@param folder The folder's path; a relative path starts at the executable's folder\n"
-         "@param changed Called on the main thread for each change: its folder is the folder as given, ending with /, its name the entry's name, and its change \"added\", \"removed\" or \"changed\"; not called after the watch stops\n"
+         "@param changed Called on the main thread for each change: its folder is the folder as given, ending with /, its name the entry's name, and its change \"added\", \"removed\" or \"changed\"; with an empty name, \"overflow\" says that changes were lost, so the folder is read "
+         "again, and \"gone\" that the folder was removed or can no longer be watched; not called after the watch stops\n"
+         "@param error Why the folder cannot be watched, or nothing\n"
          "@return The watch, or nothing if the folder cannot be watched, or it is a file"},
         {"unwatch", (ECSFunction)FsUnwatch, "void(handle<fs.watch> watch)",
          "Stop watching a folder now, instead of when no one uses its handle\n"
