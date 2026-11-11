@@ -42,6 +42,13 @@ local function readPlugins()
     if not needed[entry.name] then
       plugins[#plugins + 1] = entry
     end
+
+    -- an enabled plugin keeps the plugins it depends on enabled; each of those shows one that needs it
+    for _, dependency in ipairs(entry.enabled and entry.depends or {}) do
+      if byName[dependency] then
+        byName[dependency].neededBy = byName[dependency].neededBy or entry.name
+      end
+    end
   end
 
   table.sort(plugins, function(a, b)
@@ -67,16 +74,17 @@ end
 
 -- the core makes the change when the current pass of the main loop ends, then emits ecs.pluginsChanged, which refreshes every list
 local function toggle(entry)
-  if entry then
+  if entry and not (entry.enabled and entry.neededBy) then
     (entry.enabled and ecs.plugins.disable or ecs.plugins.enable)(entry.name)
   end
 end
 
 local function stateText(entry)
-  return entry.failed and "failed" or entry.enabled and "enabled" or "disabled"
+  local needed = entry.enabled and entry.neededBy and ", needed by " .. entry.neededBy or ""
+  return (entry.failed and "failed" or entry.enabled and "enabled" or "disabled") .. needed
 end
 
--- the list's elements: the title, then a row for each plugin with its state, version and description; a click, or Return on the chosen one, toggles it
+-- the list's elements: the title, then a row for each plugin with its state, version and description; a click, or Return on the chosen one, toggles it, unless an enabled plugin needs it
 local function view(list)
   local rows = {}
 
@@ -97,7 +105,7 @@ local function view(list)
 
   return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
     ui.text("Plugins", { size = size("titleSize") }),
-    ui.text("Return enables or disables the chosen plugin, with the plugins that need it.", { size = size("noteSize"), color = "textDim" }),
+    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { size = size("noteSize"), color = "textDim" }),
     ui.list({
       id = "list",
       selected = list.selected,

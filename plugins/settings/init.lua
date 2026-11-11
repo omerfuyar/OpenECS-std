@@ -308,6 +308,16 @@ ecs.panel.registerType({
   end,
 })
 
+-- a setting that another plugin or the user's file changes, and the settings of a plugin that is enabled or disabled, show at once
+local function refreshAll()
+  for _, window in pairs(windows) do
+    refresh(window)
+  end
+end
+
+ecs.event.subscribe("ecs.settingChanged", refreshAll)
+ecs.event.subscribe("ecs.pluginsChanged", refreshAll)
+
 local services = {}
 
 -- opens the settings window, or shows the one that is open

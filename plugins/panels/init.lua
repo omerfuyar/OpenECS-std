@@ -145,6 +145,13 @@ ecs.panel.registerType({
   end,
 })
 
+-- the panel types of a plugin that is enabled or disabled show at once
+ecs.event.subscribe("ecs.pluginsChanged", function()
+  for _, list in pairs(lists) do
+    refresh(list)
+  end
+end)
+
 local services = {}
 
 -- opens the panel list, or shows the one that is open; the panel that had the focus is where a chosen type opens

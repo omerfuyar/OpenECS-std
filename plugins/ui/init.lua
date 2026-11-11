@@ -328,27 +328,38 @@ local function layoutSpans(node, textSize, width)
 end
 
 -- images read once for each path and scale, so that they are drawn sharp.
--- The cache starts again when it is full, so that images no longer shown are collected; a shown image stays in its node's layout.
+-- When the cache is full, it drops the images that no show used since the show before the last, so a panel that shows many keeps them all.
+-- A file that could not be read is tried again after a while, so an image that is saved later shows.
 local IMAGES_KEPT = 64
+local IMAGE_RETRY_SECONDS = 2
 local images = {}
 local imageCount = 0
+local showCount = 0 -- grows with each show, of any panel
 
 local function loadImageCached(path, scale)
   local key = path .. "@" .. scale
   local found = images[key]
 
-  if found == nil then
+  if found and not found.picture and os.time() - found.triedAt >= IMAGE_RETRY_SECONDS then
+    images[key], found, imageCount = nil, nil, imageCount - 1
+  end
+
+  if not found then
     if imageCount >= IMAGES_KEPT then
-      images = {}
-      imageCount = 0
+      for kept, entry in pairs(images) do
+        if entry.usedAt < showCount - 1 then
+          images[kept], imageCount = nil, imageCount - 1
+        end
+      end
     end
 
-    found = image.load(path, scale) or false
+    found = { picture = image.load(path, scale), triedAt = os.time() }
     images[key] = found
     imageCount = imageCount + 1
   end
 
-  return found or nil
+  found.usedAt = showCount
+  return found.picture
 end
 
 -- numbers ----------------------------------------------------------------------
@@ -753,7 +764,33 @@ local function measureChildren(node, state, room)
     end
   end
 
-  return along + math.max(0, #node.children - 1) * (node.gap or 0), across
+  local gaps = math.max(0, #node.children - 1) * (node.gap or 0)
+  local rowRoom = horizontal(node) and (node.width or room) and (node.width or room) - 2 * paddingOf(node) - gaps
+
+  -- a row whose children need more than its width shares what the others leave among the children that can be narrower:
+  -- wrapped text, and columns, whose wrapped text breaks then
+  if rowRoom and along > rowRoom then
+    local narrowed, fixed = {}, along
+
+    for _, child in ipairs(node.children) do
+      if not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
+        narrowed[#narrowed + 1] = child
+        fixed = fixed - child.layout.naturalWidth
+      end
+    end
+
+    along, across = fixed, 0
+
+    for _, child in ipairs(narrowed) do
+      along = along + measure(child, state, math.max((rowRoom - fixed) / #narrowed, 1))
+    end
+
+    for _, child in ipairs(node.children) do
+      across = math.max(across, child.layout.naturalHeight)
+    end
+  end
+
+  return along + gaps, across
 end
 
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
@@ -1150,6 +1187,22 @@ local function paintScroll(node, surface, state)
   end
 end
 
+-- the spans of a text that have a link, in their order; Tab stops at each
+local function linkSpans(node)
+  local spans, seen = {}, {}
+
+  for _, spanLine in ipairs(node.layout.spanLines or {}) do
+    for _, run in ipairs(spanLine.runs) do
+      if run.span.link and not seen[run.span] then
+        seen[run.span] = true
+        spans[#spans + 1] = run.span
+      end
+    end
+  end
+
+  return spans
+end
+
 -- draws an element and its children; it reads the interaction state, and changes none of it
 function paint(node, surface, state)
   local box = node.layout
@@ -1169,7 +1222,18 @@ function paint(node, surface, state)
   end
 
   -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline; a list shows it on its chosen item
-  if state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
+  if state.showRing and state.keyTarget == node.id and node.type == "text" and box.spanLines then
+    -- a text shows it on the link that Tab stopped at
+    local span = linkSpans(node)[state.keyLink or 1]
+
+    for i, spanLine in ipairs(box.spanLines) do
+      for _, run in ipairs(spanLine.runs) do
+        if run.span == span then
+          draw.outline(surface, box.x + run.x - 1, box.y + (i - 1) * line - 1, run.width + 2, line + 2, 1, "accent")
+        end
+      end
+    end
+  elseif state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
     draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
   elseif state.showRing and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
     draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
@@ -1257,7 +1321,7 @@ local function interactive(node)
   return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil) or (node.type == "text" and node.onLink ~= nil)
 end
 
--- the link of a text's span at a place, or of its first link without one, as Return on the text takes
+-- the link of a text's span at a place, or of its first link without one
 local function linkAt(node, x, y)
   local box = node.layout
   local lines = box.spanLines or {}
@@ -1441,7 +1505,9 @@ end
 -- does what a click on an element does; x and y are where, for a selector and a text's links, and nil for a key
 local function activate(panel, state, node, x, y)
   if node.type == "text" then
-    local link = linkAt(node, x, y)
+    -- a key gives the link that Tab stopped at
+    local span = not x and linkSpans(node)[state.keyLink or 1]
+    local link = span and span.link or linkAt(node, x, y)
 
     if link then
       call(node.onLink, link)
@@ -1623,9 +1689,10 @@ local function handleTyping(panel, state, event)
   return editField(panel, state, node, event)
 end
 
--- the elements that Tab goes through, in the order of the tree: the interactive ones, and each list once, in place of its items
+-- the elements that Tab goes through, in the order of the tree: the interactive ones, each list once, in place of its items, and each scroll
+-- element with more than it shows, which the keys scroll
 local function tabOrder(node, list)
-  if isList(node) or (interactive(node) and not isListItem(node)) then
+  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node)) then
     list[#list + 1] = node
   end
 
@@ -1657,6 +1724,16 @@ local function moveKeyTarget(panel, state, back)
     index = node.id == state.keyTarget and i or index
   end
 
+  -- a text's links are stops of their own: Tab goes through them before it leaves the text
+  local links = list[index] and list[index].type == "text" and #linkSpans(list[index]) or 0
+  local link = (state.keyLink or 1) + (back and -1 or 1)
+
+  if state.showRing and link >= 1 and link <= links then
+    state.keyLink = link
+    panel:redraw()
+    return true
+  end
+
   if back then
     index = index <= 1 and #list or index - 1
   else
@@ -1666,6 +1743,7 @@ local function moveKeyTarget(panel, state, back)
   local node = list[index]
   stopEditing(panel, state)
   state.keyTarget, state.showRing = node.id, true
+  state.keyLink = (back and node.type == "text") and math.max(#linkSpans(node), 1) or 1
 
   if TAKES_TYPING[node.type] then
     startEditing(panel, state, node)
@@ -1762,6 +1840,32 @@ local function activateItem(list)
   return item ~= nil and (list.onActivate ~= nil or item.onClick ~= nil)
 end
 
+-- scrolls the scroll element that has the keys, or holds the element that has them: the arrows by a line, Page Up and Page Down by a page less a line,
+-- and Home and End to its ends; a list's arrows choose its items instead
+local function scrollWithKey(state, node, key)
+  local function isScroll(candidate)
+    return candidate.type == "scroll"
+  end
+
+  local scroll = node and (isScroll(node) and node or findAround(state.root, node.id, isScroll, nil))
+
+  if not scroll or not overflows(scroll) then
+    return false
+  end
+
+  local line = lineHeight(fontOf(scroll), fontSize())
+  local page = math.max(scroll.layout.height - line, line)
+  local steps = { Up = -line, Down = line, PageUp = -page, PageDown = page, Home = -math.huge, End = math.huge }
+
+  if not steps[key] then
+    return false
+  end
+
+  local farthest = scroll.layout.contentHeight - scroll.layout.height
+  state.scroll[scroll.id] = clamp((state.scroll[scroll.id] or 0) + steps[key], 0, farthest)
+  return true
+end
+
 -- handles a key press when no field is edited: Tab moves the keys, Return or Space activates the element that has them, Left and Right change a
 -- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it, and Escape takes the keys away
 local function handleKeyDown(panel, state, event)
@@ -1780,13 +1884,13 @@ local function handleKeyDown(panel, state, event)
     nudgeSelector(node, event.key == "Right")
   elseif node and node.type == "slider" and leftOrRight then
     nudgeSlider(node, event.key == "Right")
-  elseif node and enter and node.type ~= "selector" and node.type ~= "slider" and not isList(node) then
+  elseif node and enter and node.type ~= "selector" and node.type ~= "slider" and node.type ~= "scroll" then
     activate(panel, state, node, node.type ~= "text" and node.layout.x or nil)
   elseif list and (event.key == "Up" or event.key == "Down") then
     moveSelection(state, list, event.key == "Up" and -1 or 1)
   elseif list and list.tree and leftOrRight then
     expandTreeNode(state, list, event.key == "Right")
-  elseif not (list and isEnter(event) and activateItem(list)) then
+  elseif not (list and isEnter(event) and activateItem(list)) and not scrollWithKey(state, node, event.key) then
     return false
   end
 
@@ -1883,8 +1987,12 @@ local function handlePointerMove(panel, state, x, y)
   local root = state.root
   state.pointerX, state.pointerY = x, y
 
-  if state.dragging then
-    local node = findById(root, state.dragging)
+  -- the dragged scroll element may be gone since the press, when the view changed; the drag ends then
+  local dragged = state.dragging and findById(root, state.dragging)
+  state.dragging = dragged and state.dragging or nil
+
+  if dragged then
+    local node = dragged
     local _, length = thumb(node)
     local travel = node.layout.height - length
 
@@ -1967,7 +2075,7 @@ local function handlePointerDown(panel, state, event, x, y)
   end
 
   -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item gives the keys to its list
-  local target = (node and not isListItem(node)) and node or item and item.list or node
+  local target = (node and not isListItem(node)) and node or item and item.list or node or scroll
   state.pressed = node
   state.keyTarget, state.showRing = target and target.id, false
 
@@ -2062,11 +2170,21 @@ end
 local services = {}
 
 -- ids that elements leave out come from their places, so they stay the same from one draw to the next
-local function assignIds(node, path)
+local reportedIds = {} -- the ids that were reported as used twice, so each is reported once
+
+-- gives each element without an id one from its place in the tree. An id that two elements have is reported: clicks and keys would reach only the first.
+local function assignIds(node, path, seen)
   node.id = node.id or path
 
+  if seen[node.id] and not reportedIds[node.id] then
+    reportedIds[node.id] = true
+    ecs.log.warn("Two elements of a panel have the id '" .. node.id .. "'. Give each its own id.")
+  end
+
+  seen[node.id] = true
+
   for i, child in ipairs(node.children or {}) do
-    assignIds(child, path .. "." .. i)
+    assignIds(child, path .. "." .. i, seen)
   end
 end
 
@@ -2089,7 +2207,8 @@ function services.show(panel, surface, root)
   textScale = surface.scale
   fonts = {}
   readSizes()
-  assignIds(root, "root")
+  showCount = showCount + 1
+  assignIds(root, "root", {})
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
   keepScrollOffsets(root, state)
