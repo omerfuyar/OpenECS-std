@@ -1187,6 +1187,22 @@ local function paintScroll(node, surface, state)
   end
 end
 
+-- the spans of a text that have a link, in their order; Tab stops at each
+local function linkSpans(node)
+  local spans, seen = {}, {}
+
+  for _, spanLine in ipairs(node.layout.spanLines or {}) do
+    for _, run in ipairs(spanLine.runs) do
+      if run.span.link and not seen[run.span] then
+        seen[run.span] = true
+        spans[#spans + 1] = run.span
+      end
+    end
+  end
+
+  return spans
+end
+
 -- draws an element and its children; it reads the interaction state, and changes none of it
 function paint(node, surface, state)
   local box = node.layout
@@ -1303,22 +1319,6 @@ end
 -- the elements that take the pointer: buttons, fields and the like, and containers with onClick
 local function interactive(node)
   return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil) or (node.type == "text" and node.onLink ~= nil)
-end
-
--- the spans of a text that have a link, in their order; Tab stops at each
-local function linkSpans(node)
-  local spans, seen = {}, {}
-
-  for _, spanLine in ipairs(node.layout.spanLines or {}) do
-    for _, run in ipairs(spanLine.runs) do
-      if run.span.link and not seen[run.span] then
-        seen[run.span] = true
-        spans[#spans + 1] = run.span
-      end
-    end
-  end
-
-  return spans
 end
 
 -- the link of a text's span at a place, or of its first link without one
