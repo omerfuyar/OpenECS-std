@@ -518,7 +518,7 @@ end
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
 -- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
-function elements.tree(props, nodes)
+function elements.tree(nodes, props)
   props = props or {}
   assert(props.id, "a tree needs an id, which keeps its offset")
   local open, rows = props.open or {}, {}
@@ -583,7 +583,7 @@ end
 -- a column is { id, title, width }, and a row is a table of the cells' values by column id; a column is as wide as its widest cell unless it gives a width;
 -- selected is the chosen row's number, onSelect and onActivate get a row's number, and a click on a title gives the column's id to onSort;
 -- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
-function elements.table(props, columns, rows)
+function elements.table(columns, rows, props)
   props = props or {}
   assert(props.id, "a table needs an id, which keeps its offset")
   columns, rows = columns or {}, rows or {}
@@ -2641,10 +2641,10 @@ local function build(panel, description)
   elseif takes == "choices" then
     return make(description.selected, description.choices, props)
   elseif takes == "table" then
-    return make(props, description.columns, description.rows)
+    return make(description.columns, description.rows, props)
   elseif takes == "tree" then
     props.open, props.selected = description.open, description.selected
-    return make(props, description.nodes)
+    return make(description.nodes, props)
   elseif takes == "none" then
     return make(props)
   end
@@ -2783,19 +2783,19 @@ assert(ecs.service.register({
     fn = elements.group,
   },
   table = {
-    sig = "value<ui.Element>(value<ui.TableProps?> props, value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows)",
+    sig = "value<ui.Element>(value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows, value<ui.TableProps?> props)",
     doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort\n"
-        .. "@param props The table's properties (ui.TableProps), which must have an id\n"
         .. "@param columns The columns, from the left (ui.TableColumn); none if nil\n"
         .. "@param rows The rows, from the top, in the order given, each a table of its cells' values by column id; none if nil\n"
+        .. "@param props The table's properties (ui.TableProps), which must have an id\n"
         .. "@return The table",
     fn = elements.table,
   },
   tree = {
-    sig = "value<ui.Element>(value<ui.TreeProps?> props, value<ui.TreeNode[]?> nodes)",
+    sig = "value<ui.Element>(value<ui.TreeNode[]?> nodes, value<ui.TreeProps?> props)",
     doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id\n"
-        .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
         .. "@param nodes The top nodes, each with its children (ui.TreeNode); none if nil\n"
+        .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
         .. "@return The tree",
     fn = elements.tree,
   },
