@@ -62,19 +62,30 @@ local function panelState(panel)
   return state
 end
 
-local function fontSize()
-  return ecs.setting.get("ecs.fontSize") or 14
-end
-
--- the fonts of the current show, by name; draw keeps the fonts themselves
+-- what ui keeps until a setting changes: the font size, the fonts by name, and what texts measure; draw keeps the fonts themselves
+local textSizeSetting
 local fonts = {}
+local measured, measuredCount = {}, 0
+local MEASURED_MOST = 8192
+local settingsChanged = true
+
+local function fontSize()
+  textSizeSetting = textSizeSetting or ecs.setting.get("ecs.fontSize") or 14
+  return textSizeSetting
+end
 
 local function fontOf(node)
   local name = node.font or "ui"
   local font = fonts[name]
 
   if font == nil then
-    font = draw.font(name) or draw.font("ui")
+    font = draw.font(name)
+
+    -- a name that no font has yet is asked again, since a plugin may add the font later
+    if font == nil then
+      return fontOf({ font = name ~= "ui" and "ui" or nil })
+    end
+
     fonts[name] = font
   end
 
@@ -85,13 +96,47 @@ end
 local textScale = 1
 
 -- the width of a text alone; draw.measure gives the line height too, which a call such as math.max(...) would take as well
+-- a text's width and line height at a font, size and scale, kept, since each show measures the same texts again
+local function measureKept(font, text, textSize)
+  local bySize = measured[font]
+
+  if bySize == nil then
+    bySize = {}
+    measured[font] = bySize
+  end
+
+  local key = textSize * 1024 + textScale
+  local byText = bySize[key]
+
+  if byText == nil then
+    byText = {}
+    bySize[key] = byText
+  end
+
+  local kept = byText[text]
+
+  if kept == nil then
+    -- texts that change all the time, such as a clock's, would fill the memory
+    if measuredCount >= MEASURED_MOST then
+      measured, measuredCount = {}, 0
+      return measureKept(font, text, textSize)
+    end
+
+    kept = { draw.measure(font, text, textSize, textScale) }
+    byText[text] = kept
+    measuredCount = measuredCount + 1
+  end
+
+  return kept[1], kept[2]
+end
+
 local function measureText(font, text, textSize)
-  local width = draw.measure(font, text, textSize, textScale)
+  local width = measureKept(font, text, textSize)
   return width
 end
 
 local function lineHeight(font, textSize)
-  local _, line = draw.measure(font, "Ag", textSize, textScale)
+  local _, line = measureKept(font, "Ag", textSize)
   return line
 end
 
@@ -2228,8 +2273,14 @@ function services.show(panel, surface, root)
   local width, height = surface.width / surface.scale, surface.height / surface.scale
   state.scale = surface.scale
   textScale = surface.scale
-  fonts = {}
-  readSizes()
+
+  if settingsChanged then
+    settingsChanged = false
+    fonts, measured, measuredCount = {}, {}, 0
+    textSizeSetting = nil
+    readSizes()
+  end
+
   showCount = showCount + 1
   assignIds(root, "root", {})
   measure(root, state, width)
@@ -2257,6 +2308,11 @@ function services.show(panel, surface, root)
     panel:setTextInput(true, rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale)
   end
 end
+
+-- a setting may change a size or a font, so the next show reads them again
+ecs.event.subscribe("ecs.settingChanged", function()
+  settingsChanged = true
+end)
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
@@ -2349,9 +2405,24 @@ local TAKES = {
   table = "table", tree = "tree", separator = "none", space = "none",
 }
 
+-- the props a description may have: those of ui.Props and of each element's, without the callbacks, and what asks for one
+local DESCRIBED = {}
+
+for name in ("id width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+  .. "sort ascending vertical wrap label look min max step valid clickable onActivate onSort"):gmatch("%S+") do
+  DESCRIBED[name] = true
+end
+
 -- an element from a description, built with the element functions, as Lua code builds it
 local function build(panel, description)
   local props = shallowCopy(description.props)
+
+  -- a prop ui does not know is a mistake of the code that describes, such as a name that ui.h and ui no longer share
+  for name in pairs(props) do
+    if not DESCRIBED[name] then
+      error(("a described '%s' has the prop '%s', which ui does not know"):format(tostring(description.type), tostring(name)))
+    end
+  end
 
   -- a column or row with clickable = true is clicked like a button
   local elementType = description.type
