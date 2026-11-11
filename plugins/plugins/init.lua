@@ -189,6 +189,6 @@ function services.open()
   end
 end
 
-assert(ecs.service.register({
+ecs.service.register({
   open = { sig = "void()", doc = "Enable or disable plugins", fn = services.open },
-}))
+})

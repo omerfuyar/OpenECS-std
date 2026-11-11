@@ -30,7 +30,7 @@ local function readSizes()
 end
 
 for _, entry in ipairs(SIZES) do
-  assert(ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] }))
+  ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] })
 end
 
 readSizes()
@@ -2668,7 +2668,7 @@ function services.take(panel, id, callback)
   return got
 end
 
-assert(ecs.service.register({
+ecs.service.register({
   show = {
     sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)",
     doc = "Lay out elements in a panel and draw them\n"
@@ -2921,4 +2921,4 @@ assert(ecs.service.register({
         .. "@return What the callback got, as value and, for onToggle, open; nil if it did not run or was taken already",
     fn = services.take,
   },
-}))
+})
