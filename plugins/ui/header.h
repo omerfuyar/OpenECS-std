@@ -3,9 +3,9 @@
 //
 //     UI_SHOW(&ui, panel, surface)
 //     {
-//         UI_COLUMN(.padding = 24, .gap = 12)
+//         UI_COLUMN(.style = "view")
 //         {
-//             UI_TEXT("Hello");
+//             UI_TEXT("Hello", .style = "title");
 //
 //             if (UI_BUTTON("Click me"))
 //             {
@@ -46,6 +46,7 @@ typedef enum UiFlag
 typedef struct UiProps
 {
     const char *id;              // names the element; an element whose macro takes what it got needs one, and a button's label is its id if it has none
+    const char *style;           // the style whose look it takes, such as "note"; its own props win
     f64 width;                   // a fixed width, in layout units
     f64 height;                  // a fixed height, in layout units
     f64 grow;                    // a share of the room left along the parent's direction; UI_FIXED for none
@@ -203,6 +204,7 @@ static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
     }
 
     Ui_SetString(table, "id", props->id);
+    Ui_SetString(table, "style", props->style);
     Ui_SetString(table, "align", props->align);
     Ui_SetString(table, "background", props->background);
     Ui_SetString(table, "hoverBackground", props->hoverBackground);
@@ -298,6 +300,26 @@ static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
 {
     *retUi = (Ui){.plugin = plugin};
     return UiFunctions_Get(plugin, &retUi->functions);
+}
+
+/// @brief Defines a style with ui.style, from the look props of a UiProps; .style names the style it builds on.
+/// @return The name, which a variable keeps for .style, or nullptr if memory ran out or the style is a misuse.
+static inline const char *Ui_Style(Ui *ui, const char *name, const UiProps *props)
+{
+    ECSValue *description = nullptr;
+
+    if (ECSValue_Create(&description) != SHUResult_Ok)
+    {
+        return nullptr;
+    }
+
+    ECSValue_SetTable(description);
+    Ui_SetProps(description, props);
+    const ECSValue *look = ECSValue_GetTableField(description, "props");
+    bool defined = look != nullptr && ui->functions.style(name, look) != nullptr;
+    ECSValue_Destroy(&description);
+    // the name the plugin gave outlives the one ui gives back, so a variable can hold it
+    return defined ? name : nullptr;
 }
 
 /// @brief Starts describing a panel's elements.
@@ -709,6 +731,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_LIST(selected, ...) for (int UI__LATCH = (Ui_OpenList((selected), &(UiProps){__VA_ARGS__}), 0); UI__LATCH < 1; UI__LATCH++, Ui_Close())
 
 /// @brief Elements without children. Those that take a pointer write what the user changed into it, and give whether it changed.
+#define UI_STYLE(ui, name, ...) Ui_Style((ui), (name), &(UiProps){__VA_ARGS__})
 #define UI_TEXT(text, ...) Ui_Text((text), &(UiProps){__VA_ARGS__})
 #define UI_SPANS(spans, count, ...) Ui_Spans((spans), (count), &(UiProps){__VA_ARGS__})
 #define UI_BUTTON(label, ...) Ui_Button((label), &(UiProps){__VA_ARGS__})

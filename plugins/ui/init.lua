@@ -15,10 +15,6 @@ local SIZES = {
   { "scrollbarWidth", 8,  "Width of a scroll bar" },
   { "thumbMin",       24, "Shortest length of a scroll bar's thumb" },
   { "wheelStep",      48, "Distance a wheel step scrolls" },
-  { "margin",         24, "Room around a view of a first-party plugin, such as the launcher" },
-  { "rowPadding",     8,  "Room around a row of a list" },
-  { "titleSize",      22, "Font size of a view's title" },
-  { "noteSize",       13, "Font size of notes and headings" },
 }
 
 local size = {}
@@ -34,6 +30,28 @@ for _, entry in ipairs(SIZES) do
 end
 
 readSizes()
+
+-- the props of an element's look, which a style gives (DESIGN 5)
+local LOOK = {}
+
+for name in ("width height grow stretch padding gap align background hoverBackground border color size font"):gmatch("%S+") do
+  LOOK[name] = true
+end
+
+-- the styles by name: ui's own, which every plugin shares so views look alike, and those that plugins define, whose names have a dot
+local styles = {
+  view = { padding = 24, gap = 12, background = "background" },
+  item = { padding = 8, gap = 12 },
+  title = { size = 22 },
+  heading = { size = 13, color = "accent" },
+  note = { size = 13, color = "textDim" },
+}
+
+local OWN_STYLES = {}
+
+for name in pairs(styles) do
+  OWN_STYLES[name] = true
+end
 
 -- the colour of a field whose text is not valid
 local INVALID_COLOR = "#E0505A"
@@ -424,7 +442,7 @@ end
 -- every prop an element may have; one that is not here is a mistake, such as onchange for onChange
 local PROPS = {}
 
-for name in ("id width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
   PROPS[name] = true
@@ -435,6 +453,18 @@ local function element(elementType, props, children)
 
   for name in pairs(node) do
     ecs.check(PROPS[name], ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
+  end
+
+  -- the element's own props win over its style's
+  if node.style ~= nil then
+    local style = styles[node.style]
+    ecs.check(style, ("There is no style '%s'."):format(tostring(node.style)))
+
+    for name, value in pairs(style) do
+      if node[name] == nil then
+        node[name] = value
+      end
+    end
   end
 
   node.type = elementType
@@ -636,12 +666,12 @@ end
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
-  node.padding = node.padding or size.rowPadding
-  node.gap = node.gap or size.rowPadding / 2
+  node.padding = node.padding or styles.item.padding
+  node.gap = node.gap or styles.item.padding / 2
   node.border = node.border or "tabShown"
 
   if node.title then
-    node.children[1] = elements.text(node.title, { size = size.noteSize, color = "textDim" })
+    node.children[1] = elements.text(node.title, { style = "note" })
   end
 
   for _, child in ipairs(children or {}) do
@@ -2053,7 +2083,7 @@ local function paintTooltip(surface, state, width, height)
     return
   end
 
-  local font, textSize = draw.font("ui"), size.noteSize
+  local font, textSize = draw.font("ui"), styles.note.size
   local line = lineHeight(font, textSize)
   local lines = wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX))
   local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
@@ -2147,7 +2177,7 @@ local function paintInspector(surface, state, width, height)
     lines[#lines + 1] = table.concat(set, ", ")
   end
 
-  local font, textSize = draw.font("ui"), size.noteSize
+  local font, textSize = draw.font("ui"), styles.note.size
   local line = lineHeight(font, textSize)
   local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
 
@@ -2442,6 +2472,30 @@ ecs.event.subscribe("ecs.settingChanged", function()
 end)
 
 -- turns the inspector on or off, for every panel that ui shows
+-- defines a style; a plugin that is enabled again defines its styles again, so a name with a dot takes its new props
+function services.style(name, props)
+  ecs.check(type(name) == "string" and not OWN_STYLES[name] and name:find(".", 1, true),
+    ("A style's name has a dot, as 'tool.card', and is not one of ui's own: '%s'."):format(tostring(name)))
+  ecs.check(type(props) == "table", "A style needs its props.")
+  local style = {}
+
+  -- a style that names another builds on it, and its own props win
+  if props.style ~= nil then
+    ecs.check(styles[props.style], ("There is no style '%s'."):format(tostring(props.style)))
+    style = shallowCopy(styles[props.style])
+  end
+
+  for prop, value in pairs(props) do
+    if prop ~= "style" then
+      ecs.check(LOOK[prop], ("A style gives only an element's look, not '%s'."):format(tostring(prop)))
+      style[prop] = value
+    end
+  end
+
+  styles[name] = style
+  return name
+end
+
 function services.inspect()
   inspecting = not inspecting
 
@@ -2557,7 +2611,7 @@ local TAKES = {
 -- the props a description may have: those of ui.Props and of each element's, without the callbacks, and what asks for one
 local DESCRIBED = {}
 
-for name in ("id width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
@@ -2700,6 +2754,14 @@ ecs.service.register({
         .. "@param panel The panel that shows the element\n"
         .. "@return The element's id, or nil if no tooltip shows",
     fn = services.tooltip,
+  },
+  style = {
+    sig = "string(string name, value<ui.Style> props)",
+    doc = "Define a style: a look that elements take with their style prop, and that their own props override\n"
+        .. "@param name The style's name, with a dot, as \"tool.card\"; a name defined again takes the new props\n"
+        .. "@param props The look: size, colour, font, room and background props of an element, and the style it builds on\n"
+        .. "@return The name, so a variable holds the style",
+    fn = services.style,
   },
   inspect = {
     sig = "void()",

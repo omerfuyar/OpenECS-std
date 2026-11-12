@@ -5,11 +5,6 @@ local ecs = require("ecs")
 
 local ui = require("ui")
 
--- a size of the ui plugin's settings, in layout units, which every first-party view shares
-local function size(name)
-  return ecs.setting.get("ui." .. name)
-end
-
 -- version of a list's saved state: the panel type that was chosen
 local STATE_VERSION = 1
 
@@ -69,15 +64,15 @@ local function view(list)
   for _, entry in ipairs(list.types) do
     if entry.plugin ~= plugin then
       plugin = entry.plugin
-      rows[#rows + 1] = ui.column({ padding = size("rowPadding") / 2, selectable = false }, {
-        ui.text(plugin, { size = size("noteSize") }),
-        entry.description ~= "" and ui.text(entry.description, { size = size("noteSize"), color = "textDim" }) or ui.space({ height = 0 }),
+      rows[#rows + 1] = ui.column({ style = "item", padding = 4, selectable = false }, {
+        ui.text(plugin, { style = "note", color = "text" }),
+        entry.description ~= "" and ui.text(entry.description, { style = "note" }) or ui.space({ height = 0 }),
       })
     end
 
-    rows[#rows + 1] = ui.row({ padding = size("rowPadding"), gap = size("margin") / 2 }, {
+    rows[#rows + 1] = ui.row({ style = "item" }, {
       ui.text(entry.title),
-      ui.text(entry.name, { size = size("noteSize"), color = "textDim" }),
+      ui.text(entry.name, { style = "note" }),
     })
   end
 
@@ -85,8 +80,8 @@ local function view(list)
     rows[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
-    ui.text("Open a panel", { size = size("titleSize") }),
+  return ui.column({ style = "view" }, {
+    ui.text("Open a panel", { style = "title" }),
     ui.list({
       id = "list",
       selected = list.selected,
