@@ -358,7 +358,7 @@ static u8 *SyntaxKinds(SyntaxLanguage *language, const char *text, usz length, c
 
     if (cursor == nullptr)
     {
-        *retError = "the text cannot be parsed";
+        ECS_Fail(SYNTAX.plugin, retError, "the text cannot be parsed");
         ts_tree_delete(tree);
         SDL_free(kinds);
         return nullptr;
@@ -446,7 +446,7 @@ static void SyntaxHighlight(const char *name, SHUSlice text, ECSValue *retRanges
 
     if (!written)
     {
-        *retError = "out of memory";
+        ECS_Fail(SYNTAX.plugin, retError, "out of memory");
         ECSValue_SetNil(retRanges);
     }
 
@@ -508,7 +508,7 @@ static void SyntaxSpans(const char *name, SHUSlice text, ECSValue *retLines, con
 
     if (!written)
     {
-        *retError = "out of memory";
+        ECS_Fail(SYNTAX.plugin, retError, "out of memory");
         ECSValue_SetNil(retLines);
     }
 

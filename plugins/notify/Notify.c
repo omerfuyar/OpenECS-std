@@ -34,21 +34,14 @@ typedef struct NotifyAction
 static struct
 {
     ECSPlugin plugin;
-    char *error; // why the last call failed, kept until the next one
 } NOTIFY = {0};
 
-/// @brief Keeps why a call failed, with SDL's error, and gives it.
+/// @brief Fails a call, as ECS_Fail does, with SDL's error, and gives why.
 static const char *NotifyFail(const char *what)
 {
-    SDL_free(NOTIFY.error);
-    NOTIFY.error = nullptr;
-
-    if (SDL_asprintf(&NOTIFY.error, "%s: %s", what, SDL_GetError()) < 0)
-    {
-        NOTIFY.error = nullptr;
-    }
-
-    return NOTIFY.error == nullptr ? "out of memory" : NOTIFY.error;
+    const char *error = nullptr;
+    ECS_Fail(NOTIFY.plugin, &error, "%s: %s", what, SDL_GetError());
+    return error;
 }
 
 /// @brief Sets a field of a table to a text; false if there is no memory.
@@ -213,9 +206,8 @@ static i64 NotifySend(const ECSValue *notification, const char **retError)
     *retError = nullptr;
     const char *title = ECSValue_GetString(ECSValue_GetTableField(notification, "title"), nullptr);
 
-    if (title == nullptr)
+    if (!ECS_Check(NOTIFY.plugin, title != nullptr, "A notification needs a title."))
     {
-        *retError = "a notification needs a title";
         return 0;
     }
 
@@ -384,7 +376,7 @@ static NotifyTray *NotifyNewTray(const ECSValue *desc, const char **retError)
     {
         SDL_free(tray);
         SDL_DestroySurface(icon);
-        *retError = "out of memory";
+        ECS_Fail(NOTIFY.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -421,9 +413,17 @@ static NotifyTray *NotifyNewTray(const ECSValue *desc, const char **retError)
     return tray;
 }
 
-static bool NotifyTraySetEntries(NotifyTray *tray, const ECSValue *entries)
+static bool NotifyTraySetEntries(NotifyTray *tray, const ECSValue *entries, const char **retError)
 {
-    return NotifySetEntries(tray, entries);
+    *retError = nullptr;
+
+    if (!NotifySetEntries(tray, entries))
+    {
+        *retError = NotifyFail("the tray's menu cannot be made");
+        return false;
+    }
+
+    return true;
 }
 
 static void NotifyTraySetTooltip(NotifyTray *tray, const char *tooltip)
@@ -431,12 +431,12 @@ static void NotifyTraySetTooltip(NotifyTray *tray, const char *tooltip)
     SDL_SetTrayTooltip(tray->tray, tooltip);
 }
 
-static bool NotifyTraySetIcon(NotifyTray *tray, const char *path)
+static bool NotifyTraySetIcon(NotifyTray *tray, const char *path, const char **retError)
 {
-    const char *problem = nullptr;
-    SDL_Surface *icon = NotifyLoadImage(path, &problem);
+    *retError = nullptr;
+    SDL_Surface *icon = NotifyLoadImage(path, retError);
 
-    if (problem != nullptr)
+    if (*retError != nullptr)
     {
         return false;
     }
@@ -452,7 +452,6 @@ static void NotifyFree(void *data)
 {
     (void)data;
     SDL_RemoveEventWatch(NotifyWatch, nullptr);
-    SDL_free(NOTIFY.error);
     SDL_zero(NOTIFY);
 }
 
@@ -480,20 +479,22 @@ static SHUResult NotifyRegister(ECSPlugin plugin)
          "@param tray Its name, which its events carry, and optionally its icon, tooltip and menu entries\n"
          "@param error Why it cannot be shown; nothing if it was\n"
          "@return The tray icon; nothing if it cannot be shown, such as on a desktop without a tray"},
-        {"traySetEntries", (ECSFunction)NotifyTraySetEntries, "bool(handle<notify.tray> tray, value<notify.TrayEntry[]> entries)",
+        {"traySetEntries", (ECSFunction)NotifyTraySetEntries, "bool(handle<notify.tray> tray, value<notify.TrayEntry[]> entries, out string error)",
          "Replace the tray icon's menu\n"
          "@param tray The tray icon\n"
          "@param entries The entries\n"
-         "@return false if the menu cannot be made"},
+         "@param error Why the menu cannot be made; nothing if it is\n"
+         "@return True if the menu is made"},
         {"traySetTooltip", (ECSFunction)NotifyTraySetTooltip, "void(handle<notify.tray> tray, string tooltip)",
          "Change the text shown over the tray icon\n"
          "@param tray The tray icon\n"
          "@param tooltip The text"},
-        {"traySetIcon", (ECSFunction)NotifyTraySetIcon, "bool(handle<notify.tray> tray, string icon)",
+        {"traySetIcon", (ECSFunction)NotifyTraySetIcon, "bool(handle<notify.tray> tray, string icon, out string error)",
          "Change the tray icon's picture\n"
          "@param tray The tray icon\n"
          "@param icon An image file, such as a PNG, from the executable's folder unless absolute\n"
-         "@return false if the image cannot be read"},
+         "@param error Why the image cannot be read; nothing if it is\n"
+         "@return True if the picture is changed"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

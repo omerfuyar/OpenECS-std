@@ -59,6 +59,7 @@ typedef struct NetConnection
     u16 port;
     NET_StreamSocket *socket; // nullptr until the name resolves, and after it closes
     bool failed;
+    char error[128];              // why it failed, or empty
     u8 *received;                 // what receive gave last, kept until the next receive
     mbedtls_ssl_context *tls;     // a TLS connection's state, or nullptr for plain TCP
     bool secured;                 // the TLS handshake is done
@@ -110,6 +111,29 @@ static struct
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context random;
 } NET = {0};
+
+/// @brief Marks a connection failed, and keeps why, unless it failed before.
+static void NetFailConnection(NetConnection *connection, SDL_PRINTF_FORMAT_STRING const char *format, ...) SDL_PRINTF_VARARG_FUNC(2);
+
+static void NetFailConnection(NetConnection *connection, const char *format, ...)
+{
+    if (connection->failed)
+    {
+        return;
+    }
+
+    connection->failed = true;
+    va_list arguments;
+    va_start(arguments, format);
+    (void)SDL_vsnprintf(connection->error, sizeof(connection->error), format, arguments);
+    va_end(arguments);
+}
+
+/// @brief Checks that a port is one a connection or socket can use: from 0 to 65535, or from 1 when it is a host's.
+static bool NetCheckPort(i32 port, i32 lowest)
+{
+    return ECS_Check(NET.plugin, port >= lowest && port <= 65535, "The port %d is not from %d to 65535.", (int)port, (int)lowest);
+}
 
 #pragma region TLS
 
@@ -177,7 +201,8 @@ static void NetTlsStop(void)
 }
 
 /// @brief Makes what TLS connections share, once: the random generator, the trusted certificates and the configuration of a client.
-static bool NetTlsStart(void)
+/// @return false if TLS cannot start, with why in retError.
+static bool NetTlsStart(const char **retError)
 {
     if (NET.tlsStarted)
     {
@@ -208,7 +233,7 @@ static bool NetTlsStart(void)
         mbedtls_ssl_config_defaults(&NET.tlsConfig, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
     {
         // a later connection tries again from the start
-        ECS_LogError(NET.plugin, "Cannot start TLS");
+        ECS_Fail(NET.plugin, retError, "TLS cannot start");
         NetTlsStop();
         return false;
     }
@@ -220,17 +245,30 @@ static bool NetTlsStart(void)
 }
 
 /// @brief Adds the certificates of a PEM file to the trusted ones, which later TLS connections check servers with.
-static bool NetTrust(const char *path)
+static bool NetTrust(const char *path, const char **retError)
 {
     char *fullPath = nullptr;
+    *retError = nullptr;
+
+    if (ECSPath_GetFull(&fullPath, path) != SHUResult_Ok)
+    {
+        ECS_Fail(NET.plugin, retError, "out of memory");
+        return false;
+    }
+
+    if (!NetTlsStart(retError))
+    {
+        ECSPath_Free(fullPath);
+        return false;
+    }
 
     // as with the system's file, the certificates that parse are trusted, and those that do not are reported
-    int failed = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && NetTlsStart() ? mbedtls_x509_crt_parse_file(&NET.certificates, fullPath) : -1;
+    int failed = mbedtls_x509_crt_parse_file(&NET.certificates, fullPath);
     bool trusted = failed >= 0;
 
     if (!trusted)
     {
-        ECS_LogWarn(NET.plugin, "Cannot read the certificates of '%s'", fullPath != nullptr ? fullPath : path);
+        ECS_Fail(NET.plugin, retError, "The certificates of '%s' cannot be read.", fullPath);
     }
     else if (failed > 0)
     {
@@ -269,7 +307,12 @@ static bool NetAddTls(NetConnection *connection, const mbedtls_ssl_config *confi
     }
 
     mbedtls_ssl_init(connection->tls);
-    connection->failed = connection->failed || mbedtls_ssl_setup(connection->tls, config) != 0;
+
+    if (mbedtls_ssl_setup(connection->tls, config) != 0)
+    {
+        NetFailConnection(connection, "TLS cannot start");
+    }
+
     mbedtls_ssl_set_bio(connection->tls, connection, NetTlsSend, NetTlsReceive, nullptr);
     return true;
 }
@@ -292,8 +335,7 @@ static void NetTlsHandshake(NetConnection *connection)
     {
         char message[128];
         mbedtls_strerror(result, message, sizeof(message));
-        ECS_LogWarn(NET.plugin, "The TLS handshake failed: %s", message);
-        connection->failed = true;
+        NetFailConnection(connection, "The TLS handshake failed: %s", message);
     }
 }
 
@@ -336,26 +378,47 @@ static void NetAdvance(NetConnection *connection)
     if (status == NET_SUCCESS)
     {
         connection->socket = NET_CreateClient(connection->address, connection->port, 0);
-        connection->failed = connection->socket == nullptr;
+
+        if (connection->socket == nullptr)
+        {
+            NetFailConnection(connection, "Cannot connect: %s", SDL_GetError());
+        }
     }
     else if (status == NET_FAILURE)
     {
-        connection->failed = true;
+        NetFailConnection(connection, "The host's name cannot be resolved: %s", SDL_GetError());
     }
 }
 
-static void *NetConnect(const char *host, i32 port)
-{
-    NetConnection *connection = SDL_calloc(1, sizeof(NetConnection));
+static void NetConnectionDestroy(void *object);
 
-    if (connection == nullptr)
+static void *NetConnect(const char *host, i32 port, const char **retError)
+{
+    *retError = nullptr;
+
+    if (!NetCheckPort(port, 1))
     {
         return nullptr;
     }
 
-    connection->port = (u16)SDL_clamp(port, 0, 65535);
+    NetConnection *connection = SDL_calloc(1, sizeof(NetConnection));
+
+    if (connection == nullptr)
+    {
+        ECS_Fail(NET.plugin, retError, "out of memory");
+        return nullptr;
+    }
+
+    connection->port = (u16)port;
     connection->address = NET_ResolveHostname(host);
-    connection->failed = connection->address == nullptr;
+
+    if (connection->address == nullptr)
+    {
+        ECS_Fail(NET.plugin, retError, "The host's name cannot start to resolve: %s", SDL_GetError());
+        NetConnectionDestroy(connection);
+        return nullptr;
+    }
+
     return connection;
 }
 
@@ -382,9 +445,10 @@ static void NetConnectionDestroy(void *object)
 }
 
 // a TLS connection checks the server's certificate against the name it was asked for
-static void *NetConnectTls(const char *host, i32 port)
+static void *NetConnectTls(const char *host, i32 port, const char **retError)
 {
-    NetConnection *connection = NetTlsStart() ? NetConnect(host, port) : nullptr;
+    *retError = nullptr;
+    NetConnection *connection = NetCheckPort(port, 1) && NetTlsStart(retError) ? NetConnect(host, port, retError) : nullptr;
 
     if (connection == nullptr)
     {
@@ -393,11 +457,16 @@ static void *NetConnectTls(const char *host, i32 port)
 
     if (!NetAddTls(connection, &NET.tlsConfig))
     {
+        ECS_Fail(NET.plugin, retError, "out of memory");
         NetConnectionDestroy(connection);
         return nullptr;
     }
 
-    connection->failed = connection->failed || mbedtls_ssl_set_hostname(connection->tls, host) != 0;
+    if (mbedtls_ssl_set_hostname(connection->tls, host) != 0)
+    {
+        NetFailConnection(connection, "The host's name is not one TLS can check.");
+    }
+
     return connection;
 }
 
@@ -425,30 +494,68 @@ static i32 NetStatus(void *connectionHandle)
     case NET_WAITING:
         return NetState_Waiting;
     default:
+        NetFailConnection(connection, "Cannot connect: %s", SDL_GetError());
         return NetState_Failed;
     }
 }
 
-static bool NetSend(void *connectionHandle, SHUSlice data)
+static const char *NetError(void *connectionHandle)
 {
     NetConnection *connection = connectionHandle;
 
     NetAdvance(connection);
+    return connection->error;
+}
 
-    if (connection->tls == nullptr)
+static bool NetSend(void *connectionHandle, SHUSlice data, const char **retError)
+{
+    NetConnection *connection = connectionHandle;
+    *retError = nullptr;
+
+    NetAdvance(connection);
+
+    if (!ECS_Check(NET.plugin, data.size <= (usz)SDL_MAX_SINT32, "More than 2 GiB is sent at once."))
     {
-        return connection->socket != nullptr && data.size <= (usz)SDL_MAX_SINT32 && NET_WriteToStreamSocket(connection->socket, data.data, (int)data.size);
+        return false;
+    }
+
+    if (connection->failed)
+    {
+        ECS_Fail(NET.plugin, retError, "%s", connection->error);
+        return false;
     }
 
     // TLS encrypts the data into records, which the socket queues; nothing goes before the handshake is done
-    for (usz sent = 0; connection->secured && !connection->failed && sent < data.size;)
+    if (connection->socket == nullptr || (connection->tls != nullptr && !connection->secured))
+    {
+        ECS_Fail(NET.plugin, retError, "It is not connected yet.");
+        return false;
+    }
+
+    if (connection->tls == nullptr && !NET_WriteToStreamSocket(connection->socket, data.data, (int)data.size))
+    {
+        NetFailConnection(connection, "Cannot send: %s", SDL_GetError());
+    }
+
+    for (usz sent = 0; connection->tls != nullptr && !connection->failed && sent < data.size;)
     {
         int result = mbedtls_ssl_write(connection->tls, (const u8 *)data.data + sent, data.size - sent);
-        connection->failed = result < 0;
+
+        if (result < 0)
+        {
+            NetFailConnection(connection, "Cannot send: TLS failed");
+        }
+
         sent += result > 0 ? (usz)result : 0;
     }
 
-    return connection->secured && !connection->failed;
+    if (connection->failed)
+    {
+        ECS_Fail(NET.plugin, retError, "%s", connection->error);
+        return false;
+    }
+
+    return true;
 }
 
 /// @brief Reads what arrived on a connection into a buffer.
@@ -466,19 +573,27 @@ static int NetRead(NetConnection *connection, u8 *buffer, i32 maxBytes)
                                                                                                       : count;
 }
 
-static SHUSlice NetReceive(void *connectionHandle, i32 maxBytes)
+static SHUSlice NetReceive(void *connectionHandle, i32 maxBytes, const char **retError)
 {
     NetConnection *connection = connectionHandle;
+    *retError = nullptr;
 
     NetAdvance(connection);
     SDL_free(connection->received);
     connection->received = nullptr;
 
-    bool ready = connection->socket != nullptr && (connection->tls == nullptr || (connection->secured && !connection->failed));
-    u8 *buffer = !ready || maxBytes <= 0 ? nullptr : SDL_malloc((usz)maxBytes);
+    bool ready = connection->socket != nullptr && !connection->failed && (connection->tls == nullptr || connection->secured);
+
+    if (!ECS_Check(NET.plugin, maxBytes > 0, "maxBytes is %d, not above 0.", (int)maxBytes) || !ready)
+    {
+        return cs(nullptr, 0);
+    }
+
+    u8 *buffer = SDL_malloc((usz)maxBytes);
 
     if (buffer == nullptr)
     {
+        ECS_Fail(NET.plugin, retError, "out of memory");
         return cs(nullptr, 0);
     }
 
@@ -487,7 +602,7 @@ static SHUSlice NetReceive(void *connectionHandle, i32 maxBytes)
     // a connection that the other side closed is failed from then on
     if (count < 0)
     {
-        connection->failed = true;
+        NetFailConnection(connection, "The other side closed the connection.");
         count = 0;
     }
 
@@ -501,7 +616,7 @@ static void NetClose(void *connectionHandle)
 
     NET_DestroyStreamSocket(connection->socket);
     connection->socket = nullptr;
-    connection->failed = true;
+    NetFailConnection(connection, "It was closed.");
 }
 
 #pragma endregion Connections
@@ -525,7 +640,8 @@ static NET_Address *NetResolveAnyIpv4(void)
 }
 
 /// @brief Waits for TCP connections on a port of every address, with SDL_net; IPv4 alone when that fails.
-static NET_Server *NetCreateServer(i32 port)
+/// @return The server, or nullptr with why in retError.
+static NET_Server *NetCreateServer(i32 port, const char **retError)
 {
     u16 number = (u16)SDL_clamp(port, 0, 65535);
     NET_Server *server = NET_CreateServer(nullptr, number, 0);
@@ -539,25 +655,33 @@ static NET_Server *NetCreateServer(i32 port)
 
     if (server == nullptr)
     {
-        ECS_LogWarn(NET.plugin, "Cannot listen on port %d: %s", port, SDL_GetError());
+        ECS_Fail(NET.plugin, retError, "Cannot listen on port %d: %s", port, SDL_GetError());
     }
 
     return server;
 }
 
-static void *NetListen(i32 port)
+static void *NetListen(i32 port, const char **retError)
 {
+    *retError = nullptr;
+
+    if (!NetCheckPort(port, 0))
+    {
+        return nullptr;
+    }
+
     NetServer *server = SDL_calloc(1, sizeof(NetServer));
 
     if (server == nullptr)
     {
+        ECS_Fail(NET.plugin, retError, "out of memory");
         return nullptr;
     }
 
     mbedtls_x509_crt_init(&server->certificate);
     mbedtls_pk_init(&server->key);
     server->users = 1;
-    server->server = NetCreateServer(port);
+    server->server = NetCreateServer(port, retError);
 
     if (server->server == nullptr)
     {
@@ -593,16 +717,23 @@ static bool NetAddServerTls(NetServer *server, const char *certificatePath, cons
 }
 
 // a TLS server shows its certificate to the clients, and proves it with the certificate's key
-static void *NetListenTls(i32 port, const char *certificate, const char *key)
+static void *NetListenTls(i32 port, const char *certificate, const char *key, const char **retError)
 {
+    *retError = nullptr;
     char *certificatePath = nullptr;
     char *keyPath = nullptr;
     bool found = ECSPath_GetFull(&certificatePath, certificate) == SHUResult_Ok && ECSPath_GetFull(&keyPath, key) == SHUResult_Ok;
-    NetServer *server = found && NetTlsStart() ? NetListen(port) : nullptr;
+
+    if (!found)
+    {
+        ECS_Fail(NET.plugin, retError, "out of memory");
+    }
+
+    NetServer *server = found && NetTlsStart(retError) ? NetListen(port, retError) : nullptr;
 
     if (server != nullptr && !NetAddServerTls(server, certificatePath, keyPath))
     {
-        ECS_LogWarn(NET.plugin, "Cannot serve TLS with the certificate '%s' and the key '%s'", certificatePath, keyPath);
+        ECS_Fail(NET.plugin, retError, "Cannot serve TLS with the certificate '%s' and the key '%s'.", certificatePath, keyPath);
         NetReleaseServer(server);
         server = nullptr;
     }
@@ -613,9 +744,10 @@ static void *NetListenTls(i32 port, const char *certificate, const char *key)
 }
 
 // a TLS server's connection does its handshake as the client's does, and keeps the server's configuration while it lives
-static void *NetAccept(void *serverHandle)
+static void *NetAccept(void *serverHandle, const char **retError)
 {
     NetServer *server = serverHandle;
+    *retError = nullptr;
 
     NET_StreamSocket *socket = nullptr;
 
@@ -628,6 +760,7 @@ static void *NetAccept(void *serverHandle)
 
     if (connection == nullptr)
     {
+        ECS_Fail(NET.plugin, retError, "out of memory");
         NET_DestroyStreamSocket(socket);
         return nullptr;
     }
@@ -641,6 +774,7 @@ static void *NetAccept(void *serverHandle)
 
     if (!NetAddTls(connection, server->tls))
     {
+        ECS_Fail(NET.plugin, retError, "out of memory");
         NetConnectionDestroy(connection);
         return nullptr;
     }
@@ -663,17 +797,25 @@ static void NetServerDestroy(void *object)
 
 #pragma region UDP
 
-static void *NetOpenUdp(i32 port)
+static void *NetOpenUdp(i32 port, const char **retError)
 {
-    NetUdp *udp = SDL_calloc(1, sizeof(NetUdp));
+    *retError = nullptr;
 
-    if (udp == nullptr)
+    if (!NetCheckPort(port, 0))
     {
         return nullptr;
     }
 
+    NetUdp *udp = SDL_calloc(1, sizeof(NetUdp));
+
+    if (udp == nullptr)
+    {
+        ECS_Fail(NET.plugin, retError, "out of memory");
+        return nullptr;
+    }
+
     // as for a server, IPv4 alone is tried when a family of addresses is missing
-    u16 number = (u16)SDL_clamp(port, 0, 65535);
+    u16 number = (u16)port;
     udp->socket = NET_CreateDatagramSocket(nullptr, number, 0);
     NET_Address *any = udp->socket == nullptr ? NetResolveAnyIpv4() : nullptr;
 
@@ -685,7 +827,7 @@ static void *NetOpenUdp(i32 port)
 
     if (udp->socket == nullptr)
     {
-        ECS_LogWarn(NET.plugin, "Cannot open a UDP socket on port %d: %s", port, SDL_GetError());
+        ECS_Fail(NET.plugin, retError, "Cannot open a UDP socket on port %d: %s", port, SDL_GetError());
         SDL_free(udp);
         return nullptr;
     }
@@ -769,11 +911,12 @@ static NET_Address *NetUdpAddress(NetUdp *udp, const char *host)
     return address;
 }
 
-static bool NetUdpSendTo(void *udpHandle, const char *host, i32 port, SHUSlice data)
+static bool NetUdpSendTo(void *udpHandle, const char *host, i32 port, SHUSlice data, const char **retError)
 {
     NetUdp *udp = udpHandle;
+    *retError = nullptr;
 
-    if (data.size > (usz)SDL_MAX_SINT32)
+    if (!NetCheckPort(port, 1) || !ECS_Check(NET.plugin, data.size <= (usz)SDL_MAX_SINT32, "A datagram is more than 2 GiB."))
     {
         return false;
     }
@@ -783,13 +926,14 @@ static bool NetUdpSendTo(void *udpHandle, const char *host, i32 port, SHUSlice d
 
     if (address == nullptr)
     {
+        ECS_Fail(NET.plugin, retError, copy == nullptr ? "out of memory" : "The host's name cannot start to resolve.");
         SDL_free(copy);
         return false;
     }
 
     // it waits behind the others, so that datagrams to a host leave in the order they were sent
     SDL_memcpy(copy, data.data, data.size);
-    arrput(udp->pending, ((NetPendingDatagram){.address = address, .port = (u16)SDL_clamp(port, 0, 65535), .data = copy, .size = data.size}));
+    arrput(udp->pending, ((NetPendingDatagram){.address = address, .port = (u16)port, .data = copy, .size = data.size}));
     NetUdpFlush(udp);
     return true;
 }
@@ -879,62 +1023,76 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port)",
+        {"connect", (ECSFunction)NetConnect, "handle<net.connection>(string host, int port, out string error)",
          "Start a TCP connection to a host and port\n"
          "@param host The host's name or address; it resolves in the background\n"
-         "@param port The port, from 0 to 65535\n"
-         "@return The connection, whose status tells when it connects or fails"},
-        {"connectTLS", (ECSFunction)NetConnectTls, "handle<net.connection>(string host, int port)",
+         "@param port The port, from 1 to 65535\n"
+         "@param error Why there is no connection; nothing if there is\n"
+         "@return The connection, whose status tells when it connects or fails, and error why it failed; nothing if it cannot start"},
+        {"connectTLS", (ECSFunction)NetConnectTls, "handle<net.connection>(string host, int port, out string error)",
          "Start a TLS connection to a host and port, which checks the host's certificate against the system's trusted ones\n"
          "@param host The host's name or address; it resolves in the background, and the certificate must be for it\n"
-         "@param port The port, from 0 to 65535\n"
-         "@return The connection, whose status is 1 once the handshake is done; nothing if TLS cannot start"},
+         "@param port The port, from 1 to 65535\n"
+         "@param error Why there is no connection; nothing if there is\n"
+         "@return The connection, whose status is 1 once the handshake is done, and error why it failed; nothing if it or TLS cannot start"},
         {"status", (ECSFunction)NetStatus, "int(handle<net.connection> connection)",
          "Give a connection's state: 1 connected, and for TLS secured, 0 waiting, -1 failed or closed\n"
          "@param connection The connection\n"
          "@return 1 once it is connected, and for TLS its handshake done; 0 while it waits; -1 if it failed or closed"},
-        {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data)",
+        {"error", (ECSFunction)NetError, "string(handle<net.connection> connection)",
+         "Give why a connection failed or closed\n"
+         "@param connection The connection\n"
+         "@return Why it failed, as when its host's name cannot be resolved; empty while its status is not -1"},
+        {"send", (ECSFunction)NetSend, "bool(handle<net.connection> connection, buffer data, out string error)",
          "Send data; it goes out in the background\n"
          "@param connection The connection\n"
-         "@param data The bytes to send; they are copied\n"
-         "@return False if it has no socket yet, it is closed, or for TLS its handshake is not done"},
-        {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int maxBytes)",
+         "@param data The bytes to send, at most 2 GiB; they are copied\n"
+         "@param error Why the data is not sent, as when it is not connected yet or failed; nothing if it is\n"
+         "@return True if the data is sent"},
+        {"receive", (ECSFunction)NetReceive, "buffer(handle<net.connection> connection, int maxBytes, out string error)",
          "Take what has arrived, at most a number of bytes; nothing if nothing has\n"
          "@param connection The connection\n"
-         "@param maxBytes The most bytes to take\n"
+         "@param maxBytes The most bytes to take, above 0\n"
+         "@param error Why nothing can be taken, as memory ran out; nothing otherwise, also when nothing has arrived\n"
          "@return What arrived, kept until the next receive on the connection; empty if nothing has"},
         {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)",
          "Close a connection\n"
          "@param connection The connection; its status is -1 after"},
-        {"listen", (ECSFunction)NetListen, "handle<net.server>(int port)",
+        {"listen", (ECSFunction)NetListen, "handle<net.server>(int port, out string error)",
          "Wait for TCP connections on a port of every address of this computer\n"
-         "@param port The port, from 0 to 65535\n"
+         "@param port The port, from 0 to 65535; 0 picks a free one\n"
+         "@param error Why it cannot listen; nothing if it does\n"
          "@return The server, or nothing if it cannot listen"},
-        {"listenTLS", (ECSFunction)NetListenTls, "handle<net.server>(int port, string certificate, string key)",
+        {"listenTLS", (ECSFunction)NetListenTls, "handle<net.server>(int port, string certificate, string key, out string error)",
          "Wait for TLS connections on a port, with a certificate and its key from PEM files\n"
-         "@param port The port, from 0 to 65535\n"
+         "@param port The port, from 0 to 65535; 0 picks a free one\n"
          "@param certificate The path of the certificate's PEM file; a relative path starts at the executable's folder\n"
          "@param key The path of the private key's PEM file; a relative path starts at the executable's folder\n"
+         "@param error Why it cannot listen; nothing if it does\n"
          "@return The server, or nothing if it cannot listen or cannot read the certificate or key"},
-        {"trust", (ECSFunction)NetTrust, "bool(string path)",
+        {"trust", (ECSFunction)NetTrust, "bool(string path, out string error)",
          "Trust the certificates of a PEM file too, beside the system's, for later TLS connections\n"
          "@param path The path of the PEM file; a relative path starts at the executable's folder\n"
-         "@return False if the file cannot be read"},
-        {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server)",
+         "@param error Why the file cannot be read; nothing if it is\n"
+         "@return True if the certificates that can be read are trusted; the others are logged"},
+        {"accept", (ECSFunction)NetAccept, "handle<net.connection>(handle<net.server> server, out string error)",
          "Take a connection that a server has, if any\n"
          "@param server The server, as listen or listenTLS gives it\n"
+         "@param error Why a connection cannot be taken, as memory ran out; nothing otherwise, also when none waits\n"
          "@return A connection that a client made, or nothing if none waits"},
-        {"udp", (ECSFunction)NetOpenUdp, "handle<net.udp>(int port)",
+        {"udp", (ECSFunction)NetOpenUdp, "handle<net.udp>(int port, out string error)",
          "Open a UDP socket on a port of every address of this computer; port 0 picks a free one\n"
          "@param port The port, from 0 to 65535; 0 picks a free one\n"
+         "@param error Why it cannot open; nothing if it does\n"
          "@return The socket, or nothing if it cannot open"},
-        {"sendTo", (ECSFunction)NetUdpSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data)",
+        {"sendTo", (ECSFunction)NetUdpSendTo, "bool(handle<net.udp> socket, string host, int port, buffer data, out string error)",
          "Send a datagram to a host and port; it leaves once the host's name resolves, and may be lost on the way\n"
          "@param socket The UDP socket\n"
          "@param host The host's name or address; the socket keeps the last 8 it resolved\n"
-         "@param port The host's port, from 0 to 65535\n"
-         "@param data The datagram's bytes; they are copied\n"
-         "@return False if the host's name cannot start to resolve"},
+         "@param port The host's port, from 1 to 65535\n"
+         "@param data The datagram's bytes, at most 2 GiB; they are copied\n"
+         "@param error Why it is not sent, as when the host's name cannot start to resolve; nothing if it is\n"
+         "@return True if the datagram waits to leave"},
         {"receiveFrom", (ECSFunction)NetUdpReceiveFrom, "buffer(handle<net.udp> socket, out string host, out int port)",
          "Take a datagram that has arrived, with the address and port it came from; nothing if none has\n"
          "@param socket The UDP socket\n"
@@ -960,6 +1118,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *function;
     } methods[] = {
         {"connection", "status", "status"},
+        {"connection", "error", "error"},
         {"connection", "send", "send"},
         {"connection", "receive", "receive"},
         {"connection", "close", "close"},

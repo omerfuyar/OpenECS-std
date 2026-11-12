@@ -179,7 +179,7 @@ function services.open()
   end
 end
 
-assert(ecs.service.register({
+ecs.service.register({
   open = { sig = "void()", doc = "Open launcher", fn = services.open },
-}))
+})
 

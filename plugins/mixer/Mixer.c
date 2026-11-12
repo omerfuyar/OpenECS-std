@@ -126,13 +126,13 @@ static void MixerReleaseSound(void *object)
     }
 }
 
-static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
+static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples, const char **retError)
 {
     usz frameSize = (usz)SDL_max(channels, 1) * sizeof(f32);
+    *retError = nullptr;
 
-    if (channels <= 0 || rate <= 0 || samples.size % frameSize != 0)
+    if (!ECS_Check(MIXER.plugin, channels > 0 && rate > 0 && samples.size % frameSize == 0, "A sound needs channels and a rate above 0, and whole frames of float samples."))
     {
-        ECS_LogWarn(MIXER.plugin, "A sound needs channels and a rate above 0, and whole frames of float samples.");
         return nullptr;
     }
 
@@ -140,6 +140,7 @@ static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
 
     if (sound == nullptr)
     {
+        ECS_Fail(MIXER.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -150,6 +151,7 @@ static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
         if (sound->samples == nullptr)
         {
             SDL_free(sound);
+            ECS_Fail(MIXER.plugin, retError, "out of memory");
             return nullptr;
         }
 
@@ -162,11 +164,12 @@ static void *MixerNewSound(i32 channels, i32 rate, SHUSlice samples)
     return sound;
 }
 
-static void *MixerNewStream(i32 channels, i32 rate)
+static void *MixerNewStream(i32 channels, i32 rate, const char **retError)
 {
-    if (channels <= 0 || rate <= 0)
+    *retError = nullptr;
+
+    if (!ECS_Check(MIXER.plugin, channels > 0 && rate > 0, "A stream needs channels and a rate above 0."))
     {
-        ECS_LogWarn(MIXER.plugin, "A stream needs channels and a rate above 0.");
         return nullptr;
     }
 
@@ -174,6 +177,7 @@ static void *MixerNewStream(i32 channels, i32 rate)
 
     if (sound == nullptr)
     {
+        ECS_Fail(MIXER.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -183,7 +187,7 @@ static void *MixerNewStream(i32 channels, i32 rate)
 
     if (sound->queue == nullptr)
     {
-        ECS_LogError(MIXER.plugin, "Cannot make a stream: %s", SDL_GetError());
+        ECS_Fail(MIXER.plugin, retError, "Cannot make a stream: %s", SDL_GetError());
         SDL_free(sound);
         return nullptr;
     }
@@ -191,18 +195,26 @@ static void *MixerNewStream(i32 channels, i32 rate)
     return sound;
 }
 
-static bool MixerQueue(void *soundHandle, SHUSlice samples)
+static bool MixerQueue(void *soundHandle, SHUSlice samples, const char **retError)
 {
     MixerSound *sound = soundHandle;
+    *retError = nullptr;
 
     usz frameSize = (usz)sound->spec.channels * sizeof(f32);
 
-    if (sound->queue == nullptr || SDL_GetAtomicInt(&sound->finished) || samples.size % frameSize != 0 || samples.size > (usz)SDL_MAX_SINT32)
+    if (!ECS_Check(MIXER.plugin, sound->queue != nullptr && !SDL_GetAtomicInt(&sound->finished), "Samples are queued to a stream that is not finished.") ||
+        !ECS_Check(MIXER.plugin, samples.size % frameSize == 0 && samples.size <= (usz)SDL_MAX_SINT32, "A stream takes whole frames of float samples."))
     {
         return false;
     }
 
-    return SDL_PutAudioStreamData(sound->queue, samples.data, (int)samples.size);
+    if (!SDL_PutAudioStreamData(sound->queue, samples.data, (int)samples.size))
+    {
+        ECS_Fail(MIXER.plugin, retError, "Cannot queue samples: %s", SDL_GetError());
+        return false;
+    }
+
+    return true;
 }
 
 static f64 MixerQueued(void *soundHandle)
@@ -244,9 +256,8 @@ static void MixerReleaseKeptSound(void *soundHandle)
 {
     MixerSound *sound = soundHandle;
 
-    if (sound->kept == 0)
+    if (!ECS_Check(MIXER.plugin, sound->kept > 0, "releaseSound is called for a sound that keepSound did not keep."))
     {
-        ECS_LogWarn(MIXER.plugin, "releaseSound is called for a sound that keepSound did not keep; nothing is released.");
         return;
     }
 
@@ -618,8 +629,8 @@ static MixerVoice *MixerFindVoice(i32 id)
 }
 
 /// @brief Opens the default output the first time a sound plays.
-/// @return false if there is none; the reason is logged.
-static bool MixerOpenOutput(void)
+/// @return false if there is none, with why in retError.
+static bool MixerOpenOutput(const char **retError)
 {
     if (MIXER.device != 0)
     {
@@ -635,20 +646,21 @@ static bool MixerOpenOutput(void)
 
     if (MIXER.device == 0)
     {
-        ECS_LogWarn(MIXER.plugin, "There is no audio output: %s", SDL_GetError());
+        ECS_Fail(MIXER.plugin, retError, "There is no audio output: %s", SDL_GetError());
     }
 
     return MIXER.device != 0;
 }
 
-static i32 MixerPlay(void *soundHandle, f32 volume, bool loop)
+static i32 MixerPlay(void *soundHandle, f32 volume, bool loop, const char **retError)
 {
     MixerSound *sound = soundHandle;
+    *retError = nullptr;
 
     MixerFreeFinishedVoices();
 
     // a stream's samples go to one voice, so it plays in one voice at a time
-    if ((sound->queue != nullptr && sound->playing) || !MixerOpenOutput())
+    if (!ECS_Check(MIXER.plugin, sound->queue == nullptr || !sound->playing, "A stream plays in one voice at a time.") || !MixerOpenOutput(retError))
     {
         return 0;
     }
@@ -657,6 +669,7 @@ static i32 MixerPlay(void *soundHandle, f32 volume, bool loop)
 
     if (voice == nullptr)
     {
+        ECS_Fail(MIXER.plugin, retError, "out of memory");
         return 0;
     }
 
@@ -668,7 +681,7 @@ static i32 MixerPlay(void *soundHandle, f32 volume, bool loop)
 
     if (voice->stream == nullptr || !SDL_SetAudioStreamGain(voice->stream, SDL_max(0.0f, volume)) || !SDL_SetAudioStreamGetCallback(voice->stream, MixerFeed, voice) || !SDL_BindAudioStream(MIXER.device, voice->stream))
     {
-        ECS_LogError(MIXER.plugin, "Cannot play a sound: %s", SDL_GetError());
+        ECS_Fail(MIXER.plugin, retError, "Cannot play a sound: %s", voice->filters == nullptr ? "out of memory" : SDL_GetError());
         SDL_DestroyAudioStream(voice->stream);
         SDL_free(voice->filters);
         SDL_free(voice);
@@ -752,15 +765,15 @@ static void MixerSetFilter(i32 id, f32 lowpass, f32 highpass)
 
 /// @brief Makes an echo for a voice: what it played a delay ago, in seconds up to 2, comes back at mix, and each echo comes back again at feedback
 /// times as loud, up to 0.95. It rings until it is about a thousandth as loud, or for one delay without feedback, and 30 seconds at most.
-/// @return The echo, or nullptr if out of memory; the reason is logged.
-static MixerEcho *MixerNewEcho(const MixerVoice *voice, u64 length, f32 feedback, f32 mix)
+/// @return The echo, or nullptr if out of memory, with why in retError.
+static MixerEcho *MixerNewEcho(const MixerVoice *voice, u64 length, f32 feedback, f32 mix, const char **retError)
 {
     MixerEcho *echo = SDL_calloc(1, sizeof(MixerEcho));
     f32 *samples = SDL_calloc((usz)length * (usz)voice->channels, sizeof(f32));
 
     if (echo == nullptr || samples == nullptr)
     {
-        ECS_LogError(MIXER.plugin, "Cannot add an echo: out of memory");
+        ECS_Fail(MIXER.plugin, retError, "out of memory");
         SDL_free(echo);
         SDL_free(samples);
         return nullptr;
@@ -774,13 +787,15 @@ static MixerEcho *MixerNewEcho(const MixerVoice *voice, u64 length, f32 feedback
 }
 
 /// @brief Gives a voice an echo; a delay or a mix of 0 takes the echo away. A voice with an echo rings on after its sound ends.
-static void MixerSetEcho(i32 id, f32 delay, f32 feedback, f32 mix)
+/// @return false if out of memory, with why in retError.
+static bool MixerSetEcho(i32 id, f32 delay, f32 feedback, f32 mix, const char **retError)
 {
     MixerVoice *voice = MixerFindVoice(id);
+    *retError = nullptr;
 
     if (voice == nullptr)
     {
-        return;
+        return true;
     }
 
     MixerEcho *echo = nullptr;
@@ -788,11 +803,11 @@ static void MixerSetEcho(i32 id, f32 delay, f32 feedback, f32 mix)
 
     if (length > 0)
     {
-        echo = MixerNewEcho(voice, length, feedback, mix);
+        echo = MixerNewEcho(voice, length, feedback, mix, retError);
 
         if (echo == nullptr)
         {
-            return;
+            return false;
         }
     }
 
@@ -802,6 +817,7 @@ static void MixerSetEcho(i32 id, f32 delay, f32 feedback, f32 mix)
     voice->echo = echo;
     SDL_UnlockAudioStream(voice->stream);
     MixerFreeEcho(old);
+    return true;
 }
 
 #pragma endregion Voices
@@ -953,13 +969,20 @@ static void SDLCALL MixerPostmix(void *data, const SDL_AudioSpec *spec, float *b
 }
 
 /// @brief Sets the reverb on the output: mix is how much of it is added, from 0, none, to 1, and size the room's, from 0 to 1.
-/// @return false if there is no output, or memory for the reverb.
-static bool MixerSetReverb(f32 mix, f32 size)
+/// @return false if there is no output, or memory for the reverb, with why in retError.
+static bool MixerSetReverb(f32 mix, f32 size, const char **retError)
 {
     SDL_AudioSpec spec = {0};
+    *retError = nullptr;
 
-    if (!MixerOpenOutput() || !SDL_GetAudioDeviceFormat(MIXER.device, &spec, nullptr))
+    if (!MixerOpenOutput(retError))
     {
+        return false;
+    }
+
+    if (!SDL_GetAudioDeviceFormat(MIXER.device, &spec, nullptr))
+    {
+        ECS_Fail(MIXER.plugin, retError, "The audio output's format cannot be read: %s", SDL_GetError());
         return false;
     }
 
@@ -970,7 +993,7 @@ static bool MixerSetReverb(f32 mix, f32 size)
 
         if (reverb == nullptr || !SDL_SetAudioPostmixCallback(MIXER.device, MixerPostmix, reverb))
         {
-            ECS_LogError(MIXER.plugin, "Cannot add a reverb: %s", reverb == nullptr ? "out of memory" : SDL_GetError());
+            ECS_Fail(MIXER.plugin, retError, "Cannot add a reverb: %s", reverb == nullptr ? "out of memory" : SDL_GetError());
             MixerFreeReverb(reverb);
             return false;
         }
@@ -1031,21 +1054,24 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"newSound", (ECSFunction)MixerNewSound, "handle<mixer.sound>(int channels, int rate, buffer samples)",
+        {"newSound", (ECSFunction)MixerNewSound, "handle<mixer.sound>(int channels, int rate, buffer samples, out string error)",
          "Make a sound from 32-bit float samples, frame after frame, at a rate in frames a second\n"
          "@param channels The number of channels, above 0; each frame has a sample for each\n"
          "@param rate The frames a second, above 0\n"
          "@param samples The 32-bit float samples, frame after frame, in whole frames; they are copied\n"
-         "@return The sound, or nothing if channels or rate is not above 0, or the samples are not whole frames"},
-        {"newStream", (ECSFunction)MixerNewStream, "handle<mixer.sound>(int channels, int rate)",
+         "@param error Why there is no sound, as memory ran out; nothing if there is one\n"
+         "@return The sound; nothing if it cannot be made"},
+        {"newStream", (ECSFunction)MixerNewStream, "handle<mixer.sound>(int channels, int rate, out string error)",
          "Make a stream: a sound whose 32-bit float samples are given while it plays, with queue\n"
          "@param channels The number of channels, above 0; each frame has a sample for each\n"
          "@param rate The frames a second, above 0\n"
-         "@return The stream, or nothing if channels or rate is not above 0"},
-        {"queue", (ECSFunction)MixerQueue, "bool(handle<mixer.sound> stream, buffer samples)",
-         "Add samples to the end of a stream; false if it is not a stream, it is finished, or the samples are not whole frames\n"
+         "@param error Why there is no stream; nothing if there is one\n"
+         "@return The stream; nothing if it cannot be made"},
+        {"queue", (ECSFunction)MixerQueue, "bool(handle<mixer.sound> stream, buffer samples, out string error)",
+         "Add samples to the end of a stream that is not finished\n"
          "@param stream The stream, as newStream gives it\n"
-         "@param samples The 32-bit float samples, frame after frame, with the stream's channels; they are copied\n"
+         "@param samples The 32-bit float samples, frame after frame, in whole frames of the stream's channels; they are copied\n"
+         "@param error Why the samples are not added; nothing if they are\n"
          "@return True if the samples are added"},
         {"queued", (ECSFunction)MixerQueued, "double(handle<mixer.sound> stream)",
          "Give the seconds of a stream's samples that wait to play\n"
@@ -1058,12 +1084,13 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Give a sound's length in seconds; 0 for a stream\n"
          "@param sound The sound\n"
          "@return The length in seconds"},
-        {"play", (ECSFunction)MixerPlay, "int(handle<mixer.sound> sound, float volume, bool loop)",
+        {"play", (ECSFunction)MixerPlay, "int(handle<mixer.sound> sound, float volume, bool loop, out string error)",
          "Play a sound, and give the number of the voice that plays it; 0 if it cannot play\n"
-         "@param sound The sound or stream to play; the voice keeps it while it plays\n"
+         "@param sound The sound or stream to play; the voice keeps it while it plays, and a stream plays in one voice at a time\n"
          "@param volume The voice's gain: 1 is the sound's own, 0 is silent; below 0 counts as 0\n"
          "@param loop True: the sound starts again when it ends, until stopped; a stream does not loop\n"
-         "@return The voice, a number above 0; 0 if there is no output, or the stream already plays in a voice"},
+         "@param error Why it cannot play, such as when there is no output; nothing if it plays\n"
+         "@return The voice, a number above 0; 0 if it cannot play"},
         {"stop", (ECSFunction)MixerStop, "void(int voice)",
          "Stop a voice\n"
          "@param voice The voice, as play gives it; a voice that has ended is left alone"},
@@ -1085,17 +1112,20 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
          "@param lowpass The frequency in hertz above which sounds are cut; 0 turns it off\n"
          "@param highpass The frequency in hertz below which sounds are cut; 0 turns it off"},
-        {"echo", (ECSFunction)MixerSetEcho, "void(int voice, float delay, float feedback, float mix)",
+        {"echo", (ECSFunction)MixerSetEcho, "bool(int voice, float delay, float feedback, float mix, out string error)",
          "Give a voice an echo: what it played delay seconds ago, up to 2, comes back at mix, and again at feedback times as loud each time; a delay or mix of 0 takes it away\n"
          "@param voice The voice, as play gives it; a voice that has ended is left alone\n"
          "@param delay The seconds after which a sound comes back, up to 2; 0 takes the echo away\n"
          "@param feedback How loud each echo comes back next to the one before, from 0 to 0.95\n"
-         "@param mix How loud the first echo is, from 0 to 1; 0 takes the echo away"},
-        {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size)",
-         "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1; false if there is no output\n"
+         "@param mix How loud the first echo is, from 0 to 1; 0 takes the echo away\n"
+         "@param error Why the echo is not set, as memory ran out; nothing if it is\n"
+         "@return True if the echo is set, or the voice has ended"},
+        {"reverb", (ECSFunction)MixerSetReverb, "bool(float mix, float size, out string error)",
+         "Add a reverb to everything that plays: mix from 0, none, to 1, and the room's size from 0 to 1\n"
          "@param mix How much of the reverb is heard, from 0, none, to 1\n"
          "@param size The room's size, from 0 to 1; a larger room rings longer\n"
-         "@return True if the reverb is set; false if there is no output"},
+         "@param error Why the reverb is not set, such as when there is no output; nothing if it is\n"
+         "@return True if the reverb is set"},
         {"keepSound", (ECSFunction)MixerKeepSound, "void(handle<mixer.sound> sound)",
          "Keep a sound alive, even when no one uses its handle, until releaseSound; for a plugin that feeds a stream it gave away\n"
          "@param sound The sound to keep; each keepSound needs its own releaseSound"},

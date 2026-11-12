@@ -383,7 +383,8 @@ static int WebRun(void *data)
 }
 
 /// @brief Starts the plugin's thread, once.
-static bool WebStartThread(void)
+/// @return false if it cannot start, with why in retError.
+static bool WebStartThread(const char **retError)
 {
     if (WEB.thread == nullptr)
     {
@@ -391,7 +392,7 @@ static bool WebStartThread(void)
 
         if (WEB.thread == nullptr)
         {
-            ECS_LogError(WEB.plugin, "Cannot start the thread of requests: %s", SDL_GetError());
+            ECS_Fail(WEB.plugin, retError, "The thread of requests cannot start: %s", SDL_GetError());
         }
     }
 
@@ -508,19 +509,27 @@ static long WebTimeout(void)
 
 /// @brief Makes a request or a WebSocket connection to a URL, with headers, a list of texts, and what every one of them sets: where its answer goes,
 /// its error, its user agent and the trusted certificates. The caller sets the rest, and queues it.
-/// @return The request, or nullptr if it cannot be made.
-static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl_write_callback Write)
+/// @return The request, or nullptr if it cannot be made, with why in retError.
+static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl_write_callback Write, const char **retError)
 {
     WebRequest *request = SDL_calloc(1, sizeof(WebRequest));
 
     if (request == nullptr)
     {
+        ECS_Fail(WEB.plugin, retError, "out of memory");
         return nullptr;
     }
 
     request->easy = curl_easy_init();
 
-    if (request->easy == nullptr || !WebStartThread())
+    if (request->easy == nullptr)
+    {
+        ECS_Fail(WEB.plugin, retError, "out of memory");
+        WebFreeMemory(request);
+        return nullptr;
+    }
+
+    if (!WebStartThread(retError))
     {
         WebFreeMemory(request);
         return nullptr;
@@ -532,6 +541,7 @@ static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl
 
         if (list == nullptr)
         {
+            ECS_Fail(WEB.plugin, retError, "out of memory");
             WebFreeMemory(request);
             return nullptr;
         }
@@ -548,6 +558,7 @@ static WebRequest *WebNewTransfer(const char *url, const ECSValue *headers, curl
 
     if (!configured)
     {
+        ECS_Fail(WEB.plugin, retError, "The URL '%s' cannot be used.", url);
         WebFreeMemory(request);
         return nullptr;
     }
@@ -603,13 +614,13 @@ static void WebCallDone(void *data)
     }
 }
 
-static void *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done)
+static void *WebNewRequest(const char *method, const char *url, const ECSValue *headers, SHUSlice body, WebDoneFunction Done, const char **retError)
 {
-    WebRequest *request = WebNewTransfer(url, headers, WebWrite);
+    *retError = nullptr;
+    WebRequest *request = WebNewTransfer(url, headers, WebWrite, retError);
 
     if (request == nullptr)
     {
-        ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
         ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
     }
@@ -623,7 +634,7 @@ static void *WebNewRequest(const char *method, const char *url, const ECSValue *
 
     if (!configured)
     {
-        ECS_LogWarn(WEB.plugin, "Cannot make a request to '%s'", url);
+        ECS_Fail(WEB.plugin, retError, "The request cannot be made with the method '%s'.", method);
         WebFreeMemory(request);
         ECSService_ReleaseCallback((ECSFunction)Done);
         return nullptr;
@@ -634,9 +645,9 @@ static void *WebNewRequest(const char *method, const char *url, const ECSValue *
     return request;
 }
 
-static void *WebGet(const char *url, WebDoneFunction Done)
+static void *WebGet(const char *url, WebDoneFunction Done, const char **retError)
 {
-    return WebNewRequest("GET", url, nullptr, cs(nullptr, 0), Done);
+    return WebNewRequest("GET", url, nullptr, cs(nullptr, 0), Done, retError);
 }
 
 static i32 WebStatus(void *requestHandle)
@@ -691,15 +702,15 @@ static void WebFreeRequest(void *request)
 }
 
 /// @brief Starts a WebSocket connection to a ws:// or wss:// URL, with headers, a list of texts.
-static void *WebOpenSocket(const char *url, const ECSValue *headers)
+static void *WebOpenSocket(const char *url, const ECSValue *headers, const char **retError)
 {
     // the connection goes on until one side closes it, so the timeout limits only how long it takes to connect;
     // curl asks the read function for messages to send, as for an upload
-    WebRequest *request = WebNewTransfer(url, headers, WebSocketWrite);
+    *retError = nullptr;
+    WebRequest *request = WebNewTransfer(url, headers, WebSocketWrite, retError);
 
     if (request == nullptr)
     {
-        ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
         return nullptr;
     }
 
@@ -710,7 +721,7 @@ static void *WebOpenSocket(const char *url, const ECSValue *headers)
 
     if (!configured)
     {
-        ECS_LogWarn(WEB.plugin, "Cannot connect to '%s'", url);
+        ECS_Fail(WEB.plugin, retError, "The URL '%s' cannot be used for a WebSocket.", url);
         WebFreeMemory(request);
         return nullptr;
     }
@@ -732,13 +743,16 @@ static i32 WebSocketStatus(void *socketHandle)
 }
 
 /// @brief Queues a message to send, as text or as bytes. It goes once the connection is open.
-/// @return false if the connection failed or closed, or memory runs out.
-static bool WebSocketSend(void *socketHandle, SHUSlice data, bool text)
+/// @return false if the connection failed or closed, or memory runs out, with why in retError.
+static bool WebSocketSend(void *socketHandle, SHUSlice data, bool text, const char **retError)
 {
     WebRequest *socket = socketHandle;
+    *retError = nullptr;
 
+    // the plugin's thread writes the error before it marks the connection done
     if (WebSocketStatus(socket) < 0)
     {
+        ECS_Fail(WEB.plugin, retError, "%s", socket->error[0] != '\0' ? socket->error : "The connection is closed.");
         return false;
     }
 
@@ -746,6 +760,7 @@ static bool WebSocketSend(void *socketHandle, SHUSlice data, bool text)
 
     if (message == nullptr)
     {
+        ECS_Fail(WEB.plugin, retError, "out of memory");
         return false;
     }
 
@@ -890,19 +905,21 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done)",
+        {"get", (ECSFunction)WebGet, "handle<web.request>(string url, keep fn<void(handle<web.request> request)> done, out string error)",
          "Start a GET request to a URL; done, if given, gets the request once it is done\n"
          "@param url The URL, http:// or https://; one with another scheme fails\n"
          "@param done Called once, on the main thread, when the request is done or failed; its request is the request, in a new handle if the first was dropped; not called if the request is freed first; nothing for no call\n"
-         "@return The request, or nothing if it cannot be made"},
-        {"request", (ECSFunction)WebNewRequest, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done)",
+         "@param error Why the request cannot be made; nothing if it is\n"
+         "@return The request, whose status tells when it is done or failed, or nothing if it cannot be made"},
+        {"request", (ECSFunction)WebNewRequest, "handle<web.request>(string method, string url, value<string[]?> headers, buffer body, keep fn<void(handle<web.request> request)> done, out string error)",
          "Start a request with a method, headers (a list of texts such as \"Accept: text/html\") and a body; done, if given, gets the request once it is done\n"
          "@param method The method, such as \"GET\", \"POST\" or \"HEAD\"\n"
          "@param url The URL, http:// or https://; one with another scheme fails\n"
          "@param headers The headers, each a text such as \"Content-Type: application/json\"; nothing for none\n"
          "@param body The body to send, copied; empty for none; a body makes a request POST unless the method names another\n"
          "@param done Called once, on the main thread, when the request is done or failed; its request is the request, in a new handle if the first was dropped; not called if the request is freed first; nothing for no call\n"
-         "@return The request, or nothing if it cannot be made"},
+         "@param error Why the request cannot be made; nothing if it is\n"
+         "@return The request, whose status tells when it is done or failed, or nothing if it cannot be made"},
         {"status", (ECSFunction)WebStatus, "int(handle<web.request> request)",
          "Give a request's HTTP status once it is done, 0 while it runs, or -1 if it failed\n"
          "@param request The request\n"
@@ -923,21 +940,23 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"free", (ECSFunction)WebFreeRequest, "void(handle<web.request> request)",
          "Free a request now; one that runs stops\n"
          "@param request The request; its handle must not be used after, and its done is not called"},
-        {"socket", (ECSFunction)WebOpenSocket, "handle<web.socket>(string url, value<string[]?> headers)",
+        {"socket", (ECSFunction)WebOpenSocket, "handle<web.socket>(string url, value<string[]?> headers, out string error)",
          "Start a WebSocket connection to a ws:// or wss:// URL, with headers (a list of texts such as \"Origin: http://localhost\")\n"
          "@param url The URL, ws:// or wss://\n"
          "@param headers The headers, each a text such as \"Origin: http://localhost\"; nothing for none\n"
-         "@return The connection, or nothing if it cannot be made"},
+         "@param error Why the connection cannot be made; nothing if it is\n"
+         "@return The connection, whose socketStatus tells when it opens or fails, or nothing if it cannot be made"},
         {"socketStatus", (ECSFunction)WebSocketStatus, "int(handle<web.socket> socket)",
          "Give a connection's state: 1 open, 0 connecting, -1 failed or closed\n"
          "@param socket The connection\n"
          "@return 1 once the server took it; 0 while it connects; -1 if it failed or closed"},
-        {"socketSend", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text)",
+        {"socketSend", (ECSFunction)WebSocketSend, "bool(handle<web.socket> socket, buffer data, bool text, out string error)",
          "Send a message, as text or as bytes; it goes once the connection is open\n"
          "@param socket The connection\n"
          "@param data The message, copied; it goes in one frame\n"
          "@param text True: it goes as text; false: as bytes\n"
-         "@return False if the connection failed or closed"},
+         "@param error Why it is not sent, as when the connection failed or closed; nothing if it is\n"
+         "@return True if the message waits to go"},
         {"socketReceive", (ECSFunction)WebSocketReceive, "buffer(handle<web.socket> socket, out string type)",
          "Take the oldest message that arrived, and its type, \"text\" or \"binary\"; nothing if none has\n"
          "@param socket The connection\n"

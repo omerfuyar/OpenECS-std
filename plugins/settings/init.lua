@@ -361,7 +361,7 @@ services.next = forWindow(function(window)
   change(window, 1)
 end)
 
-assert(ecs.service.register({
+ecs.service.register({
   open = { sig = "void()", doc = "Open settings", fn = services.open },
   previous = {
     sig = "void(handle<ecs.panel> panel)",
@@ -375,9 +375,9 @@ assert(ecs.service.register({
         .. "@param panel The settings window, as its keys pass the focused panel; nothing happens while one of its fields has the keys",
     fn = services.next,
   },
-}))
+})
 
 -- default keys for the window; presets and the user's settings can change them
 for service, key in pairs({ previous = "Left", next = "Right" }) do
-  assert(ecs.key.bind("settings.window", key, "settings." .. service))
+  ecs.key.bind("settings.window", key, "settings." .. service)
 end
