@@ -3,9 +3,9 @@
 //
 //     UI_SHOW(&ui, panel, surface)
 //     {
-//         UI_COLUMN(.style = "view")
+//         UI_COLUMN(.style = &ui.styles.view)
 //         {
-//             UI_TEXT("Hello", .style = "title");
+//             UI_TEXT("Hello", .style = &ui.styles.title);
 //
 //             if (UI_BUTTON("Click me"))
 //             {
@@ -43,10 +43,12 @@ typedef enum UiFlag
 #define UI__COUNT(array) (sizeof(array) / sizeof((array)[0]))
 
 /// @brief The props of an element, in the manner of ui.Props. A number left 0, a flag left unset or a text left nullptr is left to ui. Each element uses the ones it knows.
-typedef struct UiProps
+typedef struct UiProps UiProps;
+
+struct UiProps
 {
     const char *id;              // names the element; an element whose macro takes what it got needs one, and a button's label is its id if it has none
-    const char *style;           // the style whose look it takes, such as "note"; its own props win
+    const UiProps *style;        // a style: the props of its look that it does not give itself, such as &ui.styles.note
     f64 width;                   // a fixed width, in layout units
     f64 height;                  // a fixed height, in layout units
     f64 grow;                    // a share of the room left along the parent's direction; UI_FIXED for none
@@ -77,7 +79,21 @@ typedef struct UiProps
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
     bool onActivate;             // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
     bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
-} UiProps;
+};
+
+/// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
+typedef struct UiStyles
+{
+    UiProps view;    // a view's root: room around it and between its parts, on the background
+    UiProps item;    // a row of a list: room around it and between its parts
+    UiProps title;   // a view's title
+    UiProps heading; // a heading among items, in the accent
+    UiProps note;    // a note, dimmed and small
+} UiStyles;
+
+/// @brief How many texts, such as colours, ui's own styles hold, and how long each may be; the Ui keeps copies of them.
+#define UI_STYLE_TEXTS 16
+#define UI_STYLE_TEXT 32
 
 /// @brief A column of a table: the id names its cells, and the title shows in the header, the id if it is nullptr; a width of 0 is the widest cell's.
 typedef struct UiColumn
@@ -106,7 +122,9 @@ typedef struct Ui
     ECSValue *root;               // a list that holds the element that UI_SHOW shows
     ECSValue *children[UI_DEPTH]; // the children of each open container, the innermost last
     usz depth;
-    bool failed; // memory ran out, or containers are nested too deeply; nothing shows
+    bool failed;                               // memory ran out, or containers are nested too deeply; nothing shows
+    UiStyles styles;                           // ui's own styles, for .style
+    char texts[UI_STYLE_TEXTS][UI_STYLE_TEXT]; // the texts of the styles, which they point to
 } Ui;
 
 /// @brief The Ui that the current UI_SHOW describes into; the macros use it.
@@ -194,17 +212,20 @@ static inline void Ui_AddString(ECSValue *list, const char *text)
 }
 
 /// @brief Writes the props that are not left to ui into a description's props.
-static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
+static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz depth)
 {
-    ECSValue *table = Ui_SetTable(description, "props");
-
     if (table == nullptr)
     {
         return;
     }
 
+    // a style that builds on itself stops here; ui reports the depth as a misuse
+    if (props->style != nullptr && depth < UI_DEPTH)
+    {
+        Ui_WriteProps(Ui_SetTable(table, "style"), props->style, depth + 1);
+    }
+
     Ui_SetString(table, "id", props->id);
-    Ui_SetString(table, "style", props->style);
     Ui_SetString(table, "align", props->align);
     Ui_SetString(table, "background", props->background);
     Ui_SetString(table, "hoverBackground", props->hoverBackground);
@@ -257,6 +278,12 @@ static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
     }
 }
 
+/// @brief Writes an element's props into its description, its style's among them.
+static inline void Ui_SetProps(ECSValue *description, const UiProps *props)
+{
+    Ui_WriteProps(Ui_SetTable(description, "props"), props, 0);
+}
+
 /// @brief Adds the description of an element of a type to the innermost open container, and gives it, or nullptr if memory runs out.
 static inline ECSValue *Ui_Add(const char *type, const UiProps *props)
 {
@@ -299,27 +326,43 @@ static inline void Ui_Close(void)
 static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
 {
     *retUi = (Ui){.plugin = plugin};
-    return UiFunctions_Get(plugin, &retUi->functions);
-}
+    SHU_ReturnResult(UiFunctions_Get(plugin, &retUi->functions));
 
-/// @brief Defines a style with ui.style, from the look props of a UiProps; .style names the style it builds on.
-/// @return The name, which a variable keeps for .style, or nullptr if memory ran out or the style is a misuse.
-static inline const char *Ui_Style(Ui *ui, const char *name, const UiProps *props)
-{
-    ECSValue *description = nullptr;
-
-    if (ECSValue_Create(&description) != SHUResult_Ok)
+    // ui gives its styles until it is asked again, so the Ui keeps copies, whose texts it holds itself
+    const ECSValue *styles = retUi->functions.styles();
+    const struct
     {
-        return nullptr;
+        const char *name;
+        UiProps *props;
+    } own[] = {{"view", &retUi->styles.view}, {"item", &retUi->styles.item}, {"title", &retUi->styles.title}, {"heading", &retUi->styles.heading}, {"note", &retUi->styles.note}};
+    usz texts = 0;
+
+    for (usz i = 0; i < UI__COUNT(own); i++)
+    {
+        const ECSValue *style = ECSValue_GetTableField(styles, own[i].name);
+        UiProps *props = own[i].props;
+        const char **fields[] = {&props->align, &props->background, &props->hoverBackground, &props->border, &props->color, &props->font};
+        const char *const names[] = {"align", "background", "hoverBackground", "border", "color", "font"};
+
+        for (usz j = 0; j < UI__COUNT(fields); j++)
+        {
+            const char *text = ECSValue_GetString(ECSValue_GetTableField(style, names[j]), nullptr);
+
+            if (text != nullptr && texts < UI_STYLE_TEXTS && strlen(text) < UI_STYLE_TEXT)
+            {
+                strcpy(retUi->texts[texts], text);
+                *fields[j] = retUi->texts[texts++];
+            }
+        }
+
+        props->width = ECSValue_GetNumber(ECSValue_GetTableField(style, "width"), 0.0);
+        props->height = ECSValue_GetNumber(ECSValue_GetTableField(style, "height"), 0.0);
+        props->padding = ECSValue_GetNumber(ECSValue_GetTableField(style, "padding"), 0.0);
+        props->gap = ECSValue_GetNumber(ECSValue_GetTableField(style, "gap"), 0.0);
+        props->size = ECSValue_GetNumber(ECSValue_GetTableField(style, "size"), 0.0);
     }
 
-    ECSValue_SetTable(description);
-    Ui_SetProps(description, props);
-    const ECSValue *look = ECSValue_GetTableField(description, "props");
-    bool defined = look != nullptr && ui->functions.style(name, look) != nullptr;
-    ECSValue_Destroy(&description);
-    // the name the plugin gave outlives the one ui gives back, so a variable can hold it
-    return defined ? name : nullptr;
+    return SHUResult_Ok;
 }
 
 /// @brief Starts describing a panel's elements.
@@ -731,7 +774,6 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_LIST(selected, ...) for (int UI__LATCH = (Ui_OpenList((selected), &(UiProps){__VA_ARGS__}), 0); UI__LATCH < 1; UI__LATCH++, Ui_Close())
 
 /// @brief Elements without children. Those that take a pointer write what the user changed into it, and give whether it changed.
-#define UI_STYLE(ui, name, ...) Ui_Style((ui), (name), &(UiProps){__VA_ARGS__})
 #define UI_TEXT(text, ...) Ui_Text((text), &(UiProps){__VA_ARGS__})
 #define UI_SPANS(spans, count, ...) Ui_Spans((spans), (count), &(UiProps){__VA_ARGS__})
 #define UI_BUTTON(label, ...) Ui_Button((label), &(UiProps){__VA_ARGS__})

@@ -5,6 +5,9 @@ local ecs = require("ecs")
 
 local ui = require("ui")
 
+-- ui's own styles, which the first-party views share so they look alike
+local STYLES = ui.styles()
+
 -- version of a list's saved state: the entry that was chosen, by its type and name
 local STATE_VERSION = 2
 
@@ -87,9 +90,9 @@ local function view(list)
   local rows = {}
 
   for _, entry in ipairs(list.entries) do
-    rows[#rows + 1] = ui.row({ style = "item" }, {
+    rows[#rows + 1] = ui.row({ style = STYLES.item }, {
       ui.text(entry.title),
-      ui.text(entry.type == "preset" and "preset" or entry.detail, { style = "note" }),
+      ui.text(entry.type == "preset" and "preset" or entry.detail, { style = STYLES.note }),
     })
   end
 
@@ -97,8 +100,8 @@ local function view(list)
     rows[1] = ui.text("There are no presets and no saved sessions.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ style = "view" }, {
-    ui.text("OpenECS", { style = "title" }),
+  return ui.column({ style = STYLES.view }, {
+    ui.text("OpenECS", { style = STYLES.title }),
     ui.list({
       id = "list",
       selected = list.selected,

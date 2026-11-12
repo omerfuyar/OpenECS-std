@@ -4,6 +4,9 @@
 local ecs = require("ecs")
 local ui = require("ui")
 
+-- ui's own styles, which the first-party views share so they look alike
+local STYLES = ui.styles()
+
 -- version of a window's saved state: the setting that was chosen
 local STATE_VERSION = 1
 
@@ -205,7 +208,7 @@ local function settingRow(window, setting)
     -- both columns start from no width and share the row, so every row's control has the same place
     ui.column({ width = 0, grow = 3, gap = 2 }, {
       ui.text(setting.name),
-      ui.text(setting.description, { style = "note" }),
+      ui.text(setting.description, { style = STYLES.note }),
     }),
     ui.row({ width = 0, grow = 2 }, { control(window, setting) }),
   })
@@ -241,7 +244,7 @@ local function view(window)
   for _, setting in ipairs(window.settings) do
     if setting.owner ~= owner then
       owner = setting.owner
-      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { style = "heading", selectable = false })
+      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { style = STYLES.heading, selectable = false })
     end
 
     rows[#rows + 1] = settingRow(window, setting)
@@ -258,8 +261,8 @@ local function view(window)
     end,
   }, rows)
 
-  return ui.column({ style = "view" }, {
-    ui.text("Settings", { style = "title" }),
+  return ui.column({ style = STYLES.view }, {
+    ui.text("Settings", { style = STYLES.title }),
     list,
   })
 end

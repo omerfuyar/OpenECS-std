@@ -38,7 +38,7 @@ for name in ("width height grow stretch padding gap align background hoverBackgr
   LOOK[name] = true
 end
 
--- the styles by name: ui's own, which every plugin shares so views look alike, and those that plugins define, whose names have a dot
+-- ui's own styles, which its views and the first-party views use so they look alike; ui.styles gives copies of them
 local styles = {
   view = { padding = 24, gap = 12, background = "background" },
   item = { padding = 8, gap = 12 },
@@ -46,12 +46,6 @@ local styles = {
   heading = { size = 13, color = "accent" },
   note = { size = 13, color = "textDim" },
 }
-
-local OWN_STYLES = {}
-
-for name in pairs(styles) do
-  OWN_STYLES[name] = true
-end
 
 -- the colour of a field whose text is not valid
 local INVALID_COLOR = "#E0505A"
@@ -455,16 +449,24 @@ local function element(elementType, props, children)
     ecs.check(PROPS[name], ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
   end
 
-  -- the element's own props win over its style's
-  if node.style ~= nil then
-    local style = styles[node.style]
-    ecs.check(style, ("There is no style '%s'."):format(tostring(node.style)))
+  -- the element takes each prop of its style that it does not give itself; a style's own style comes after it, so the nearer one wins
+  local style, depth = node.style, 0
+  node.style = nil
+
+  while style ~= nil do
+    ecs.check(type(style) == "table" and depth < 16, "A style is a table of look props, and styles build on fewer than 16 others.")
 
     for name, value in pairs(style) do
-      if node[name] == nil then
-        node[name] = value
+      if name ~= "style" then
+        ecs.check(LOOK[name], ("A style gives only an element's look, not '%s'."):format(tostring(name)))
+
+        if node[name] == nil then
+          node[name] = value
+        end
       end
     end
+
+    style, depth = style.style, depth + 1
   end
 
   node.type = elementType
@@ -671,7 +673,7 @@ function elements.group(props, children)
   node.border = node.border or "tabShown"
 
   if node.title then
-    node.children[1] = elements.text(node.title, { style = "note" })
+    node.children[1] = elements.text(node.title, { style = styles.note })
   end
 
   for _, child in ipairs(children or {}) do
@@ -2472,28 +2474,15 @@ ecs.event.subscribe("ecs.settingChanged", function()
 end)
 
 -- turns the inspector on or off, for every panel that ui shows
--- defines a style; a plugin that is enabled again defines its styles again, so a name with a dot takes its new props
-function services.style(name, props)
-  ecs.check(type(name) == "string" and not OWN_STYLES[name] and name:find(".", 1, true),
-    ("A style's name has a dot, as 'tool.card', and is not one of ui's own: '%s'."):format(tostring(name)))
-  ecs.check(type(props) == "table", "A style needs its props.")
-  local style = {}
+-- gives copies of ui's own styles, so a plugin that changes one changes only its own
+function services.styles()
+  local copies = {}
 
-  -- a style that names another builds on it, and its own props win
-  if props.style ~= nil then
-    ecs.check(styles[props.style], ("There is no style '%s'."):format(tostring(props.style)))
-    style = shallowCopy(styles[props.style])
+  for name, style in pairs(styles) do
+    copies[name] = shallowCopy(style)
   end
 
-  for prop, value in pairs(props) do
-    if prop ~= "style" then
-      ecs.check(LOOK[prop], ("A style gives only an element's look, not '%s'."):format(tostring(prop)))
-      style[prop] = value
-    end
-  end
-
-  styles[name] = style
-  return name
+  return copies
 end
 
 function services.inspect()
@@ -2755,13 +2744,11 @@ ecs.service.register({
         .. "@return The element's id, or nil if no tooltip shows",
     fn = services.tooltip,
   },
-  style = {
-    sig = "string(string name, value<ui.Style> props)",
-    doc = "Define a style: a look that elements take with their style prop, and that their own props override\n"
-        .. "@param name The style's name, with a dot, as \"tool.card\"; a name defined again takes the new props\n"
-        .. "@param props The look: size, colour, font, room and background props of an element, and the style it builds on\n"
-        .. "@return The name, so a variable holds the style",
-    fn = services.style,
+  styles = {
+    sig = "value<ui.Styles>()",
+    doc = "Give ui's own styles, which its views and the first-party views use so they look alike\n"
+        .. "@return Copies of the styles view, item, title, heading and note, which an element's style prop takes",
+    fn = services.styles,
   },
   inspect = {
     sig = "void()",

@@ -5,6 +5,9 @@ local ecs = require("ecs")
 
 local ui = require("ui")
 
+-- ui's own styles, which the first-party views share so they look alike
+local STYLES = ui.styles()
+
 -- version of a list's saved state: the plugin that was chosen
 local STATE_VERSION = 1
 
@@ -84,13 +87,13 @@ local function view(list)
   local rows = {}
 
   for _, entry in ipairs(list.plugins) do
-    rows[#rows + 1] = ui.column({ style = "item", gap = 6 }, {
+    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, {
       ui.row({ gap = 12 }, {
         ui.text(entry.name),
-        ui.text(entry.version, { style = "note" }),
-        ui.text(stateText(entry), { style = entry.enabled and "heading" or "note" }),
+        ui.text(entry.version, { style = STYLES.note }),
+        ui.text(stateText(entry), { style = entry.enabled and STYLES.heading or STYLES.note }),
       }),
-      entry.description ~= "" and ui.text(entry.description, { style = "note" }) or ui.space({ height = 0 }),
+      entry.description ~= "" and ui.text(entry.description, { style = STYLES.note }) or ui.space({ height = 0 }),
     })
   end
 
@@ -98,9 +101,9 @@ local function view(list)
     rows[1] = ui.text("No other plugin is in the plugin folders.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ style = "view" }, {
-    ui.text("Plugins", { style = "title" }),
-    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { style = "note" }),
+  return ui.column({ style = STYLES.view }, {
+    ui.text("Plugins", { style = STYLES.title }),
+    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { style = STYLES.note }),
     ui.list({
       id = "list",
       selected = list.selected,

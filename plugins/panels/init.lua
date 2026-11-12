@@ -5,6 +5,9 @@ local ecs = require("ecs")
 
 local ui = require("ui")
 
+-- ui's own styles, which the first-party views share so they look alike
+local STYLES = ui.styles()
+
 -- version of a list's saved state: the panel type that was chosen
 local STATE_VERSION = 1
 
@@ -64,15 +67,15 @@ local function view(list)
   for _, entry in ipairs(list.types) do
     if entry.plugin ~= plugin then
       plugin = entry.plugin
-      rows[#rows + 1] = ui.column({ style = "item", padding = 4, selectable = false }, {
-        ui.text(plugin, { style = "note", color = "text" }),
-        entry.description ~= "" and ui.text(entry.description, { style = "note" }) or ui.space({ height = 0 }),
+      rows[#rows + 1] = ui.column({ style = STYLES.item, padding = 4, selectable = false }, {
+        ui.text(plugin, { style = STYLES.note, color = "text" }),
+        entry.description ~= "" and ui.text(entry.description, { style = STYLES.note }) or ui.space({ height = 0 }),
       })
     end
 
-    rows[#rows + 1] = ui.row({ style = "item" }, {
+    rows[#rows + 1] = ui.row({ style = STYLES.item }, {
       ui.text(entry.title),
-      ui.text(entry.name, { style = "note" }),
+      ui.text(entry.name, { style = STYLES.note }),
     })
   end
 
@@ -80,8 +83,8 @@ local function view(list)
     rows[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ style = "view" }, {
-    ui.text("Open a panel", { style = "title" }),
+  return ui.column({ style = STYLES.view }, {
+    ui.text("Open a panel", { style = STYLES.title }),
     ui.list({
       id = "list",
       selected = list.selected,
