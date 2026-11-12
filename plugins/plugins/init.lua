@@ -5,10 +5,8 @@ local ecs = require("ecs")
 
 local ui = require("ui")
 
--- a size of the ui plugin's settings, in layout units, which every first-party view shares
-local function size(name)
-  return ecs.setting.get("ui." .. name)
-end
+-- ui's own styles, which the first-party views share so they look alike
+local STYLES = ui.styles()
 
 -- version of a list's saved state: the plugin that was chosen
 local STATE_VERSION = 1
@@ -89,13 +87,13 @@ local function view(list)
   local rows = {}
 
   for _, entry in ipairs(list.plugins) do
-    rows[#rows + 1] = ui.column({ padding = size("rowPadding"), gap = size("margin") / 4 }, {
-      ui.row({ gap = size("margin") / 2 }, {
+    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, {
+      ui.row({ gap = 12 }, {
         ui.text(entry.name),
-        ui.text(entry.version, { size = size("noteSize"), color = "textDim" }),
-        ui.text(stateText(entry), { size = size("noteSize"), color = entry.enabled and "accent" or "textDim" }),
+        ui.text(entry.version, { style = STYLES.note }),
+        ui.text(stateText(entry), { style = entry.enabled and STYLES.heading or STYLES.note }),
       }),
-      entry.description ~= "" and ui.text(entry.description, { size = size("noteSize"), color = "textDim" }) or ui.space({ height = 0 }),
+      entry.description ~= "" and ui.text(entry.description, { style = STYLES.note }) or ui.space({ height = 0 }),
     })
   end
 
@@ -103,9 +101,9 @@ local function view(list)
     rows[1] = ui.text("No other plugin is in the plugin folders.", { color = "textDim", selectable = false })
   end
 
-  return ui.column({ padding = size("margin"), gap = size("margin") / 2, background = "background" }, {
-    ui.text("Plugins", { size = size("titleSize") }),
-    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { size = size("noteSize"), color = "textDim" }),
+  return ui.column({ style = STYLES.view }, {
+    ui.text("Plugins", { style = STYLES.title }),
+    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { style = STYLES.note }),
     ui.list({
       id = "list",
       selected = list.selected,

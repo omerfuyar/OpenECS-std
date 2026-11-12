@@ -12,9 +12,35 @@
 ---@field width number
 ---@field height number
 
+---A style: props of an element's look, kept in a variable to share them. An element's style prop takes one.
+---@class ui.Style
+---@field style? ui.Style The style it builds on; its own props win.
+---@field width? number
+---@field height? number
+---@field grow? number
+---@field stretch? boolean
+---@field padding? number
+---@field gap? number
+---@field align? "start"|"center"|"end"
+---@field background? ecs.Color
+---@field hoverBackground? ecs.Color
+---@field border? ecs.Color
+---@field color? ecs.Color
+---@field size? number
+---@field font? string
+
+---ui's own styles, which ui.styles gives.
+---@class ui.Styles
+---@field view ui.Style A view's root: room around it and between its parts, on the background.
+---@field item ui.Style A row of a list: room around it and between its parts.
+---@field title ui.Style A view's title.
+---@field heading ui.Style A heading among items, in the accent.
+---@field note ui.Style A note, dimmed and small.
+
 ---The properties every element takes.
 ---@class ui.Props
 ---@field id? string Names the element, so it keeps its state, and ui.rect finds it; one from its place in the tree otherwise.
+---@field style? ui.Style A style: the props of its look that it does not give itself.
 ---@field width? number A fixed width, in layout units.
 ---@field height? number A fixed height, in layout units.
 ---@field grow? number A share of the room left along the parent's direction.
