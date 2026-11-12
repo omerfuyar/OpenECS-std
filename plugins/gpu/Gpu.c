@@ -96,7 +96,6 @@ static struct
     bool glslangStarted;
     SDL_SharedObject *d3dcompiler; // Windows' HLSL compiler, d3dcompiler_47.dll, loaded the first time a shader needs DXBC
     void *compiled;                // the SPIR-V that gpu.compile gave last, kept until its next call
-    char *compileError;            // why gpu.compile failed last, kept until its next call
 } GPU = {0};
 
 /// @brief Frees the renderer; the plugin's Destroy, after the handles of its frames and textures are gone.
@@ -155,7 +154,6 @@ static void GpuFree(void *data)
     }
 
     SDL_free(GPU.compiled);
-    SDL_free(GPU.compileError);
     arrfree(GPU.atlases);
     arrfree(GPU.fonts);
     arrfree(GPU.frames);
@@ -263,9 +261,14 @@ static GpuFrame *GpuFrameOf(ECSSurface *surface)
         }
     }
 
-    if (GPU.renderer == nullptr || surface->type != ECSSurfaceType_Gpu || surface->texture == nullptr)
+    if (!ECS_Check(GPU.plugin, surface->type == ECSSurfaceType_Gpu && surface->texture != nullptr, "gpu draws only into GPU surfaces."))
     {
-        ECS_LogWarn(GPU.plugin, GPU.renderer == nullptr ? "gpu cannot draw: OpenECS has no GPU renderer." : "gpu draws only into GPU surfaces.");
+        return nullptr;
+    }
+
+    if (GPU.renderer == nullptr)
+    {
+        ECS_LogWarn(GPU.plugin, "gpu cannot draw: OpenECS has no GPU renderer.");
         return nullptr;
     }
 
@@ -426,9 +429,8 @@ static void GpuMesh(ECSSurface *surface, SHUSlice points, SHUSlice colors, SHUSl
         return;
     }
 
-    if (count == 0 || colors.size / sizeof(u32) < count)
+    if (!ECS_Check(GPU.plugin, count > 0 && colors.size / sizeof(u32) >= count, "A mesh needs points, and a colour for each of them."))
     {
-        ECS_LogWarn(GPU.plugin, count == 0 ? "A mesh needs points." : "A mesh needs a colour for each of its points.");
         return;
     }
 
@@ -450,11 +452,18 @@ static void GpuMesh(ECSSurface *surface, SHUSlice points, SHUSlice colors, SHUSl
     SDL_free(pointColors);
 }
 
-static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
+static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels, const char **retError)
 {
-    if (GPU.renderer == nullptr || width < 1 || height < 1 || pixels.size != (usz)width * (usz)height * 4)
+    *retError = nullptr;
+
+    if (!ECS_Check(GPU.plugin, width >= 1 && height >= 1 && pixels.size == (usz)width * (usz)height * 4, "A texture needs a size of at least 1 by 1, and 4 bytes of pixels for each pixel."))
     {
-        ECS_LogWarn(GPU.plugin, GPU.renderer == nullptr ? "gpu cannot make a texture: OpenECS has no GPU renderer." : "A texture needs a size of at least 1 by 1, and 4 bytes of pixels for each pixel.");
+        return nullptr;
+    }
+
+    if (GPU.renderer == nullptr)
+    {
+        ECS_Fail(GPU.plugin, retError, "gpu cannot make a texture: OpenECS has no GPU renderer");
         return nullptr;
     }
 
@@ -463,7 +472,7 @@ static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
 
     if (texture == nullptr || !SDL_UpdateTexture(texture, nullptr, pixels.data, width * 4))
     {
-        ECS_LogError(GPU.plugin, "Cannot make a %dx%d texture: %s", width, height, SDL_GetError());
+        ECS_Fail(GPU.plugin, retError, "Cannot make a %dx%d texture: %s", width, height, SDL_GetError());
         SDL_DestroyTexture(texture);
         return nullptr;
     }
@@ -474,18 +483,25 @@ static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels)
     return texture;
 }
 
-static bool GpuUpdateTexture(void *textureHandle, SHUSlice pixels)
+static bool GpuUpdateTexture(void *textureHandle, SHUSlice pixels, const char **retError)
 {
     SDL_Texture *texture = textureHandle;
+    *retError = nullptr;
 
-    if (pixels.size != (usz)texture->w * (usz)texture->h * 4)
+    if (!ECS_Check(GPU.plugin, pixels.size == (usz)texture->w * (usz)texture->h * 4, "A %dx%d texture takes %d bytes of pixels.", texture->w, texture->h, texture->w * texture->h * 4))
     {
-        ECS_LogWarn(GPU.plugin, "A %dx%d texture takes %d bytes of pixels.", texture->w, texture->h, texture->w * texture->h * 4);
         return false;
     }
 
     GPU.rendered = true;
-    return SDL_UpdateTexture(texture, nullptr, pixels.data, texture->w * 4);
+
+    if (!SDL_UpdateTexture(texture, nullptr, pixels.data, texture->w * 4))
+    {
+        ECS_Fail(GPU.plugin, retError, "Cannot update a %dx%d texture: %s", texture->w, texture->h, SDL_GetError());
+        return false;
+    }
+
+    return true;
 }
 
 static void GpuTextureSize(void *textureHandle, i32 *retWidth, i32 *retHeight)
@@ -727,13 +743,28 @@ static SHUResult GpuFillGlyphs(TTF_Text *drawn, ECSValue *retGlyphs)
 }
 
 /// @brief Gives the glyphs of a text for a plugin's own pipeline: the rectangles of its glyphs in the text engine's textures, which a draw samples by number.
-static void GpuGlyphs(void *font, const char *text, f32 size, ECSValue *retGlyphs)
+static void GpuGlyphs(void *font, const char *text, f32 size, ECSValue *retGlyphs, const char **retError)
 {
+    ECSValue_SetNil(retGlyphs);
+    *retError = nullptr;
+
+    if (text[0] == '\0')
+    {
+        return;
+    }
+
+    if (GPU.textEngine == nullptr)
+    {
+        ECS_Fail(GPU.plugin, retError, "gpu cannot give glyphs: OpenECS has no GPU renderer");
+        return;
+    }
+
     TTF_Text *drawn = GpuMakeText(font, text, size);
 
     if (drawn == nullptr || GpuFillGlyphs(drawn, retGlyphs) != SHUResult_Ok)
     {
         ECSValue_SetNil(retGlyphs);
+        ECS_Fail(GPU.plugin, retError, "The glyphs of a text cannot be made: %s", drawn == nullptr ? "the font cannot be opened" : "out of memory");
     }
 
     TTF_DestroyText(drawn);
@@ -744,7 +775,7 @@ static void GpuGlyphs(void *font, const char *text, f32 size, ECSValue *retGlyph
 #pragma region Pipelines
 
 /// @brief Copies bytes into a GPU buffer, with a transfer buffer and a copy pass of their own, which reach the GPU before later draws.
-static bool GpuUpload(SDL_GPUBuffer *buffer, SHUSlice bytes)
+static bool GpuUpload(SDL_GPUBuffer *buffer, SHUSlice bytes, const char **retError)
 {
     const SDL_GPUTransferBufferCreateInfo info = {.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = (Uint32)bytes.size};
     SDL_GPUTransferBuffer *transfer = SDL_CreateGPUTransferBuffer(GPU.device, &info);
@@ -752,7 +783,7 @@ static bool GpuUpload(SDL_GPUBuffer *buffer, SHUSlice bytes)
 
     if (mapped == nullptr)
     {
-        ECS_LogError(GPU.plugin, "Cannot upload %zu bytes to the GPU: %s", bytes.size, SDL_GetError());
+        ECS_Fail(GPU.plugin, retError, "Cannot upload %zu bytes to the GPU: %s", bytes.size, SDL_GetError());
         SDL_ReleaseGPUTransferBuffer(GPU.device, transfer);
         return false;
     }
@@ -763,7 +794,7 @@ static bool GpuUpload(SDL_GPUBuffer *buffer, SHUSlice bytes)
 
     if (commands == nullptr)
     {
-        ECS_LogError(GPU.plugin, "Cannot upload %zu bytes to the GPU: %s", bytes.size, SDL_GetError());
+        ECS_Fail(GPU.plugin, retError, "Cannot upload %zu bytes to the GPU: %s", bytes.size, SDL_GetError());
         SDL_ReleaseGPUTransferBuffer(GPU.device, transfer);
         return false;
     }
@@ -789,13 +820,14 @@ static void GpuBufferDestroy(void *object)
 }
 
 /// @brief Gives a buffer new bytes; a buffer of another size is made again.
-static bool GpuUpdateBuffer(void *bufferHandle, SHUSlice bytes)
+static bool GpuUpdateBuffer(void *bufferHandle, SHUSlice bytes, const char **retError)
 {
     GpuBuffer *buffer = bufferHandle;
+    *retError = nullptr;
 
-    if (bytes.size == 0 || bytes.size > SDL_MAX_UINT32 || (buffer->index && bytes.size % 4 != 0))
+    if (!ECS_Check(GPU.plugin, bytes.size > 0 && bytes.size <= SDL_MAX_UINT32 && (!buffer->index || bytes.size % 4 == 0),
+                   buffer->index ? "An index buffer needs 32-bit indices, 4 bytes each." : "A buffer needs bytes."))
     {
-        ECS_LogWarn(GPU.plugin, buffer->index ? "An index buffer needs 32-bit indices, 4 bytes each." : "A buffer needs bytes.");
         return false;
     }
 
@@ -806,7 +838,7 @@ static bool GpuUpdateBuffer(void *bufferHandle, SHUSlice bytes)
 
         if (made == nullptr)
         {
-            ECS_LogError(GPU.plugin, "Cannot make a buffer of %zu bytes: %s", bytes.size, SDL_GetError());
+            ECS_Fail(GPU.plugin, retError, "Cannot make a buffer of %zu bytes: %s", bytes.size, SDL_GetError());
             return false;
         }
 
@@ -815,16 +847,22 @@ static bool GpuUpdateBuffer(void *bufferHandle, SHUSlice bytes)
         buffer->size = (u32)bytes.size;
     }
 
-    return GpuUpload(buffer->buffer, bytes);
+    return GpuUpload(buffer->buffer, bytes, retError);
 }
 
-static void *GpuNewBuffer(const char *usage, SHUSlice bytes)
+static void *GpuNewBuffer(const char *usage, SHUSlice bytes, const char **retError)
 {
     bool index = SDL_strcmp(usage, "index") == 0;
+    *retError = nullptr;
 
-    if (GPU.device == nullptr || (!index && SDL_strcmp(usage, "vertex") != 0))
+    if (!ECS_Check(GPU.plugin, index || SDL_strcmp(usage, "vertex") == 0, "A buffer is for \"vertex\" or \"index\" data, not '%s'.", usage))
     {
-        ECS_LogWarn(GPU.plugin, GPU.device == nullptr ? "gpu cannot make a buffer: OpenECS has no GPU renderer." : "A buffer is for \"vertex\" or \"index\" data, not '%s'.", usage);
+        return nullptr;
+    }
+
+    if (GPU.device == nullptr)
+    {
+        ECS_Fail(GPU.plugin, retError, "gpu cannot make a buffer: OpenECS has no GPU renderer");
         return nullptr;
     }
 
@@ -832,13 +870,14 @@ static void *GpuNewBuffer(const char *usage, SHUSlice bytes)
 
     if (buffer == nullptr)
     {
+        ECS_Fail(GPU.plugin, retError, "out of memory");
         return nullptr;
     }
 
     // a buffer made on the GPU whose upload failed is released with it
     buffer->index = index;
 
-    if (!GpuUpdateBuffer(buffer, bytes))
+    if (!GpuUpdateBuffer(buffer, bytes, retError))
     {
         GpuBufferDestroy(buffer);
         return nullptr;
@@ -1135,20 +1174,20 @@ static void *GpuSpirvToDxbc(const u32 *words, usz size, const char *entry, bool 
     return dxbc;
 }
 
-static void *GpuNewShader(const ECSValue *desc)
+static void *GpuNewShader(const ECSValue *desc, const char **retError)
 {
-    if (GPU.device == nullptr)
+    const char *stage = ECSValue_GetString(ECSValue_GetTableField(desc, "stage"), "");
+    bool vertex = false;
+    *retError = nullptr;
+
+    if (!ECS_Check(GPU.plugin, GpuReadStage(stage, &vertex), "A shader's stage is \"vertex\" or \"fragment\", not '%s'.", stage))
     {
-        ECS_LogWarn(GPU.plugin, "gpu cannot make a shader: OpenECS has no GPU renderer.");
         return nullptr;
     }
 
-    const char *stage = ECSValue_GetString(ECSValue_GetTableField(desc, "stage"), "");
-    bool vertex = false;
-
-    if (!GpuReadStage(stage, &vertex))
+    if (GPU.device == nullptr)
     {
-        ECS_LogWarn(GPU.plugin, "A shader's stage is \"vertex\" or \"fragment\".");
+        ECS_Fail(GPU.plugin, retError, "gpu cannot make a shader: OpenECS has no GPU renderer");
         return nullptr;
     }
 
@@ -1172,7 +1211,7 @@ static void *GpuNewShader(const ECSValue *desc)
 
         if (made == nullptr)
         {
-            ECS_LogError(GPU.plugin, "Cannot compile a %s shader from GLSL: %s", stage, error != nullptr ? error : "glslang does not tell why");
+            ECS_Fail(GPU.plugin, retError, "Cannot compile a %s shader from GLSL: %s", stage, error != nullptr ? error : "glslang does not tell why");
             SDL_free(error);
             return nullptr;
         }
@@ -1208,7 +1247,7 @@ static void *GpuNewShader(const ECSValue *desc)
 
     if (format == SDL_GPU_SHADERFORMAT_INVALID)
     {
-        ECS_LogWarn(GPU.plugin, "A shader needs code that the GPU's driver takes, or GLSL or SPIR-V that gpu turns into it: glsl, spirv, dxil or msl.");
+        ECS_Fail(GPU.plugin, retError, "A shader needs code that the GPU's driver takes, or GLSL or SPIR-V that gpu turns into it: glsl, spirv, dxil or msl");
         SDL_free(made);
         return nullptr;
     }
@@ -1228,43 +1267,38 @@ static void *GpuNewShader(const ECSValue *desc)
 
     if (shader == nullptr)
     {
-        ECS_LogError(GPU.plugin, "Cannot make a %s shader: %s", stage, SDL_GetError());
+        ECS_Fail(GPU.plugin, retError, "Cannot make a %s shader: %s", stage, SDL_GetError());
     }
 
     SDL_free(made);
     return shader;
 }
 
-/// @brief gpu.compile: compiles GLSL to SPIR-V, so a plugin finds a shader's errors, or keeps the SPIR-V. Both are kept until the next call.
+/// @brief gpu.compile: compiles GLSL to SPIR-V, so a plugin finds a shader's errors, or keeps the SPIR-V, which is kept until the next call.
 static SHUSlice GpuCompile(const char *source, const char *stage, const char **retError)
 {
     SDL_free(GPU.compiled);
-    SDL_free(GPU.compileError);
     GPU.compiled = nullptr;
-    GPU.compileError = nullptr;
-    *retError = "";
+    *retError = nullptr;
 
     bool vertex = false;
 
-    if (!GpuReadStage(stage, &vertex))
+    if (!ECS_Check(GPU.plugin, GpuReadStage(stage, &vertex), "A shader's stage is \"vertex\" or \"fragment\", not '%s'.", stage))
     {
-        *retError = "A shader's stage is \"vertex\" or \"fragment\".";
         return cs(nullptr, 0);
     }
 
     usz size = 0;
-    GPU.compiled = GpuCompileGlsl(source, vertex, &size, &GPU.compileError);
+    char *problem = nullptr;
+    GPU.compiled = GpuCompileGlsl(source, vertex, &size, &problem);
 
     // a failure always says why, even when there was no memory for the reason
-    if (GPU.compileError != nullptr)
+    if (GPU.compiled == nullptr)
     {
-        *retError = GPU.compileError;
-    }
-    else if (GPU.compiled == nullptr)
-    {
-        *retError = "gpu cannot compile the shader";
+        ECS_Fail(GPU.plugin, retError, "%s", problem != nullptr ? problem : "gpu cannot compile the shader");
     }
 
+    SDL_free(problem);
     return cs(GPU.compiled, size);
 }
 
@@ -1290,16 +1324,23 @@ static i32 GpuFindName(const char *word, const char *const *names, usz count)
     return -1;
 }
 
-static void *GpuNewPipeline(const ECSValue *desc)
+static void *GpuNewPipeline(const ECSValue *desc, const char **retError)
 {
     SDL_GPUShader *vertex = ECSValue_GetHandle(ECSValue_GetTableField(desc, "vertex"), "gpu.shader");
     SDL_GPUShader *fragment = ECSValue_GetHandle(ECSValue_GetTableField(desc, "fragment"), "gpu.shader");
     const ECSValue *attributes = ECSValue_GetTableField(desc, "attributes");
     usz count = ECSValue_GetListCount(attributes);
 
-    if (GPU.device == nullptr || vertex == nullptr || fragment == nullptr || count == 0 || count > GPU_ATTRIBUTES)
+    *retError = nullptr;
+
+    if (!ECS_Check(GPU.plugin, vertex != nullptr && fragment != nullptr && count > 0 && count <= GPU_ATTRIBUTES, "A pipeline needs a vertex shader, a fragment shader, and from 1 to 16 attributes."))
     {
-        ECS_LogWarn(GPU.plugin, GPU.device == nullptr ? "gpu cannot make a pipeline: OpenECS has no GPU renderer." : "A pipeline needs a vertex shader, a fragment shader, and from 1 to 16 attributes.");
+        return nullptr;
+    }
+
+    if (GPU.device == nullptr)
+    {
+        ECS_Fail(GPU.plugin, retError, "gpu cannot make a pipeline: OpenECS has no GPU renderer");
         return nullptr;
     }
 
@@ -1315,9 +1356,8 @@ static void *GpuNewPipeline(const ECSValue *desc)
         const char *name = ECSValue_GetString(ECSValue_GetListItem(attributes, i), "");
         i32 chosen = GpuFindName(name, formatNames, SDL_arraysize(formatNames));
 
-        if (chosen < 0)
+        if (!ECS_Check(GPU.plugin, chosen >= 0, "A vertex attribute is float, float2, float3, float4 or color, not '%s'.", name))
         {
-            ECS_LogWarn(GPU.plugin, "A vertex attribute is float, float2, float3, float4 or color, not '%s'.", name);
             return nullptr;
         }
 
@@ -1335,9 +1375,8 @@ static void *GpuNewPipeline(const ECSValue *desc)
     i32 blend = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "blend"), "none"), blendNames, SDL_arraysize(blendNames));
     bool depth = ECSValue_GetBool(ECSValue_GetTableField(desc, "depth"), true);
 
-    if (primitive < 0 || cull < 0 || blend < 0)
+    if (!ECS_Check(GPU.plugin, primitive >= 0 && cull >= 0 && blend >= 0, "A pipeline's primitive is triangles, triangleStrip, lines, lineStrip or points; its cull none, front or back; its blend none, alpha or add."))
     {
-        ECS_LogWarn(GPU.plugin, "A pipeline's primitive is triangles, triangleStrip, lines, lineStrip or points; its cull none, front or back; its blend none, alpha or add.");
         return nullptr;
     }
 
@@ -1374,7 +1413,7 @@ static void *GpuNewPipeline(const ECSValue *desc)
 
     if (pipeline == nullptr || pipeline->pipeline == nullptr)
     {
-        ECS_LogError(GPU.plugin, "Cannot make a pipeline: %s", SDL_GetError());
+        ECS_Fail(GPU.plugin, retError, "Cannot make a pipeline: %s", pipeline == nullptr ? "out of memory" : SDL_GetError());
         SDL_free(pipeline);
         return nullptr;
     }
@@ -1484,9 +1523,8 @@ static void GpuDraw(ECSSurface *surface, void *pipelineHandle, const ECSValue *d
         texture = GPU.atlases[atlas - 1].texture;
     }
 
-    if (vertices == nullptr || vertices->index || (indices != nullptr && !indices->index))
+    if (!ECS_Check(GPU.plugin, vertices != nullptr && !vertices->index && (indices == nullptr || indices->index), "A draw needs a vertex buffer as its vertices, and an index buffer as its indices, if it has any."))
     {
-        ECS_LogWarn(GPU.plugin, "A draw needs a vertex buffer as its vertices, and an index buffer as its indices, if it has any.");
         return;
     }
 
@@ -1641,17 +1679,19 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param points The points, x and y 32-bit floats each, in layout units\n"
          "@param colors One colour for each point, ARGB without premultiplied alpha; fewer colours than points draw nothing\n"
          "@param indices The 32-bit indices of the points, from 0, three for each triangle; a triangle with an index past the points is left out"},
-        {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels)",
+        {"texture", (ECSFunction)GpuNewTexture, "handle<gpu.texture>(int width, int height, buffer pixels, out string error)",
          "Make a texture on the GPU from pixels, ARGB with premultiplied alpha in native byte order, row after row, as draw's images have\n"
          "@param width The texture's width in pixels, at least 1\n"
          "@param height The texture's height in pixels, at least 1\n"
          "@param pixels Exactly 4 bytes for each pixel, which are copied\n"
-         "@return The texture, or nothing for a wrong size or without a GPU renderer; the reason is logged"},
-        {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels)",
+         "@param error Why there is no texture, such as without a GPU renderer; nothing if there is one\n"
+         "@return The texture; nothing if it cannot be made"},
+        {"updateTexture", (ECSFunction)GpuUpdateTexture, "bool(handle<gpu.texture> texture, buffer pixels, out string error)",
          "Replace a texture's pixels with as many new ones\n"
          "@param texture The texture\n"
          "@param pixels Exactly 4 bytes for each of the texture's pixels, laid out as texture takes them, which are copied\n"
-         "@return Whether the pixels were replaced; false for another number of bytes"},
+         "@param error Why the pixels were not replaced; nothing if they were\n"
+         "@return Whether the pixels were replaced"},
         {"textureSize", (ECSFunction)GpuTextureSize, "void(handle<gpu.texture> texture, out int width, out int height)",
          "Give a texture's size in pixels\n"
          "@param texture The texture\n"
@@ -1660,16 +1700,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"freeTexture", (ECSFunction)GpuFreeTexture, "void(handle<gpu.texture> texture)",
          "Free a texture now, instead of when no one uses its handle\n"
          "@param texture The texture, which is not used again after this"},
-        {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes)",
+        {"buffer", (ECSFunction)GpuNewBuffer, "handle<gpu.buffer>(string usage, buffer bytes, out string error)",
          "Make a buffer on the GPU of \"vertex\" data, vertices one after another as a pipeline's attributes lay them out, or of \"index\" data, 32-bit indices\n"
          "@param usage What it holds: \"vertex\" or \"index\"\n"
          "@param bytes The buffer's bytes, at least one, which are copied; 4 bytes for each index\n"
-         "@return The buffer, or nothing for another usage, no bytes or without a GPU renderer; the reason is logged"},
-        {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes)",
+         "@param error Why there is no buffer, such as without a GPU renderer; nothing if there is one\n"
+         "@return The buffer; nothing if it cannot be made"},
+        {"updateBuffer", (ECSFunction)GpuUpdateBuffer, "bool(handle<gpu.buffer> buffer, buffer bytes, out string error)",
          "Replace a buffer's bytes; bytes of another size make the buffer again\n"
          "@param buffer The buffer\n"
          "@param bytes The new bytes, at least one, which are copied; 4 bytes for each index\n"
-         "@return Whether the bytes were replaced; the reason they were not is logged"},
+         "@param error Why the bytes were not replaced; nothing if they were\n"
+         "@return Whether the bytes were replaced"},
         {"bufferSize", (ECSFunction)GpuBufferSize, "int(handle<gpu.buffer> buffer)",
          "Give a buffer's size in bytes\n"
          "@param buffer The buffer\n"
@@ -1677,20 +1719,22 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"freeBuffer", (ECSFunction)GpuFreeBuffer, "void(handle<gpu.buffer> buffer)",
          "Free a buffer now, instead of when no one uses its handle\n"
          "@param buffer The buffer, which is not used again after this"},
-        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc)",
+        {"shader", (ECSFunction)GpuNewShader, "handle<gpu.shader>(value<gpu.ShaderDesc> desc, out string error)",
          "Make a vertex or fragment shader from GLSL, or from compiled code: SPIR-V, DXIL or MSL; gpu turns GLSL and SPIR-V into the code the GPU's driver takes\n"
          "@param desc The shader's stage, its code, its entry, and its numbers of uniforms and samplers, as gpu.ShaderDesc's fields say\n"
-         "@return The shader, or nothing if it cannot be made, such as for code that does not compile; the reason is logged"},
+         "@param error Why there is no shader, such as code that does not compile; nothing if there is one\n"
+         "@return The shader; nothing if it cannot be made"},
         {"compile", (ECSFunction)GpuCompile, "buffer(string source, string stage, out string error)",
          "Compile GLSL to SPIR-V for a vertex or fragment stage; an empty buffer and why if it cannot\n"
          "@param source The GLSL source, version 450 for Vulkan\n"
          "@param stage The shader's stage: \"vertex\" or \"fragment\"\n"
-         "@param error Set to why it does not compile, or to an empty string if it does\n"
-         "@return The SPIR-V, kept until the next compile, or an empty buffer if it does not compile"},
-        {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc)",
+         "@param error Why it does not compile; nothing if it does\n"
+         "@return The SPIR-V, kept until the next compile; an empty buffer if it does not compile"},
+        {"pipeline", (ECSFunction)GpuNewPipeline, "handle<gpu.pipeline>(value<gpu.PipelineDesc> desc, out string error)",
          "Make a pipeline: a vertex and a fragment shader, the attributes of a vertex, and how its primitives are drawn\n"
          "@param desc The shaders, the attributes, from 1 to 16, the primitive, depth, cull and blend, as gpu.PipelineDesc's fields say\n"
-         "@return The pipeline, or nothing if it cannot be made, such as for a missing shader or an unknown word; the reason is logged"},
+         "@param error Why there is no pipeline, such as without a GPU renderer; nothing if there is one\n"
+         "@return The pipeline; nothing if it cannot be made"},
         {"draw", (ECSFunction)GpuDraw, "void(handle<ecs.surface> surface, handle<gpu.pipeline> pipeline, value<gpu.Draw> draw)",
          "Draw vertices with a pipeline into a frame, after what it drew before, with a depth texture that the frame's draws share\n"
          "@param surface The GPU panel's surface, as its draw gives it\n"
@@ -1724,12 +1768,13 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param size The font's size, in layout units\n"
          "@param color The text's colour, blended by its alpha\n"
          "@return The text's width in layout units; 0 for empty text, or when it cannot draw"},
-        {"glyphs", (ECSFunction)GpuGlyphs, "void(handle<draw.font> font, string text, float size, out value<gpu.Glyphs?> glyphs)",
-         "Give the glyphs of a text in one of draw's fonts at a size in pixels, for a pipeline of a plugin's own: for each texture of the glyphs, its number, which a draw's atlas samples, and the glyphs' rectangles as vertices and indices; nothing without a GPU renderer\n"
+        {"glyphs", (ECSFunction)GpuGlyphs, "void(handle<draw.font> font, string text, float size, out value<gpu.Glyphs?> glyphs, out string error)",
+         "Give the glyphs of a text in one of draw's fonts at a size in pixels, for a pipeline of a plugin's own: for each texture of the glyphs, its number, which a draw's atlas samples, and the glyphs' rectangles as vertices and indices\n"
          "@param font The font, such as draw.font gives\n"
          "@param text The text, in UTF-8\n"
          "@param size The font's size in pixels, rounded to a whole pixel\n"
-         "@param glyphs Set to the text's width, its line's height and its parts, as gpu.Glyphs's fields say; nothing for empty text, without a GPU renderer, or if the font cannot be opened"},
+         "@param glyphs Set to the text's width, its line's height and its parts, as gpu.Glyphs's fields say; nothing for empty text, or if they cannot be made\n"
+         "@param error Why there are no glyphs, such as without a GPU renderer; nothing if there are"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

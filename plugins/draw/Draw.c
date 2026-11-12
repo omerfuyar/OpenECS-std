@@ -287,13 +287,7 @@ static SDL_Rect DrawToPixels(f32 scale, f32 x, f32 y, f32 width, f32 height)
 /// @brief Checks that draw can draw into a surface.
 static bool DrawCanDraw(const ECSSurface *surface)
 {
-    if (surface->type != ECSSurfaceType_Pixels)
-    {
-        ECS_LogWarn(DRAW.plugin, "draw draws only into pixels surfaces.");
-        return false;
-    }
-
-    return true;
+    return ECS_Check(DRAW.plugin, surface->type == ECSSurfaceType_Pixels, "draw draws only into pixels surfaces.");
 }
 
 #pragma endregion Pixels
@@ -538,28 +532,27 @@ static void DrawImageDestroy(void *object)
     SDL_free(image);
 }
 
-static void *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
+static void *DrawNewImage(i32 width, i32 height, SHUSlice pixels, const char **retError)
 {
-    if (width <= 0 || height <= 0 || (pixels.size != 0 && pixels.size != (usz)width * (usz)height * sizeof(u32)))
+    *retError = nullptr;
+
+    if (!ECS_Check(DRAW.plugin, width > 0 && height > 0 && (pixels.size == 0 || pixels.size == (usz)width * (usz)height * sizeof(u32)),
+                   "An image of %d by %d pixels needs %lld bytes of pixels, or none.", width, height, (long long)width * (long long)height * 4))
     {
-        ECS_LogWarn(DRAW.plugin, "An image of %d by %d pixels needs %lld bytes of pixels, or none.", width, height, (long long)width * (long long)height * 4);
         return nullptr;
     }
 
     DrawImage *image = SDL_calloc(1, sizeof(DrawImage));
+    SDL_Surface *surface = image == nullptr ? nullptr : SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ARGB8888);
 
-    if (image == nullptr)
-    {
-        return nullptr;
-    }
-
-    image->surface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_ARGB8888);
-
-    if (image->surface == nullptr)
+    if (surface == nullptr)
     {
         SDL_free(image);
+        ECS_Fail(DRAW.plugin, retError, "An image of %d by %d pixels cannot be made: %s", width, height, image == nullptr ? "out of memory" : SDL_GetError());
         return nullptr;
     }
+
+    image->surface = surface;
 
     // a missing buffer gives a transparent image
     for (i32 row = 0; row < height && pixels.size != 0; row++)
@@ -571,22 +564,21 @@ static void *DrawNewImage(i32 width, i32 height, SHUSlice pixels)
     return image;
 }
 
-static bool DrawSetImagePixels(void *imageHandle, SHUSlice pixels)
+static void DrawSetImagePixels(void *imageHandle, SHUSlice pixels)
 {
     DrawImage *image = imageHandle;
     SDL_Surface *surface = image->surface;
 
-    if (pixels.size != (usz)surface->w * (usz)surface->h * sizeof(u32))
+    if (!ECS_Check(DRAW.plugin, pixels.size == (usz)surface->w * (usz)surface->h * sizeof(u32), "An image of %d by %d pixels gets %lld bytes of pixels, not %llu.", surface->w, surface->h,
+                   (long long)surface->w * (long long)surface->h * 4, (unsigned long long)pixels.size))
     {
-        return false;
+        return;
     }
 
     for (i32 row = 0; row < surface->h; row++)
     {
         SDL_memcpy((u8 *)surface->pixels + (usz)row * (usz)surface->pitch, (const u8 *)pixels.data + (usz)row * (usz)surface->w * sizeof(u32), (usz)surface->w * sizeof(u32));
     }
-
-    return true;
 }
 
 static void DrawImageSize(void *imageHandle, i32 *retWidth, i32 *retHeight)
@@ -759,9 +751,17 @@ static DrawFont *DrawFindOrAddStyledFont(const char *name, TTF_FontStyleFlags st
     return font;
 }
 
-static void *DrawFindOrAddFont(const char *name)
+static void *DrawFindOrAddFont(const char *name, const char **retError)
 {
-    return DrawFindOrAddStyledFont(name, TTF_STYLE_NORMAL);
+    *retError = nullptr;
+    DrawFont *font = DrawFindOrAddStyledFont(name, TTF_STYLE_NORMAL);
+
+    if (font == nullptr)
+    {
+        ECS_Fail(DRAW.plugin, retError, "out of memory");
+    }
+
+    return font;
 }
 
 static void *DrawStyledFont(const char *name, const char *style, const char **retError)
@@ -769,13 +769,19 @@ static void *DrawStyledFont(const char *name, const char *style, const char **re
     TTF_FontStyleFlags flags = TTF_STYLE_NORMAL;
     *retError = nullptr;
 
-    if (!DrawReadStyle(style, &flags))
+    if (!ECS_Check(DRAW.plugin, DrawReadStyle(style, &flags), "The style '%s' is not words of bold, italic, underline and strike.", style))
     {
-        *retError = "the style is words of bold, italic, underline and strike";
         return nullptr;
     }
 
-    return DrawFindOrAddStyledFont(name, flags);
+    DrawFont *font = DrawFindOrAddStyledFont(name, flags);
+
+    if (font == nullptr)
+    {
+        ECS_Fail(DRAW.plugin, retError, "out of memory");
+    }
+
+    return font;
 }
 
 /// @brief Finds a font at a size in pixels, and opens it the first time.
@@ -1087,17 +1093,17 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param indices Two 32-bit point numbers for each line, counted from 0; a line that names a missing point is skipped\n"
          "@param thickness The lines' thickness, in layout units; at least a pixel\n"
          "@param color The colour, blended by its alpha"},
-        {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels)",
+        {"newImage", (ECSFunction)DrawNewImage, "handle<draw.image>(int width, int height, buffer pixels, out string error)",
          "Make an image from pixels, ARGB in native byte order, row after row; empty pixels make it transparent\n"
          "@param width The image's width, in pixels; more than 0\n"
          "@param height The image's height, in pixels; more than 0\n"
-         "@param pixels Four bytes for each pixel, not premultiplied, or none; they are copied\n"
-         "@return The image, or nothing if the pixels do not match the size or memory runs out"},
-        {"setImagePixels", (ECSFunction)DrawSetImagePixels, "bool(handle<draw.image> image, buffer pixels)",
+         "@param pixels Four bytes for each pixel, not premultiplied, as many as the size needs, or none; they are copied\n"
+         "@param error Why there is no image, such as memory that runs out; nothing if there is one\n"
+         "@return The image; nothing if it cannot be made"},
+        {"setImagePixels", (ECSFunction)DrawSetImagePixels, "void(handle<draw.image> image, buffer pixels)",
          "Replace an image's pixels, such as with a video's next frame\n"
          "@param image The image\n"
-         "@param pixels ARGB8888 pixels in native byte order, not premultiplied, row after row, as many as the image has\n"
-         "@return false if the pixels are not as many as the image's"},
+         "@param pixels ARGB8888 pixels in native byte order, not premultiplied, row after row, as many as the image has"},
         {"imageSize", (ECSFunction)DrawImageSize, "void(handle<draw.image> image, out int width, out int height)",
          "Give an image's size in pixels\n"
          "@param image The image\n"
@@ -1134,16 +1140,17 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param height The rectangle's height, in layout units; 0 or less draws nothing\n"
          "@param angle The turn, in degrees; a negative angle turns it anticlockwise\n"
          "@param color Multiplies each pixel's colour: white leaves it as it is, and a lower alpha fades it"},
-        {"font", (ECSFunction)DrawFindOrAddFont, "handle<draw.font>(string name)",
+        {"font", (ECSFunction)DrawFindOrAddFont, "handle<draw.font>(string name, out string error)",
          "Give a font: \"ui\", the interface's; \"mono\", a monospace one; or the path of a TrueType file\n"
          "@param name \"ui\", \"mono\" or a path; a relative path starts at the executable's folder\n"
-         "@return The font, the same handle for the same name, or nothing if memory runs out; a file that cannot be opened is reported when text is drawn"},
+         "@param error Why there is no font, as memory ran out; nothing if there is one\n"
+         "@return The font, the same handle for the same name; a file that cannot be opened is reported when text is drawn"},
         {"styledFont", (ECSFunction)DrawStyledFont, "handle<draw.font>(string name, string style, out string error)",
          "Give a font in a style, which SDL_ttf makes from the font's file, so it follows any font\n"
          "@param name \"ui\", \"mono\" or a path, as font takes\n"
          "@param style Words separated by spaces: bold, italic, underline and strike, such as \"bold italic\"; empty for the font itself\n"
-         "@param error Why there is no font, such as a word it does not know; nothing if there is one\n"
-         "@return The font, the same handle for the same name and style; nothing if the style cannot be read or memory runs out"},
+         "@param error Why there is no font, as memory ran out; nothing if there is one\n"
+         "@return The font, the same handle for the same name and style"},
         {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)",
          "Give the file a font is read from; a setting that names another file changes it\n"
          "@param font The font\n"

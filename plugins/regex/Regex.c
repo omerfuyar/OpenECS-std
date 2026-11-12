@@ -24,7 +24,6 @@ static struct
 {
     ECSPlugin plugin;
     pcre2_general_context *context; // gives PCRE2 SDL's allocator
-    char error[256];                // the last error, kept until the next one
     char *result;                   // the last text a function gave, kept until the next one
     usz resultSize;
 } REGEX = {0};
@@ -41,7 +40,7 @@ static void RegexRelease(void *memory, void *data)
     SDL_free(memory);
 }
 
-/// @brief Keeps a text until the next one, and gives it.
+/// @brief Fails a call, as ECS_Fail does, with PCRE2's message for a code, and gives why.
 static const char *RegexFail(const char *what, int code)
 {
     PCRE2_UCHAR message[200];
@@ -51,8 +50,9 @@ static const char *RegexFail(const char *what, int code)
         SDL_strlcpy((char *)message, "unknown error", sizeof(message));
     }
 
-    SDL_snprintf(REGEX.error, sizeof(REGEX.error), "%s: %s", what, (const char *)message);
-    return REGEX.error;
+    const char *error = nullptr;
+    ECS_Fail(REGEX.plugin, &error, "%s: %s", what, (const char *)message);
+    return error;
 }
 
 static void RegexPatternDestroy(void *data)
@@ -99,9 +99,8 @@ static RegexPattern *RegexCompile(const char *source, const ECSValue *options, c
     *retError = nullptr;
     u32 flags = 0;
 
-    if (!RegexReadOptions(options, &flags))
+    if (!ECS_Check(REGEX.plugin, RegexReadOptions(options, &flags), "The options are letters of i, m, s and x."))
     {
-        *retError = "the options are letters of i, m, s and x";
         return nullptr;
     }
 
@@ -115,8 +114,7 @@ static RegexPattern *RegexCompile(const char *source, const ECSValue *options, c
     {
         PCRE2_UCHAR message[200];
         (void)pcre2_get_error_message(code, message, sizeof(message));
-        SDL_snprintf(REGEX.error, sizeof(REGEX.error), "the pattern cannot be read at byte %u: %s", (unsigned)offset + 1U, (const char *)message);
-        *retError = REGEX.error;
+        ECS_Fail(REGEX.plugin, retError, "the pattern cannot be read at byte %u: %s", (unsigned)offset + 1U, (const char *)message);
         return nullptr;
     }
 
@@ -128,7 +126,7 @@ static RegexPattern *RegexCompile(const char *source, const ECSValue *options, c
         SDL_free(pattern);
         pcre2_match_data_free(match);
         pcre2_code_free(compiled);
-        *retError = "out of memory";
+        ECS_Fail(REGEX.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -289,7 +287,7 @@ static void RegexMatch(RegexPattern *pattern, SHUSlice text, const ECSValue *fro
     }
     else if (found > 0 && !RegexWriteMatch(pattern, text, found, retMatch))
     {
-        *retError = "out of memory";
+        ECS_Fail(REGEX.plugin, retError, "out of memory");
         ECSValue_SetNil(retMatch);
     }
 }
@@ -308,7 +306,7 @@ static void RegexMatchAll(RegexPattern *pattern, SHUSlice text, ECSValue *retMat
 
         if (ECSValue_AddListItem(retMatches, &match) || !RegexWriteMatch(pattern, text, found, match))
         {
-            *retError = "out of memory";
+            ECS_Fail(REGEX.plugin, retError, "out of memory");
             ECSValue_SetNil(retMatches);
             return;
         }
@@ -343,7 +341,7 @@ static void RegexSplit(RegexPattern *pattern, SHUSlice text, ECSValue *retParts,
 
         if (ECSValue_AddListItem(retParts, &part) || ECSValue_SetBuffer(part, (SHUSliceView){(const u8 *)text.data + partStart, bounds[0] - partStart}))
         {
-            *retError = "out of memory";
+            ECS_Fail(REGEX.plugin, retError, "out of memory");
             ECSValue_SetNil(retParts);
             return;
         }
@@ -360,7 +358,7 @@ static void RegexSplit(RegexPattern *pattern, SHUSlice text, ECSValue *retParts,
 
     if (ECSValue_AddListItem(retParts, &part) || ECSValue_SetBuffer(part, (SHUSliceView){(const u8 *)text.data + partStart, text.size - partStart}))
     {
-        *retError = "out of memory";
+        ECS_Fail(REGEX.plugin, retError, "out of memory");
         ECSValue_SetNil(retParts);
     }
 }
@@ -382,7 +380,7 @@ static SHUSlice RegexSubstitute(RegexPattern *pattern, SHUSlice text, const char
 
             if (grown == nullptr)
             {
-                *retError = "out of memory";
+                ECS_Fail(REGEX.plugin, retError, "out of memory");
                 return (SHUSlice){0};
             }
 
@@ -407,7 +405,7 @@ static SHUSlice RegexSubstitute(RegexPattern *pattern, SHUSlice text, const char
         }
     }
 
-    *retError = "out of memory";
+    ECS_Fail(REGEX.plugin, retError, "out of memory");
     return (SHUSlice){0};
 }
 

@@ -57,6 +57,7 @@ typedef struct HashHasher
 
 static struct
 {
+    ECSPlugin plugin;
     char digest[129]; // the last digest, as hexadecimal text, kept until the next one
 } HASH = {0};
 
@@ -240,14 +241,18 @@ static void HashHasherDestroy(void *object)
     SDL_aligned_free(hasher);
 }
 
-static const char *HashOf(const char *algorithm, SHUSlice data, const char **retError)
+/// @brief Checks that an algorithm is one hash knows.
+static bool HashCheckAlgorithm(const char *algorithm, HashAlgorithm found)
 {
-    *retError = nullptr;
+    return ECS_Check(HASH.plugin, found != HashAlgorithm_Count, "'%s' is not one of crc32, md5, sha1, sha256, sha512, xxh64, xxh3 and xxh128.", algorithm);
+}
+
+static const char *HashOf(const char *algorithm, SHUSlice data)
+{
     HashAlgorithm found = HashFindAlgorithm(algorithm);
 
-    if (found == HashAlgorithm_Count)
+    if (!HashCheckAlgorithm(algorithm, found))
     {
-        *retError = "the algorithm is not one of crc32, md5, sha1, sha256, sha512, xxh64, xxh3 and xxh128";
         return nullptr;
     }
 
@@ -262,9 +267,8 @@ static HashHasher *HashNewHasher(const char *algorithm, const char **retError)
     *retError = nullptr;
     HashAlgorithm found = HashFindAlgorithm(algorithm);
 
-    if (found == HashAlgorithm_Count)
+    if (!HashCheckAlgorithm(algorithm, found))
     {
-        *retError = "the algorithm is not one of crc32, md5, sha1, sha256, sha512, xxh64, xxh3 and xxh128";
         return nullptr;
     }
 
@@ -272,7 +276,7 @@ static HashHasher *HashNewHasher(const char *algorithm, const char **retError)
 
     if (hasher == nullptr)
     {
-        *retError = "out of memory";
+        ECS_Fail(HASH.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -299,6 +303,7 @@ static const char *HashDigest(HashHasher *hasher)
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
+    HASH.plugin = plugin;
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "hasher", HashHasherDestroy));
 
     const struct
@@ -308,17 +313,16 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"of", (ECSFunction)HashOf, "string(string algorithm, buffer data, out string error)",
+        {"of", (ECSFunction)HashOf, "string(string algorithm, buffer data)",
          "Hash data whole\n"
          "@param algorithm crc32, md5, sha1, sha256, sha512, xxh64, xxh3 or xxh128\n"
          "@param data The data\n"
-         "@param error Why it cannot hash; nothing if it hashed\n"
-         "@return The hash as hexadecimal text, as tools such as sha256sum write it; nothing if the algorithm is unknown"},
+         "@return The hash as hexadecimal text, as tools such as sha256sum write it"},
         {"new", (ECSFunction)HashNewHasher, "handle<hash.hasher>(string algorithm, out string error)",
          "Start a hash that takes its data in parts, such as a large file's\n"
          "@param algorithm crc32, md5, sha1, sha256, sha512, xxh64, xxh3 or xxh128\n"
-         "@param error Why it cannot start; nothing if it started\n"
-         "@return The hasher; nothing if the algorithm is unknown"},
+         "@param error Why it cannot start, as memory ran out; nothing if it started\n"
+         "@return The hasher"},
         {"update", (ECSFunction)HashUpdate, "bool(handle<hash.hasher> hasher, buffer data)",
          "Add the next part of the data\n"
          "@param hasher The hasher\n"

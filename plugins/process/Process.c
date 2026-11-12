@@ -23,40 +23,45 @@ typedef struct ProcessHandle
 static struct
 {
     ECSPlugin plugin;
-    char *error; // why the last call failed, kept until the next one
-    void *ran;   // what the last run gave, kept until the next run
+    void *ran; // what the last run gave, kept until the next run
 } PROCESS = {0};
 
-/// @brief Keeps why a call failed, with SDL's error, and gives it.
+/// @brief Fails a call, as ECS_Fail does, with SDL's error, and gives why.
 static const char *ProcessFail(const char *what)
 {
-    SDL_free(PROCESS.error);
-    PROCESS.error = nullptr;
-
-    if (SDL_asprintf(&PROCESS.error, "%s: %s", what, SDL_GetError()) < 0)
-    {
-        PROCESS.error = nullptr;
-    }
-
-    return PROCESS.error == nullptr ? "out of memory" : PROCESS.error;
+    const char *error = nullptr;
+    ECS_Fail(PROCESS.plugin, &error, "%s: %s", what, SDL_GetError());
+    return error;
 }
 
-/// @brief Makes the list of arguments that SDL takes from a list of texts, ending with nullptr; nullptr if the list is empty or holds something else.
-/// @return The list; free it with SDL_free. Its texts are the value's.
-static const char **ProcessArguments(const ECSValue *command)
+/// @brief Makes the list of arguments that SDL takes from a list of texts, ending with nullptr. A list that is empty or holds something else is a misuse.
+/// @return The list, to free with SDL_free, whose texts are the value's; nullptr if it is not made, with why in retError when memory runs out.
+static const char **ProcessArguments(const ECSValue *command, const char **retError)
 {
     usz count = ECSValue_GetListCount(command);
-    const char **arguments = count == 0 ? nullptr : SDL_calloc(count + 1, sizeof(char *));
+    bool texts = count > 0;
 
-    for (usz i = 0; arguments != nullptr && i < count; i++)
+    for (usz i = 0; texts && i < count; i++)
     {
-        arguments[i] = ECSValue_GetString(ECSValue_GetListItem(command, i), nullptr);
+        texts = ECSValue_GetType(ECSValue_GetListItem(command, i)) == ECSValueType_String;
+    }
 
-        if (arguments[i] == nullptr)
-        {
-            SDL_free((void *)arguments);
-            return nullptr;
-        }
+    if (!ECS_Check(PROCESS.plugin, texts, "The command is a list of texts: the program, then its arguments."))
+    {
+        return nullptr;
+    }
+
+    const char **arguments = SDL_calloc(count + 1, sizeof(char *));
+
+    if (arguments == nullptr)
+    {
+        ECS_Fail(PROCESS.plugin, retError, "out of memory");
+        return nullptr;
+    }
+
+    for (usz i = 0; i < count; i++)
+    {
+        arguments[i] = ECSValue_GetString(ECSValue_GetListItem(command, i), "");
     }
 
     return arguments;
@@ -128,11 +133,10 @@ static void ProcessDestroy(void *object)
 static ProcessHandle *ProcessStart(const ECSValue *command, const char *folder, const char **retError)
 {
     *retError = nullptr;
-    const char **arguments = ProcessArguments(command);
+    const char **arguments = ProcessArguments(command, retError);
 
     if (arguments == nullptr)
     {
-        *retError = "the command is a list of texts: the program, then its arguments";
         return nullptr;
     }
 
@@ -165,10 +169,23 @@ static SHUSlice ProcessReadErrors(ProcessHandle *handle)
     return ProcessTake(SDL_GetPointerProperty(SDL_GetProcessProperties(handle->process), SDL_PROP_PROCESS_STDERR_POINTER, nullptr), &handle->errors);
 }
 
-static bool ProcessWrite(ProcessHandle *handle, SHUSlice data)
+static bool ProcessWrite(ProcessHandle *handle, SHUSlice data, const char **retError)
 {
+    *retError = nullptr;
     SDL_IOStream *input = SDL_GetProcessInput(handle->process);
-    return input != nullptr && SDL_WriteIO(input, data.data, data.size) == data.size;
+
+    if (!ECS_Check(PROCESS.plugin, input != nullptr, "The program's input is closed."))
+    {
+        return false;
+    }
+
+    if (SDL_WriteIO(input, data.data, data.size) != data.size)
+    {
+        *retError = ProcessFail("the input cannot be written");
+        return false;
+    }
+
+    return true;
 }
 
 // a program that reads its input to the end, such as sort, needs it closed
@@ -210,11 +227,10 @@ static SHUSlice ProcessRun(const ECSValue *command, const char *folder, SHUSlice
     *retError = nullptr;
     SDL_free(PROCESS.ran);
     PROCESS.ran = nullptr;
-    const char **arguments = ProcessArguments(command);
+    const char **arguments = ProcessArguments(command, retError);
 
     if (arguments == nullptr)
     {
-        *retError = "the command is a list of texts: the program, then its arguments";
         return cs(nullptr, 0);
     }
 
@@ -255,7 +271,6 @@ static SHUSlice ProcessRun(const ECSValue *command, const char *folder, SHUSlice
 static void ProcessFree(void *data)
 {
     (void)data;
-    SDL_free(PROCESS.error);
     SDL_free(PROCESS.ran);
     SDL_zero(PROCESS);
 }
@@ -290,11 +305,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Take what the program wrote to its errors since the last readErrors, without waiting\n"
          "@param process The program\n"
          "@return The errors, kept until the next readErrors; empty if nothing came"},
-        {"write", (ECSFunction)ProcessWrite, "bool(handle<process.process> process, buffer data)",
-         "Write to the program's input\n"
+        {"write", (ECSFunction)ProcessWrite, "bool(handle<process.process> process, buffer data, out string error)",
+         "Write to the program's input, which must not be closed\n"
          "@param process The program\n"
          "@param data What to write\n"
-         "@return false if its input is closed"},
+         "@param error Why it cannot be written, as when the program ended; nothing if it is\n"
+         "@return True if it is written"},
         {"closeInput", (ECSFunction)ProcessCloseInput, "void(handle<process.process> process)",
          "Close the program's input, for a program that reads its input to the end\n"
          "@param process The program"},

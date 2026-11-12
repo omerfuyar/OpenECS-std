@@ -27,9 +27,9 @@
 #define AUDIO_PIECE 0.25
 
 /// @brief The functions of mixer that audio uses.
-typedef void *(*AudioNewSoundFunction)(i32 channels, i32 rate, SHUSlice samples);
-typedef void *(*AudioNewStreamFunction)(i32 channels, i32 rate);
-typedef bool (*AudioQueueFunction)(void *sound, SHUSlice samples);
+typedef void *(*AudioNewSoundFunction)(i32 channels, i32 rate, SHUSlice samples, const char **retError);
+typedef void *(*AudioNewStreamFunction)(i32 channels, i32 rate, const char **retError);
+typedef bool (*AudioQueueFunction)(void *sound, SHUSlice samples, const char **retError);
 typedef f64 (*AudioQueuedFunction)(void *sound);
 typedef void (*AudioSoundFunction)(void *sound);
 
@@ -189,8 +189,8 @@ static u64 AudioReadFrames(AudioDecoder *decoder, u64 wanted, f32 *retSamples)
 }
 
 /// @brief Opens a sound file's decoder, from a path whose relative form starts at the executable's folder.
-/// @return false if the file cannot be read; the reason is logged, after what was being done.
-static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char *doing)
+/// @return false if the file cannot be read, with why in retError.
+static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char **retError)
 {
     char *fullPath = nullptr;
     bool opened = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && AudioOpenDecoder(retDecoder, fullPath);
@@ -203,7 +203,7 @@ static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char
 
     if (!opened)
     {
-        ECS_LogError(AUDIO.plugin, "Cannot %s the sound '%s': not a WAV, MP3, FLAC or OGG file that can be read.", doing, fullPath != nullptr ? fullPath : path);
+        ECS_Fail(AUDIO.plugin, retError, "'%s' is not a WAV, MP3, FLAC or OGG file that can be read.", fullPath != nullptr ? fullPath : path);
     }
 
     ECSPath_Free(fullPath);
@@ -213,12 +213,13 @@ static bool AudioOpenFile(AudioDecoder *retDecoder, const char *path, const char
 #pragma endregion Decoders
 
 /// @brief Reads a sound file whole into a new sound of the mixer plugin.
-/// @return The sound, or nullptr if the file cannot be read; the reason is logged.
-static void *AudioLoad(const char *path)
+/// @return The sound, or nullptr if the file cannot be read, with why in retError.
+static void *AudioLoad(const char *path, const char **retError)
 {
     AudioDecoder decoder;
+    *retError = nullptr;
 
-    if (!AudioOpenFile(&decoder, path, "read"))
+    if (!AudioOpenFile(&decoder, path, retError))
     {
         return nullptr;
     }
@@ -240,7 +241,7 @@ static void *AudioLoad(const char *path)
     AudioCloseDecoder(&decoder);
 
     // mixer copies the samples into its sound
-    void *sound = AUDIO.NewSound((i32)decoder.channels, (i32)decoder.rate, cs(samples, arrlenu(samples) * sizeof(f32)));
+    void *sound = AUDIO.NewSound((i32)decoder.channels, (i32)decoder.rate, cs(samples, arrlenu(samples) * sizeof(f32)), retError);
     arrfree(samples);
     return sound;
 }
@@ -265,7 +266,8 @@ static bool AudioReadPiece(AudioStream *stream)
 {
     u64 wanted = (u64)((f64)stream->decoder.rate * AUDIO_PIECE);
     u64 frames = AudioReadFrames(&stream->decoder, wanted, stream->piece);
-    return frames > 0 && AUDIO.Queue(stream->sound, cs(stream->piece, (usz)frames * stream->decoder.channels * sizeof(f32))) && frames == wanted;
+    const char *error = nullptr;
+    return frames > 0 && AUDIO.Queue(stream->sound, cs(stream->piece, (usz)frames * stream->decoder.channels * sizeof(f32)), &error) && frames == wanted;
 }
 
 /// @brief Keeps each stream's sound AUDIO_AHEAD seconds ahead of what plays, and finishes the streams whose files have ended.
@@ -298,29 +300,34 @@ static void AudioFeed(void *data)
 }
 
 /// @brief Opens a sound file to read a piece at a time into a new stream of mixer, which audio feeds while it plays.
-/// @return The stream, or nullptr if the file cannot be read; the reason is logged.
-static void *AudioStreamFile(const char *path)
+/// @return The stream, or nullptr if the file cannot be read, with why in retError.
+static void *AudioStreamFile(const char *path, const char **retError)
 {
+    *retError = nullptr;
     AudioStream *stream = SDL_calloc(1, sizeof(AudioStream));
 
     if (stream == nullptr)
     {
-        ECS_LogError(AUDIO.plugin, "Cannot stream the sound '%s': out of memory.", path);
+        ECS_Fail(AUDIO.plugin, retError, "out of memory");
         return nullptr;
     }
 
-    if (!AudioOpenFile(&stream->decoder, path, "stream"))
+    if (!AudioOpenFile(&stream->decoder, path, retError))
     {
         SDL_free(stream);
         return nullptr;
     }
 
     stream->piece = SDL_malloc((usz)((f64)stream->decoder.rate * AUDIO_PIECE) * stream->decoder.channels * sizeof(f32));
-    stream->sound = stream->piece == nullptr ? nullptr : AUDIO.NewStream((i32)stream->decoder.channels, (i32)stream->decoder.rate);
+    stream->sound = stream->piece == nullptr ? nullptr : AUDIO.NewStream((i32)stream->decoder.channels, (i32)stream->decoder.rate, retError);
 
     if (stream->sound == nullptr || (AUDIO.timer == nullptr && ECSTimer_Start(AUDIO.plugin, &AUDIO.timer, AUDIO_FEED_INTERVAL, true, AudioFeed, nullptr) != SHUResult_Ok))
     {
-        ECS_LogError(AUDIO.plugin, "Cannot stream the sound '%s': out of memory.", path);
+        if (*retError == nullptr)
+        {
+            ECS_Fail(AUDIO.plugin, retError, "out of memory");
+        }
+
         AudioFreeStream(stream);
         return nullptr;
     }
@@ -357,9 +364,9 @@ static void AudioFree(void *data)
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     AUDIO.plugin = plugin;
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.NewSound, "mixer.newSound", "handle<mixer.sound>(int channels, int rate, buffer samples)"));
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.NewStream, "mixer.newStream", "handle<mixer.sound>(int channels, int rate)"));
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.Queue, "mixer.queue", "bool(handle<mixer.sound> stream, buffer samples)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.NewSound, "mixer.newSound", "handle<mixer.sound>(int channels, int rate, buffer samples, out string error)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.NewStream, "mixer.newStream", "handle<mixer.sound>(int channels, int rate, out string error)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.Queue, "mixer.queue", "bool(handle<mixer.sound> stream, buffer samples, out string error)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.Queued, "mixer.queued", "double(handle<mixer.sound> stream)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.Finish, "mixer.finish", "void(handle<mixer.sound> stream)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&AUDIO.KeepSound, "mixer.keepSound", "void(handle<mixer.sound> sound)"));
@@ -367,12 +374,14 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     const ECSPluginDesc desc = {.Destroy = AudioFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)AudioLoad, "handle<mixer.sound>(string path)",
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)AudioLoad, "handle<mixer.sound>(string path, out string error)",
                                                  "Read a sound file into a sound of mixer; nothing if it cannot be read\n"
                                                  "@param path The file's path, a .wav, .mp3, .flac or .ogg file; a relative path starts at the executable's folder\n"
-                                                 "@return A new sound with all the file's samples, or nothing if the file cannot be read; the reason is logged"));
-    return ECSService_RegisterFunction(plugin, "stream", (ECSFunction)AudioStreamFile, "handle<mixer.sound>(string path)",
+                                                 "@param error Why the file cannot be read; nothing if it is\n"
+                                                 "@return A new sound with all the file's samples, or nothing if the file cannot be read"));
+    return ECSService_RegisterFunction(plugin, "stream", (ECSFunction)AudioStreamFile, "handle<mixer.sound>(string path, out string error)",
                                        "Read a long sound file, such as music, a piece at a time into a stream of mixer while it plays; nothing if it cannot be read\n"
                                        "@param path The file's path, a .wav, .mp3, .flac or .ogg file; a relative path starts at the executable's folder\n"
-                                       "@return A new stream, which audio keeps and finishes at the file's end, or nothing if the file cannot be read; the reason is logged");
+                                       "@param error Why the file cannot be read; nothing if it is\n"
+                                       "@return A new stream, which audio keeps and finishes at the file's end, or nothing if the file cannot be read");
 }

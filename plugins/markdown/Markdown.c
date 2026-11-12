@@ -423,6 +423,11 @@ static int MarkdownText(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, voi
     return reader->failed ? -1 : 0;
 }
 
+static struct
+{
+    ECSPlugin plugin;
+} MARKDOWN = {0};
+
 /// @brief Reads Markdown into a document node.
 /// @return false without memory; the document is nil then.
 static bool MarkdownRead(const char *text, usz size, ECSValue *document)
@@ -886,19 +891,26 @@ static void MarkdownDescribeBlock(MarkdownReader *reader, ECSValue *description,
     }
 }
 
-static void MarkdownParse(SHUSlice text, ECSValue *retDocument)
+static void MarkdownParse(SHUSlice text, ECSValue *retDocument, const char **retError)
 {
-    (void)MarkdownRead(text.data == nullptr ? "" : text.data, text.size, retDocument);
+    *retError = nullptr;
+
+    if (!MarkdownRead(text.data == nullptr ? "" : text.data, text.size, retDocument))
+    {
+        ECS_Fail(MARKDOWN.plugin, retError, "out of memory");
+    }
 }
 
-static void MarkdownElements(SHUSlice text, ECSValue *retDescription)
+static void MarkdownElements(SHUSlice text, ECSValue *retDescription, const char **retError)
 {
+    *retError = nullptr;
     ECSValue_SetNil(retDescription);
     ECSValue *document = nullptr;
     MarkdownReader reader = {0};
 
     if (ECSValue_Create(&document) || !MarkdownRead(text.data == nullptr ? "" : text.data, text.size, document))
     {
+        ECS_Fail(MARKDOWN.plugin, retError, "out of memory");
         ECSValue_Destroy(&document);
         return;
     }
@@ -907,6 +919,7 @@ static void MarkdownElements(SHUSlice text, ECSValue *retDescription)
 
     if (reader.failed)
     {
+        ECS_Fail(MARKDOWN.plugin, retError, "out of memory");
         ECSValue_SetNil(retDescription);
     }
 
@@ -917,6 +930,7 @@ static void MarkdownElements(SHUSlice text, ECSValue *retDescription)
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
+    MARKDOWN.plugin = plugin;
     const struct
     {
         const char *name;
@@ -924,14 +938,16 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"parse", (ECSFunction)MarkdownParse, "void(buffer text, out value<markdown.Node?> document)",
+        {"parse", (ECSFunction)MarkdownParse, "void(buffer text, out value<markdown.Node?> document, out string error)",
          "Read Markdown, as GitHub writes it, into a tree of nodes\n"
          "@param text The Markdown text\n"
-         "@param document The document node, whose children are its blocks; nothing without memory"},
-        {"elements", (ECSFunction)MarkdownElements, "void(buffer text, out value<markdown.Description?> description)",
+         "@param document The document node, whose children are its blocks; nothing without memory\n"
+         "@param error Why there is no document, as memory ran out; nothing if there is"},
+        {"elements", (ECSFunction)MarkdownElements, "void(buffer text, out value<markdown.Description?> description, out string error)",
          "Read Markdown into a description of ui's elements, which ui.showDescription shows: a column of wrapped texts, lists, quotes, code, tables and lines\n"
          "@param text The Markdown text\n"
-         "@param description The description of the column; nothing without memory"},
+         "@param description The description of the column; nothing without memory\n"
+         "@param error Why there is no description, as memory ran out; nothing if there is"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

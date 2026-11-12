@@ -34,21 +34,22 @@ typedef enum CompressFormat
 
 static struct
 {
-    char *error; // why the last call failed
+    ECSPlugin plugin;
 } COMPRESS = {0};
 
-/// @brief Keeps why a call fails, until the next call, and gives it.
+/// @brief Fails a call, as ECS_Fail does, and gives why.
 static OPENECS_PRINTF(1, 2) const char *CompressFail(const char *format, ...)
 {
-    SDL_free(COMPRESS.error);
-    COMPRESS.error = nullptr;
-
     va_list arguments;
     va_start(arguments, format);
-    int length = SDL_vasprintf(&COMPRESS.error, format, arguments);
+    char *message = nullptr;
+    bool formatted = SDL_vasprintf(&message, format, arguments) >= 0;
     va_end(arguments);
 
-    return length < 0 || COMPRESS.error == nullptr ? "out of memory" : COMPRESS.error;
+    const char *error = nullptr;
+    ECS_Fail(COMPRESS.plugin, &error, "%s", formatted ? message : "out of memory");
+    SDL_free(message);
+    return error;
 }
 
 /// @brief Makes a value a buffer of the bytes of an stb_ds array, or an empty string if it has none.
@@ -65,7 +66,7 @@ static bool CompressSetBytes(ECSValue *retValue, const u8 *bytes, const char **r
     return result == SHUResult_Ok;
 }
 
-static bool CompressReadFormat(const char *name, bool detect, CompressFormat *retFormat, const char **retError)
+static bool CompressReadFormat(const char *name, bool detect, CompressFormat *retFormat)
 {
     const char *const names[] = {"gzip", "zlib", "deflate", "zstd", ""};
 
@@ -78,7 +79,7 @@ static bool CompressReadFormat(const char *name, bool detect, CompressFormat *re
         }
     }
 
-    *retError = CompressFail("'%s' is not a format: \"gzip\", \"zlib\", \"deflate\" or \"zstd\"%s", name, detect ? ", or an empty text to tell it from the data" : "");
+    (void)ECS_Check(COMPRESS.plugin, false, "'%s' is not a format: \"gzip\", \"zlib\", \"deflate\" or \"zstd\"%s", name, detect ? ", or an empty text to tell it from the data" : "");
     return false;
 }
 
@@ -133,10 +134,9 @@ static int CompressZlibBits(CompressFormat format)
 
 static bool CompressPackZlib(SHUSlice data, CompressFormat format, int level, u8 **retPacked, const char **retError)
 {
-    if (level < 0 || level > 9)
+    if (!ECS_Check(COMPRESS.plugin, level >= 0 && level <= 9, "%s's levels are 1 to 9, and 0 for its default", format == CompressFormat_Gzip ? "gzip" : format == CompressFormat_Zlib ? "zlib"
+                                                                                                                                                                                      : "deflate"))
     {
-        *retError = CompressFail("%s's levels are 1 to 9, and 0 for its default", format == CompressFormat_Gzip ? "gzip" : format == CompressFormat_Zlib ? "zlib"
-                                                                                                                                                         : "deflate");
         return false;
     }
 
@@ -236,9 +236,8 @@ static const ZSTD_customMem COMPRESS_ZSTD_MEMORY = {CompressZstdAlloc, CompressZ
 
 static bool CompressPackZstd(SHUSlice data, int level, u8 **retPacked, const char **retError)
 {
-    if (level < ZSTD_minCLevel() || level > ZSTD_maxCLevel())
+    if (!ECS_Check(COMPRESS.plugin, level >= ZSTD_minCLevel() && level <= ZSTD_maxCLevel(), "zstd's levels are %d to %d, and 0 for its default", ZSTD_minCLevel(), ZSTD_maxCLevel()))
     {
-        *retError = CompressFail("zstd's levels are %d to %d, and 0 for its default", ZSTD_minCLevel(), ZSTD_maxCLevel());
         return false;
     }
 
@@ -313,7 +312,7 @@ static void CompressPack(const char *format, SHUSlice data, int level, ECSValue 
     ECSValue_SetNil(retPacked);
     CompressFormat chosen = CompressFormat_Gzip;
 
-    if (!CompressReadFormat(format, false, &chosen, retError))
+    if (!CompressReadFormat(format, false, &chosen))
     {
         return;
     }
@@ -335,7 +334,7 @@ static void CompressUnpack(const char *format, SHUSlice data, ECSValue *retData,
     ECSValue_SetNil(retData);
     CompressFormat chosen = CompressFormat_Gzip;
 
-    if (!CompressReadFormat(format, true, &chosen, retError) || (chosen == CompressFormat_Detect && !CompressDetect(data, &chosen, retError)))
+    if (!CompressReadFormat(format, true, &chosen) || (chosen == CompressFormat_Detect && !CompressDetect(data, &chosen, retError)))
     {
         return;
     }
@@ -727,9 +726,8 @@ static bool CompressZipWrite(const char *path, const ECSValue *files, int level,
 {
     *retError = nullptr;
 
-    if (level < 0 || level > 9)
+    if (!ECS_Check(COMPRESS.plugin, level >= 0 && level <= 9, "a zip archive's levels are 1 to 9, and 0 for its default"))
     {
-        *retError = CompressFail("a zip archive's levels are 1 to 9, and 0 for its default");
         return false;
     }
 
@@ -759,18 +757,9 @@ static bool CompressZipWrite(const char *path, const ECSValue *files, int level,
 
 #pragma endregion Files
 
-/// @brief Frees what the plugin keeps; the Destroy function of the plugin.
-static void CompressFree(void *data)
-{
-    (void)data;
-    SDL_free(COMPRESS.error);
-    SDL_zero(COMPRESS);
-}
-
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
-    const ECSPluginDesc desc = {.Destroy = CompressFree};
-    SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
+    COMPRESS.plugin = plugin;
 
     const struct
     {

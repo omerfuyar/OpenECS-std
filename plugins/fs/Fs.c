@@ -158,12 +158,11 @@ static SHUResult FsFillEntries(const char *folder, char **names, int count, ECSV
     return SHUResult_Ok;
 }
 
-/// @brief Gives a call's error: nullptr when it worked, or else SDL's message, or a plain one when SDL has none.
-static const char *FsError(bool worked)
+/// @brief Fails a call, as ECS_Fail does, with SDL's message, or a plain one when SDL has none.
+static void FsFail(const char **retError)
 {
-    const char *message = worked ? nullptr : SDL_GetError();
-    return worked ? nullptr : message[0] != '\0' ? message
-                                                 : "the path is not valid";
+    const char *message = SDL_GetError();
+    ECS_Fail(FILESYSTEM.plugin, retError, "%s", message[0] != '\0' ? message : "the path is not valid");
 }
 
 static void FsList(const char *path, const char *pattern, ECSValue *retEntries, const char **retError)
@@ -175,12 +174,17 @@ static void FsList(const char *path, const char *pattern, ECSValue *retEntries, 
     // an empty pattern matches every name; a star stops at a slash, so the list holds the folder's own entries, not those of its folders
     char **names = ECSPath_GetFull(&fullPath, path) ? nullptr : SDL_GlobDirectory(fullPath, pattern[0] == '\0' ? "*" : pattern, 0, &count);
 
-    *retError = FsError(names != nullptr);
+    *retError = nullptr;
 
-    if (names == nullptr || FsFillEntries(fullPath, names, count, retEntries) != SHUResult_Ok)
+    if (names == nullptr)
     {
         ECSValue_SetNil(retEntries);
-        *retError = *retError != nullptr ? *retError : "out of memory";
+        FsFail(retError);
+    }
+    else if (FsFillEntries(fullPath, names, count, retEntries) != SHUResult_Ok)
+    {
+        ECSValue_SetNil(retEntries);
+        ECS_Fail(FILESYSTEM.plugin, retError, "out of memory");
     }
 
     SDL_free(names);
@@ -192,7 +196,13 @@ static bool FsMakeFolder(const char *path, const char **retError)
     char *fullPath = nullptr;
     SDL_ClearError();
     bool made = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && SDL_CreateDirectory(fullPath);
-    *retError = FsError(made);
+    *retError = nullptr;
+
+    if (!made)
+    {
+        FsFail(retError);
+    }
+
     ECSPath_Free(fullPath);
     return made;
 }
@@ -203,7 +213,13 @@ static bool FsCopy(const char *source, const char *destination, const char **ret
     char *fullDestination = nullptr;
     SDL_ClearError();
     bool copied = ECSPath_GetFull(&fullSource, source) == SHUResult_Ok && ECSPath_GetFull(&fullDestination, destination) == SHUResult_Ok && SDL_CopyFile(fullSource, fullDestination);
-    *retError = FsError(copied);
+    *retError = nullptr;
+
+    if (!copied)
+    {
+        FsFail(retError);
+    }
+
     ECSPath_Free(fullSource);
     ECSPath_Free(fullDestination);
     return copied;
@@ -658,18 +674,19 @@ static void FsReadChanges(void *data)
 
 static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const char **retError)
 {
-    FsWatch *watch = Changed == nullptr ? nullptr : SDL_calloc(1, sizeof(FsWatch));
     *retError = nullptr;
+
+    if (!ECS_Check(FILESYSTEM.plugin, Changed != nullptr, "A watch needs a changed function."))
+    {
+        return nullptr;
+    }
+
+    FsWatch *watch = SDL_calloc(1, sizeof(FsWatch));
 
     if (watch == nullptr)
     {
-        *retError = Changed == nullptr ? "changed is missing" : "out of memory";
-
-        if (Changed != nullptr)
-        {
-            ECSService_ReleaseCallback((ECSFunction)Changed);
-        }
-
+        ECS_Fail(FILESYSTEM.plugin, retError, "out of memory");
+        ECSService_ReleaseCallback((ECSFunction)Changed);
         return nullptr;
     }
 
@@ -684,7 +701,7 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const 
 
     if (!watching)
     {
-        *retError = "the folder cannot be watched, or it is a file";
+        ECS_Fail(FILESYSTEM.plugin, retError, "'%s' cannot be watched, or it is a file", folder);
         FsStop(watch);
         return nullptr;
     }

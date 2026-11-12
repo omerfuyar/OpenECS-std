@@ -18,22 +18,15 @@ typedef struct SqliteDatabase
 static struct
 {
     ECSPlugin plugin;
-    char *error;        // why the last call failed, kept until the next one
     bool sqliteStarted; // SQLite took SDL's allocator and started
 } SQLITE = {0};
 
-/// @brief Keeps why a call failed, and gives it.
+/// @brief Fails a call, as ECS_Fail does, and gives why.
 static const char *SqliteFail(const char *what, const char *why)
 {
-    SDL_free(SQLITE.error);
-    SQLITE.error = nullptr;
-
-    if (SDL_asprintf(&SQLITE.error, "%s: %s", what, why) < 0)
-    {
-        SQLITE.error = nullptr;
-    }
-
-    return SQLITE.error == nullptr ? "out of memory" : SQLITE.error;
+    const char *error = nullptr;
+    ECS_Fail(SQLITE.plugin, &error, "%s: %s", what, why);
+    return error;
 }
 
 #pragma region Allocator
@@ -363,7 +356,6 @@ static void SqliteFree(void *data)
         sqlite3_shutdown();
     }
 
-    SDL_free(SQLITE.error);
     SDL_zero(SQLITE);
 }
 

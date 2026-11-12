@@ -425,21 +425,16 @@ end
 local PROPS = {}
 
 for name in ("id width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
   PROPS[name] = true
 end
-
-local reportedProps = {}
 
 local function element(elementType, props, children)
   local node = shallowCopy(props)
 
   for name in pairs(node) do
-    if not PROPS[name] and not reportedProps[name] then
-      reportedProps[name] = true
-      ecs.log.warn(("ui does not know the prop '%s' of a %s; it does nothing."):format(tostring(name), elementType))
-    end
+    ecs.check(PROPS[name], ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
   end
 
   node.type = elementType
@@ -474,7 +469,7 @@ end
 
 function elements.scroll(props, children)
   local node = element("scroll", props, children or {})
-  assert(node.id, "a scroll element needs an id, which keeps its offset")
+  ecs.check(node.id, "A scroll element needs an id, which keeps its offset.")
 
   if node.grow == nil then
     node.grow = 1
@@ -520,7 +515,7 @@ end
 -- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
 function elements.tree(nodes, props)
   props = props or {}
-  assert(props.id, "a tree needs an id, which keeps its offset")
+  ecs.check(props.id, "A tree needs an id, which keeps its offset.")
   local open, rows = props.open or {}, {}
   local ids, parents, folders = {}, {}, {}
 
@@ -585,7 +580,7 @@ end
 -- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
 function elements.table(columns, rows, props)
   props = props or {}
-  assert(props.id, "a table needs an id, which keeps its offset")
+  ecs.check(props.id, "A table needs an id, which keeps its offset.")
   columns, rows = columns or {}, rows or {}
   local font, textSize = fontOf(props), props.size or fontSize()
   local widths = {}
@@ -743,7 +738,7 @@ end
 function elements.field(text, props)
   local node = element("field", props)
   node.text = tostring(text or "")
-  assert(node.id, "a field needs an id, which keeps what is typed")
+  ecs.check(node.id, "A field needs an id, which keeps what is typed.")
   return node
 end
 
@@ -783,7 +778,7 @@ end
 function elements.key(combination, props)
   local node = element("key", props)
   node.text = tostring(combination or "")
-  assert(node.id, "a key element needs an id")
+  ecs.check(node.id, "A key element needs an id.")
   return node
 end
 
@@ -2370,16 +2365,11 @@ end
 local services = {}
 
 -- ids that elements leave out come from their places, so they stay the same from one draw to the next
-local reportedIds = {} -- the ids that were reported as used twice, so each is reported once
 
--- gives each element without an id one from its place in the tree. An id that two elements have is reported: clicks and keys would reach only the first.
+-- gives each element without an id one from its place in the tree. An id that two elements have is a misuse: clicks and keys would reach only the first.
 local function assignIds(node, path, seen)
   node.id = node.id or path
-
-  if seen[node.id] and not reportedIds[node.id] then
-    reportedIds[node.id] = true
-    ecs.log.warn("Two elements of a panel have the id '" .. node.id .. "'. Give each its own id.")
-  end
+  ecs.check(not seen[node.id], "Two elements of a panel have the id '" .. tostring(node.id) .. "'. Give each its own id.")
 
   seen[node.id] = true
 
@@ -2578,9 +2568,7 @@ local function build(panel, description)
 
   -- a prop ui does not know is a mistake of the code that describes, such as a name that ui.h and ui no longer share
   for name in pairs(props) do
-    if not DESCRIBED[name] then
-      error(("a described '%s' has the prop '%s', which ui does not know"):format(tostring(description.type), tostring(name)))
-    end
+    ecs.check(DESCRIBED[name], ("A described '%s' has the prop '%s', which ui does not know."):format(tostring(description.type), tostring(name)))
   end
 
   -- a column or row with clickable = true is clicked like a button
@@ -2628,7 +2616,7 @@ local function build(panel, description)
 
   local takes = TAKES[elementType]
   local make = elements[elementType]
-  assert(make, ("no element of type '%s'"):format(tostring(elementType)))
+  ecs.check(make, ("There is no element of type '%s'."):format(tostring(elementType)))
 
   if takes == "children" then
     local children = {}

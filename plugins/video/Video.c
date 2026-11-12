@@ -42,14 +42,14 @@ static struct
     u64 lastTicks;
 
     // draw's and mixer's functions
-    void *(*NewImage)(i32 width, i32 height, SHUSlice pixels);
-    bool (*SetImagePixels)(void *image, SHUSlice pixels);
+    void *(*NewImage)(i32 width, i32 height, SHUSlice pixels, const char **retError);
+    void (*SetImagePixels)(void *image, SHUSlice pixels);
     void (*FreeImage)(void *image);
     void (*DrawImage)(ECSSurface *surface, void *image, f32 x, f32 y, f32 width, f32 height);
-    void *(*NewStream)(i32 channels, i32 rate);
-    bool (*Queue)(void *stream, SHUSlice samples);
+    void *(*NewStream)(i32 channels, i32 rate, const char **retError);
+    bool (*Queue)(void *stream, SHUSlice samples, const char **retError);
     void (*Finish)(void *stream);
-    i32 (*Play)(void *sound, f32 volume, bool loop);
+    i32 (*Play)(void *sound, f32 volume, bool loop, const char **retError);
     void (*Stop)(i32 voice);
     void (*SetVolume)(i32 voice, f32 volume);
     void (*FreeSound)(void *sound);
@@ -63,7 +63,7 @@ static void VideoOnFrame(plm_t *decoder, plm_frame_t *frame, void *data)
 
     // ARGB8888 in native byte order is B, G, R, A in memory on little-endian systems, as Linux and Windows on x86_64 and aarch64 are
     plm_frame_to_bgra(frame, video->pixels, (int)frame->width * 4);
-    (void)VIDEO.SetImagePixels(video->image, (SHUSlice){video->pixels, (usz)frame->width * (usz)frame->height * 4U});
+    VIDEO.SetImagePixels(video->image, (SHUSlice){video->pixels, (usz)frame->width * (usz)frame->height * 4U});
 }
 
 /// @brief Adds decoded sound to the video's stream: two channels of float samples, frame after frame.
@@ -74,7 +74,8 @@ static void VideoOnSamples(plm_t *decoder, plm_samples_t *samples, void *data)
 
     if (video->stream != nullptr)
     {
-        (void)VIDEO.Queue(video->stream, (SHUSlice){samples->interleaved, (usz)samples->count * 2U * sizeof(f32)});
+        const char *error = nullptr;
+        (void)VIDEO.Queue(video->stream, (SHUSlice){samples->interleaved, (usz)samples->count * 2U * sizeof(f32)}, &error);
     }
 }
 
@@ -103,8 +104,10 @@ static void VideoStartSound(VideoVideo *video)
         return;
     }
 
-    video->stream = VIDEO.NewStream(2, plm_get_samplerate(video->decoder));
-    video->voice = video->stream == nullptr ? 0 : VIDEO.Play(video->stream, video->volume, false);
+    // a video plays without its sound when there is no audio output
+    const char *error = nullptr;
+    video->stream = VIDEO.NewStream(2, plm_get_samplerate(video->decoder), &error);
+    video->voice = video->stream == nullptr ? 0 : VIDEO.Play(video->stream, video->volume, false, &error);
 }
 
 static void VideoRemovePlaying(VideoVideo *video)
@@ -179,7 +182,7 @@ static VideoVideo *VideoOpen(const char *path, const char **retError)
     if (decoder == nullptr || !plm_probe(decoder, (size_t)5000 * 1024) || plm_get_num_video_streams(decoder) == 0)
     {
         plm_destroy(decoder);
-        *retError = "the file cannot be read, or holds no MPEG-1 video";
+        ECS_Fail(VIDEO.plugin, retError, "'%s' cannot be read, or holds no MPEG-1 video", path);
         return nullptr;
     }
 
@@ -194,7 +197,8 @@ static VideoVideo *VideoOpen(const char *path, const char **retError)
         SDL_memset(pixels, 0xFF, (usz)width * (usz)height * 4U);
     }
 
-    void *image = pixels == nullptr ? nullptr : VIDEO.NewImage(width, height, (SHUSlice){pixels, (usz)width * (usz)height * 4U});
+    const char *imageError = nullptr;
+    void *image = pixels == nullptr ? nullptr : VIDEO.NewImage(width, height, (SHUSlice){pixels, (usz)width * (usz)height * 4U}, &imageError);
 
     if (video == nullptr || image == nullptr)
     {
@@ -206,7 +210,7 @@ static VideoVideo *VideoOpen(const char *path, const char **retError)
         SDL_free(pixels);
         SDL_free(video);
         plm_destroy(decoder);
-        *retError = "out of memory";
+        ECS_Fail(VIDEO.plugin, retError, "%s", imageError != nullptr ? imageError : "out of memory");
         return nullptr;
     }
 
@@ -273,8 +277,9 @@ static bool VideoPlaying(VideoVideo *video)
 }
 
 /// @brief Goes to a time; the frame there shows at once.
-static bool VideoSeek(VideoVideo *video, f64 seconds)
+static bool VideoSeek(VideoVideo *video, f64 seconds, const char **retError)
 {
+    *retError = nullptr;
     bool playing = video->playing;
     VideoStopSound(video);
     bool sought = plm_seek(video->decoder, SDL_clamp(seconds, 0.0, plm_get_duration(video->decoder)), true) != 0;
@@ -283,6 +288,11 @@ static bool VideoSeek(VideoVideo *video, f64 seconds)
     if (playing)
     {
         VideoStartSound(video);
+    }
+
+    if (!sought)
+    {
+        ECS_Fail(VIDEO.plugin, retError, "The video cannot be read at %.2f seconds.", seconds);
     }
 
     return sought;
@@ -349,14 +359,14 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *name;
         const char *signature;
     } needed[] = {
-        {(ECSFunction *)&VIDEO.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels)"},
-        {(ECSFunction *)&VIDEO.SetImagePixels, "draw.setImagePixels", "bool(handle<draw.image> image, buffer pixels)"},
+        {(ECSFunction *)&VIDEO.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels, out string error)"},
+        {(ECSFunction *)&VIDEO.SetImagePixels, "draw.setImagePixels", "void(handle<draw.image> image, buffer pixels)"},
         {(ECSFunction *)&VIDEO.FreeImage, "draw.freeImage", "void(handle<draw.image> image)"},
         {(ECSFunction *)&VIDEO.DrawImage, "draw.image", "void(handle<ecs.surface> surface, handle<draw.image> image, float x, float y, float width, float height)"},
-        {(ECSFunction *)&VIDEO.NewStream, "mixer.newStream", "handle<mixer.sound>(int channels, int rate)"},
-        {(ECSFunction *)&VIDEO.Queue, "mixer.queue", "bool(handle<mixer.sound> stream, buffer samples)"},
+        {(ECSFunction *)&VIDEO.NewStream, "mixer.newStream", "handle<mixer.sound>(int channels, int rate, out string error)"},
+        {(ECSFunction *)&VIDEO.Queue, "mixer.queue", "bool(handle<mixer.sound> stream, buffer samples, out string error)"},
         {(ECSFunction *)&VIDEO.Finish, "mixer.finish", "void(handle<mixer.sound> stream)"},
-        {(ECSFunction *)&VIDEO.Play, "mixer.play", "int(handle<mixer.sound> sound, float volume, bool loop)"},
+        {(ECSFunction *)&VIDEO.Play, "mixer.play", "int(handle<mixer.sound> sound, float volume, bool loop, out string error)"},
         {(ECSFunction *)&VIDEO.Stop, "mixer.stop", "void(int voice)"},
         {(ECSFunction *)&VIDEO.SetVolume, "mixer.volume", "void(int voice, float volume)"},
         {(ECSFunction *)&VIDEO.FreeSound, "mixer.freeSound", "void(handle<mixer.sound> sound)"},
@@ -393,11 +403,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Tell whether a video plays\n"
          "@param video The video\n"
          "@return false once it is paused or has played to its end"},
-        {"seek", (ECSFunction)VideoSeek, "bool(handle<video.video> video, double seconds)",
+        {"seek", (ECSFunction)VideoSeek, "bool(handle<video.video> video, double seconds, out string error)",
          "Go to a time of a video; its frame there shows at once\n"
          "@param video The video\n"
          "@param seconds The time from its start\n"
-         "@return false if the time cannot be reached"},
+         "@param error Why the time cannot be reached, as when the file's data is broken there; nothing if it is\n"
+         "@return True if the video is at the time"},
         {"time", (ECSFunction)VideoTime, "double(handle<video.video> video)",
          "Give where a video is\n"
          "@param video The video\n"

@@ -61,13 +61,15 @@ static const char *GltfResultText(cgltf_result result)
     }
 }
 
-static void *GltfLoad(const char *path)
+static void *GltfLoad(const char *path, const char **retError)
 {
     char *fullPath = nullptr;
+    *retError = nullptr;
 
     // a relative path starts at the executable's folder
-    if (ECSPath_GetFull(&fullPath, path))
+    if (ECSPath_GetFull(&fullPath, path) != SHUResult_Ok)
     {
+        ECS_Fail(GLTF.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -89,7 +91,7 @@ static void *GltfLoad(const char *path)
 
     if (model == nullptr)
     {
-        ECS_LogError(GLTF.plugin, "Cannot read the model '%s': %s", fullPath, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
+        ECS_Fail(GLTF.plugin, retError, "Cannot read the model '%s': %s", fullPath, GltfResultText(result == cgltf_result_success ? cgltf_result_out_of_memory : result));
         cgltf_free(data);
         ECSPath_Free(fullPath);
         return nullptr;
@@ -429,13 +431,14 @@ static SHUResult GltfDescribeModel(const cgltf_data *data, ECSValue *retInfo)
 }
 
 /// @brief Gives a model's parts; a model too big for the memory left gives nil.
-static void GltfDescribe(void *modelHandle, ECSValue *retInfo)
+static void GltfDescribe(void *modelHandle, ECSValue *retInfo, const char **retError)
 {
     GltfModel *model = modelHandle;
+    *retError = nullptr;
 
     if (GltfDescribeModel(model->data, retInfo) != SHUResult_Ok)
     {
-        ECS_LogError(GLTF.plugin, "Out of memory while describing a model");
+        ECS_Fail(GLTF.plugin, retError, "out of memory");
         ECSValue_SetNil(retInfo);
     }
 }
@@ -445,9 +448,11 @@ static void GltfDescribe(void *modelHandle, ECSValue *retInfo)
 #pragma region Vertex data
 
 /// @brief Finds a primitive by the 1-based numbers of its mesh and of itself in the mesh.
+/// @return The primitive, or nullptr, a misuse, if the model has no such primitive.
 static const cgltf_primitive *GltfFindPrimitive(const GltfModel *model, i32 mesh, i32 primitive)
 {
-    if (mesh < 1 || (usz)mesh > model->data->meshes_count || primitive < 1 || (usz)primitive > model->data->meshes[mesh - 1].primitives_count)
+    if (!ECS_Check(GLTF.plugin, mesh >= 1 && (usz)mesh <= model->data->meshes_count && primitive >= 1 && (usz)primitive <= model->data->meshes[mesh - 1].primitives_count,
+                   "The model '%s' has no primitive %d of mesh %d.", model->path, (int)primitive, (int)mesh))
     {
         return nullptr;
     }
@@ -462,6 +467,15 @@ static usz GltfCheckedSize(usz count, usz each)
     return SDL_size_mul_check_overflow(count, each, &bytes) ? bytes : 0;
 }
 
+/// @brief Gives nothing, as memory ran out or the data is not valid, with why in retError.
+static SHUSlice GltfFailResult(GltfModel *model, const char **retError, const char *why)
+{
+    ECS_Fail(GLTF.plugin, retError, "%s", why);
+    SDL_free(model->result);
+    model->result = nullptr;
+    return cs(nullptr, 0);
+}
+
 /// @brief Keeps what the model gives, freeing what it gave last, and gives it.
 static SHUSlice GltfKeepResult(GltfModel *model, void *data, usz size)
 {
@@ -470,28 +484,52 @@ static SHUSlice GltfKeepResult(GltfModel *model, void *data, usz size)
     return cs(data, data == nullptr ? 0 : size);
 }
 
-static SHUSlice GltfAttribute(void *model, i32 mesh, i32 primitive, const char *name)
+static SHUSlice GltfAttribute(void *model, i32 mesh, i32 primitive, const char *name, const char **retError)
 {
-    const cgltf_accessor *accessor = GltfFindAttributeNamed(GltfFindPrimitive(model, mesh, primitive), name);
+    *retError = nullptr;
+    const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
+    const cgltf_accessor *accessor = found == nullptr ? nullptr : GltfFindAttributeNamed(found, name);
+
+    if (accessor == nullptr || accessor->count == 0)
+    {
+        return GltfKeepResult(model, nullptr, 0);
+    }
 
     // sparse and normalized data are unpacked to plain floats
-    usz count = accessor == nullptr ? 0 : GltfCheckedSize(accessor->count, cgltf_num_components(accessor->type));
+    usz count = GltfCheckedSize(accessor->count, cgltf_num_components(accessor->type));
     f32 *floats = count == 0 || GltfCheckedSize(count, sizeof(f32)) == 0 ? nullptr : SDL_malloc(count * sizeof(f32));
 
-    if (floats != nullptr && cgltf_accessor_unpack_floats(accessor, floats, count) != count)
+    if (floats == nullptr)
+    {
+        return GltfFailResult(model, retError, "out of memory");
+    }
+
+    if (cgltf_accessor_unpack_floats(accessor, floats, count) != count)
     {
         SDL_free(floats);
-        floats = nullptr;
+        return GltfFailResult(model, retError, "The attribute's data is not valid.");
     }
 
     return GltfKeepResult(model, floats, count * sizeof(f32));
 }
 
-static SHUSlice GltfIndices(void *model, i32 mesh, i32 primitive)
+static SHUSlice GltfIndices(void *model, i32 mesh, i32 primitive, const char **retError)
 {
+    *retError = nullptr;
     const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
     usz count = found == nullptr ? 0 : GltfIndexCount(found);
-    u32 *indices = count == 0 || GltfCheckedSize(count, sizeof(u32)) == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
+
+    if (count == 0)
+    {
+        return GltfKeepResult(model, nullptr, 0);
+    }
+
+    u32 *indices = GltfCheckedSize(count, sizeof(u32)) == 0 ? nullptr : SDL_malloc(count * sizeof(u32));
+
+    if (indices == nullptr)
+    {
+        return GltfFailResult(model, retError, "out of memory");
+    }
 
     // a primitive without indices draws its vertices in order
     for (usz i = 0; indices != nullptr && i < count; i++)
@@ -658,11 +696,18 @@ static mat4 *GltfLocalMatrices(const cgltf_data *data, i32 animation, f32 second
     return matrices;
 }
 
-static SHUSlice GltfPose(void *modelHandle, i32 animation, f32 seconds)
+static SHUSlice GltfPose(void *modelHandle, i32 animation, f32 seconds, const char **retError)
 {
     GltfModel *model = modelHandle;
+    *retError = nullptr;
 
     mat4 *matrices = GltfLocalMatrices(model->data, animation, seconds);
+
+    if (matrices == nullptr && model->data->nodes_count > 0)
+    {
+        return GltfFailResult(model, retError, "out of memory");
+    }
+
     return GltfKeepResult(model, matrices, model->data->nodes_count * sizeof(mat4));
 }
 
@@ -728,9 +773,10 @@ static mat4 *GltfJointMatrices(const cgltf_data *data, const cgltf_skin *skin, i
 
 /// @brief Gives a primitive's positions moved by a skin's joints at a time of an animation, three floats each, in the model's space, as glTF skins them:
 /// each vertex goes through the joints that JOINTS_0 names, by the weights that WEIGHTS_0 gives. A primitive without them, or a missing skin, gives its positions as they are.
-static SHUSlice GltfSkin(void *modelHandle, i32 mesh, i32 primitive, i32 skinNumber, i32 animation, f32 seconds)
+static SHUSlice GltfSkin(void *modelHandle, i32 mesh, i32 primitive, i32 skinNumber, i32 animation, f32 seconds, const char **retError)
 {
     GltfModel *model = modelHandle;
+    *retError = nullptr;
 
     const cgltf_data *data = model->data;
     const cgltf_primitive *found = GltfFindPrimitive(model, mesh, primitive);
@@ -738,13 +784,24 @@ static SHUSlice GltfSkin(void *modelHandle, i32 mesh, i32 primitive, i32 skinNum
     const cgltf_accessor *jointsOfVertices = GltfFindAttribute(found, cgltf_attribute_type_joints);
     const cgltf_accessor *weightsOfVertices = GltfFindAttribute(found, cgltf_attribute_type_weights);
     const cgltf_skin *skin = skinNumber >= 1 && (usz)skinNumber <= data->skins_count ? &data->skins[skinNumber - 1] : nullptr;
-    usz count = positions == nullptr || GltfCheckedSize(positions->count, sizeof(vec3)) == 0 ? 0 : positions->count;
-    vec3 *vertices = count == 0 ? nullptr : SDL_malloc(count * sizeof(vec3));
+    usz count = positions == nullptr ? 0 : positions->count;
 
-    if (vertices == nullptr || cgltf_accessor_unpack_floats(positions, (f32 *)vertices, count * 3) != count * 3)
+    if (count == 0)
+    {
+        return GltfKeepResult(model, nullptr, 0);
+    }
+
+    vec3 *vertices = GltfCheckedSize(count, sizeof(vec3)) == 0 ? nullptr : SDL_malloc(count * sizeof(vec3));
+
+    if (vertices == nullptr)
+    {
+        return GltfFailResult(model, retError, "out of memory");
+    }
+
+    if (cgltf_accessor_unpack_floats(positions, (f32 *)vertices, count * 3) != count * 3)
     {
         SDL_free(vertices);
-        return GltfKeepResult(model, nullptr, 0);
+        return GltfFailResult(model, retError, "The positions' data is not valid.");
     }
 
     if (skin == nullptr || jointsOfVertices == nullptr || weightsOfVertices == nullptr || skin->joints_count == 0)
@@ -756,8 +813,8 @@ static SHUSlice GltfSkin(void *modelHandle, i32 mesh, i32 primitive, i32 skinNum
 
     if (joints == nullptr)
     {
-        ECS_LogError(GLTF.plugin, "Out of memory while skinning a primitive of the model '%s'", model->path);
-        return GltfKeepResult(model, vertices, count * sizeof(vec3));
+        SDL_free(vertices);
+        return GltfFailResult(model, retError, "out of memory");
     }
 
     for (usz vertex = 0; vertex < count; vertex++)
@@ -882,11 +939,12 @@ static void *GltfReadImage(const GltfModel *model, const cgltf_image *image, usz
     return GltfReadImageFile(model, image->uri, retSize);
 }
 
-static SHUSlice GltfImage(void *modelHandle, i32 image)
+static SHUSlice GltfImage(void *modelHandle, i32 image, const char **retError)
 {
     GltfModel *model = modelHandle;
+    *retError = nullptr;
 
-    if (image < 1 || (usz)image > model->data->images_count)
+    if (!ECS_Check(GLTF.plugin, image >= 1 && (usz)image <= model->data->images_count, "The model '%s' has no image %d.", model->path, (int)image))
     {
         return GltfKeepResult(model, nullptr, 0);
     }
@@ -896,7 +954,7 @@ static SHUSlice GltfImage(void *modelHandle, i32 image)
 
     if (bytes == nullptr)
     {
-        ECS_LogWarn(GLTF.plugin, "Cannot read image %d of the model '%s'", (int)image, model->path);
+        return GltfFailResult(model, retError, "The image cannot be read.");
     }
 
     return GltfKeepResult(model, bytes, size);
@@ -918,50 +976,57 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path)",
+        {"load", (ECSFunction)GltfLoad, "handle<gltf.model>(string path, out string error)",
          "Read a .gltf or .glb file with the files it uses; nothing if it cannot be read\n"
          "@param path The file's path; a relative path starts at the executable's folder, and the files a .gltf names are relative to its own folder\n"
-         "@return A new model, which owns all that was read, or nothing if the file cannot be read or is not valid glTF; the reason is logged"},
+         "@param error Why the file cannot be read; nothing if it is\n"
+         "@return A new model, which owns all that was read, or nothing if the file cannot be read or is not valid glTF"},
         {"free", (ECSFunction)GltfFreeModel, "void(handle<gltf.model> model)",
          "Free a model now, instead of when no one uses its handle\n"
          "@param model The model, which is not used again after this"},
-        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info)",
+        {"describe", (ECSFunction)GltfDescribe, "void(handle<gltf.model> model, out value<gltf.Info?> info, out string error)",
          "Give a model's meshes, materials, nodes and root nodes as a table\n"
          "@param model The model\n"
-         "@param info Set to the model's meshes, materials, images, nodes, animations, skins and roots, numbered from 1; nothing if memory runs out"},
-        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name)",
+         "@param info Set to the model's meshes, materials, images, nodes, animations, skins and roots, numbered from 1; nothing if memory runs out\n"
+         "@param error Why there is no info, as memory ran out; nothing if there is"},
+        {"attribute", (ECSFunction)GltfAttribute, "buffer(handle<gltf.model> model, int mesh, int primitive, string name, out string error)",
          "Give a vertex attribute of a primitive, such as POSITION, as floats; kept until the next attribute, indices, image, pose or skin call on the model\n"
          "@param model The model\n"
-         "@param mesh The mesh's number in describe's meshes, from 1\n"
-         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
+         "@param mesh The mesh's number in describe's meshes, from 1; it must be the model's\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1; it must be the mesh's\n"
          "@param name The attribute's name as describe gives it, such as POSITION or TEXCOORD_0; case matters\n"
-         "@return The attribute's 32-bit floats, one vertex after another, such as three for a POSITION; empty for a missing mesh, primitive or attribute"},
-        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive)",
+         "@param error Why there are no floats, as memory ran out or the data is not valid; nothing if there are\n"
+         "@return The attribute's 32-bit floats, one vertex after another, such as three for a POSITION; empty for a missing attribute, or if they cannot be given"},
+        {"indices", (ECSFunction)GltfIndices, "buffer(handle<gltf.model> model, int mesh, int primitive, out string error)",
          "Give the indices of a primitive as 32-bit numbers; kept until the next attribute, indices, image, pose or skin call on the model\n"
          "@param model The model\n"
-         "@param mesh The mesh's number in describe's meshes, from 1\n"
-         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
-         "@return The indices, from 0, or the vertices in order for a primitive without indices; empty for a missing mesh or primitive"},
-        {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds)",
+         "@param mesh The mesh's number in describe's meshes, from 1; it must be the model's\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1; it must be the mesh's\n"
+         "@param error Why there are no indices, as memory ran out; nothing if there are\n"
+         "@return The indices, from 0, or the vertices in order for a primitive without indices; empty if they cannot be given"},
+        {"skin", (ECSFunction)GltfSkin, "buffer(handle<gltf.model> model, int mesh, int primitive, int skin, int animation, float seconds, out string error)",
          "Give a primitive's positions moved by a skin's joints at a time of an animation, in the model's space; kept until the next attribute, indices, image, pose or skin call on the model\n"
          "@param model The model\n"
-         "@param mesh The mesh's number in describe's meshes, from 1\n"
-         "@param primitive The primitive's number in the mesh's primitives, from 1\n"
+         "@param mesh The mesh's number in describe's meshes, from 1; it must be the model's\n"
+         "@param primitive The primitive's number in the mesh's primitives, from 1; it must be the mesh's\n"
          "@param skin The skin's number in describe's skins, from 1, such as the one its node names\n"
          "@param animation The animation's number in describe's animations, from 1; 0 or a missing one leaves the joints where the nodes' own matrices put them\n"
          "@param seconds The time in the animation; before its first key the first key holds, and after its last the last\n"
-         "@return Three 32-bit floats for each vertex; the positions as they are for a missing skin or a primitive without JOINTS_0 and WEIGHTS_0, and empty for a missing mesh or primitive"},
-        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds)",
+         "@param error Why there are no positions, as memory ran out or the data is not valid; nothing if there are\n"
+         "@return Three 32-bit floats for each vertex; the positions as they are for a missing skin or a primitive without JOINTS_0 and WEIGHTS_0; empty if they cannot be given"},
+        {"pose", (ECSFunction)GltfPose, "buffer(handle<gltf.model> model, int animation, float seconds, out string error)",
          "Give each node's matrix in its parent at a time of an animation, 16 floats each; animation 0 gives the nodes' own; kept until the next attribute, indices, image, pose or skin call on the model\n"
          "@param model The model\n"
          "@param animation The animation's number in describe's animations, from 1; 0 or a missing one gives the nodes' own matrices\n"
          "@param seconds The time in the animation; before its first key the first key holds, and after its last the last\n"
-         "@return 16 32-bit floats for each node, column by column, in the order of describe's nodes; empty for a model without nodes"},
-        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image)",
+         "@param error Why there are no matrices, as memory ran out; nothing if there are\n"
+         "@return 16 32-bit floats for each node, column by column, in the order of describe's nodes; empty for a model without nodes, or if they cannot be given"},
+        {"image", (ECSFunction)GltfImage, "buffer(handle<gltf.model> model, int image, out string error)",
          "Give the bytes of an image, such as a PNG file's, from the model's file or from its own; kept until the next attribute, indices, image, pose or skin call on the model\n"
          "@param model The model\n"
-         "@param image The image's number in describe's images, from 1, such as a material's image\n"
-         "@return The image file's bytes, which image.decode reads; empty for a missing image or one that cannot be read"},
+         "@param image The image's number in describe's images, from 1, such as a material's image; it must be the model's\n"
+         "@param error Why the image cannot be read; nothing if it is\n"
+         "@return The image file's bytes, which image.decode reads; empty if they cannot be read"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)
