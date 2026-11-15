@@ -145,16 +145,16 @@ ecs.panel.registerType({
 })
 
 ecs.service.register({
-  add = { sig = "void(string text, string level)", doc = "Add lines to the console; the level is info, warn or error", fn = add },
+  add = { sig = "void(string text, string level)", doc = "Add lines to the console\n@param text The lines, split at new lines\n@param level info, warn or error", fn = add },
   clear = { sig = "void()", doc = "Clear the console", fn = function()
     lines = {}
     redraw()
   end },
-  lines = { sig = "value()", doc = "The console's lines, each with its text and level", fn = function()
+  lines = { sig = "value()", doc = "The console's lines\n@return The lines, each a table of its text and level", fn = function()
     return lines
   end },
-  setFolder = { sig = "void(string folder)", doc = "The folder that the files of the lines are in, ending with a slash", fn = function(path)
+  setFolder = { sig = "void(string folder)", doc = "Say which folder the files that the lines name are in\n@param folder The folder's path, ending with a slash", fn = function(path)
     folder = path
   end },
-  open = { sig = "void(string file, int line)", doc = "Open a file at a line in the code editor", fn = openFile },
+  open = { sig = "void(string file, int line)", doc = "Open a file at a line in the code editor\n@param file The file's path\n@param line The line, from 1", fn = openFile },
 })

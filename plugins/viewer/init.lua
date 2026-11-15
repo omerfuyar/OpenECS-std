@@ -163,7 +163,7 @@ ecs.panel.registerType({
 })
 
 ecs.service.register({
-  open = { sig = "void(string path)", doc = "Show a file in a viewer: the one that shows it, the first one open, or a new one", fn = function(path)
+  open = { sig = "void(string path)", doc = "Show a file in a viewer: the one that shows it, the first one open, or a new one\n@param path The file's path", fn = function(path)
     local free
     for panel, state in pairs(panels) do
       if state.path == path then
@@ -180,7 +180,7 @@ ecs.service.register({
       ecs.layout.open("viewer.file", { path = path })
     end
   end },
-  show = { sig = "void(string path)", doc = "Show a file in the viewer that shows it, or the first one open, as a preview; with no viewer open, do nothing", fn = function(path)
+  show = { sig = "void(string path)", doc = "Show a file in the viewer that shows it, or the first one open, as a preview; with no viewer open, do nothing\n@param path The file's path", fn = function(path)
     local free
     for _, state in pairs(panels) do
       if state.path == path then
@@ -192,7 +192,7 @@ ecs.service.register({
       load(free, path)
     end
   end },
-  reload = { sig = "void(string path)", doc = "Read a file again in the viewers that show it", fn = function(path)
+  reload = { sig = "void(string path)", doc = "Read a file again in the viewers that show it\n@param path The file's path", fn = function(path)
     for _, state in pairs(panels) do
       if state.path == path then
         load(state, path)
