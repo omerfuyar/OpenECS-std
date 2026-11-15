@@ -11,3 +11,9 @@
 ---@class compress.ZipFile
 ---@field name string Its path in the archive, with / between folders; a name that ends with / is a folder.
 ---@field data string? What the file holds; nothing for a folder.
+
+---A file or folder of a tar archive.
+---@class compress.TarFile
+---@field name string Its path in the archive, with / between folders; a name that ends with / is a folder.
+---@field data string? What the file holds; nothing for a folder.
+---@field executable boolean? Whether the file is executable, as a program is on Linux.
