@@ -90,15 +90,23 @@ local function view(list)
     local faded = entry.enabled and entry.needed
     local depends = entry.depends or {}
 
-    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, {
+    local children = {
       ui.row({ gap = 12 }, {
         ui.text(entry.name, { color = faded and "textDim" or nil }),
         ui.text(entry.version, { style = STYLES.note }),
         ui.text(stateText(entry), { style = entry.enabled and not faded and STYLES.heading or STYLES.note }),
       }),
-      entry.description ~= "" and ui.text(entry.description, { style = STYLES.note, wrap = true }),
-      #depends > 0 and ui.text("Depends on " .. table.concat(depends, ", "), { style = STYLES.note, wrap = true }),
-    })
+    }
+
+    if entry.description ~= "" then
+      children[#children + 1] = ui.text(entry.description, { style = STYLES.note, wrap = true })
+    end
+
+    if #depends > 0 then
+      children[#children + 1] = ui.text("Depends on " .. table.concat(depends, ", "), { style = STYLES.note, wrap = true })
+    end
+
+    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, children)
   end
 
   if #rows == 0 then
