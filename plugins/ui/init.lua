@@ -3045,8 +3045,11 @@ function services.show(panel, surface, root)
   state.pressed = state.pressed and findById(root, state.pressed.id) or nil
   state.root = root
 
+  -- an element that ui.edit named before it was shown gets the keys now, or never
   if state.editAtShow then
-    services.edit(panel, state.editAtShow)
+    local id = state.editAtShow
+    services.edit(panel, id)
+    state.editAtShow = nil
   end
 
   draw.fill(surface, 0, 0, width, height, "background")
@@ -3142,7 +3145,7 @@ end
 function services.edit(panel, id)
   local state = panelState(panel)
   local node = state.root and findById(state.root, id)
-  state.editAtShow = not state.root and id or nil
+  state.editAtShow = not node and id or nil
 
   -- the keyboard's target follows, without its ring, as after a click
   if node and TAKES_TYPING[node.type] then
@@ -3388,8 +3391,8 @@ ecs.service.register({
     sig = "void(handle<ecs.panel> panel, string id)",
     doc = "Give an element the keys\n"
         .. "@param panel The panel that shows the element, often the focused panel that a key passes\n"
-        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or in the first one when the panel was not"
-        .. " shown yet; another id does nothing",
+        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or else in the next one, such as an element"
+        .. " that shows from the next draw; another id does nothing",
     fn = services.edit,
   },
   reveal = {
