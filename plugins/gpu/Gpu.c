@@ -1311,17 +1311,19 @@ static void GpuPipelineDestroy(void *object)
 }
 
 /// @brief Finds a word in a list of names, which are in the order of their values.
-static i32 GpuFindName(const char *word, const char *const *names, usz count)
+/// @note The index is written only when the word is found, so it stays below the count and an index into the names' values never reads outside them.
+static bool GpuFindName(const char *word, const char *const *names, usz count, usz *retIndex)
 {
     for (usz i = 0; i < count; i++)
     {
         if (SDL_strcmp(word, names[i]) == 0)
         {
-            return (i32)i;
+            *retIndex = i;
+            return true;
         }
     }
 
-    return -1;
+    return false;
 }
 
 static void *GpuNewPipeline(const ECSValue *desc, const char **retError)
@@ -1354,9 +1356,9 @@ static void *GpuNewPipeline(const ECSValue *desc, const char **retError)
     for (usz i = 0; i < count; i++)
     {
         const char *name = ECSValue_GetString(ECSValue_GetListItem(attributes, i), "");
-        i32 chosen = GpuFindName(name, formatNames, SDL_arraysize(formatNames));
+        usz chosen = 0;
 
-        if (!ECS_Check(GPU.plugin, chosen >= 0, "A vertex attribute is float, float2, float3, float4 or color, not '%s'.", name))
+        if (!ECS_Check(GPU.plugin, GpuFindName(name, formatNames, SDL_arraysize(formatNames), &chosen), "A vertex attribute is float, float2, float3, float4 or color, not '%s'.", name))
         {
             return nullptr;
         }
@@ -1370,12 +1372,15 @@ static void *GpuNewPipeline(const ECSValue *desc, const char **retError)
     static const char *const cullNames[] = {"none", "front", "back"};
     static const SDL_GPUCullMode culls[] = {SDL_GPU_CULLMODE_NONE, SDL_GPU_CULLMODE_FRONT, SDL_GPU_CULLMODE_BACK};
     static const char *const blendNames[] = {"none", "alpha", "add"};
-    i32 primitive = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "primitive"), "triangles"), primitiveNames, SDL_arraysize(primitiveNames));
-    i32 cull = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "cull"), "none"), cullNames, SDL_arraysize(cullNames));
-    i32 blend = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "blend"), "none"), blendNames, SDL_arraysize(blendNames));
+    usz primitive = 0;
+    usz cull = 0;
+    usz blend = 0;
+    bool found = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "primitive"), "triangles"), primitiveNames, SDL_arraysize(primitiveNames), &primitive);
+    found = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "cull"), "none"), cullNames, SDL_arraysize(cullNames), &cull) && found;
+    found = GpuFindName(ECSValue_GetString(ECSValue_GetTableField(desc, "blend"), "none"), blendNames, SDL_arraysize(blendNames), &blend) && found;
     bool depth = ECSValue_GetBool(ECSValue_GetTableField(desc, "depth"), true);
 
-    if (!ECS_Check(GPU.plugin, primitive >= 0 && cull >= 0 && blend >= 0, "A pipeline's primitive is triangles, triangleStrip, lines, lineStrip or points; its cull none, front or back; its blend none, alpha or add."))
+    if (!ECS_Check(GPU.plugin, found, "A pipeline's primitive is triangles, triangleStrip, lines, lineStrip or points; its cull none, front or back; its blend none, alpha or add."))
     {
         return nullptr;
     }

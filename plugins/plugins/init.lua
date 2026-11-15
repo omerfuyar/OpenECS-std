@@ -41,10 +41,10 @@ local function readPlugins()
       plugins[#plugins + 1] = entry
     end
 
-    -- an enabled plugin keeps the plugins it depends on enabled; each of those shows one that needs it
+    -- an enabled plugin keeps the plugins it depends on enabled, which the list fades
     for _, dependency in ipairs(entry.enabled and entry.depends or {}) do
       if byName[dependency] then
-        byName[dependency].neededBy = byName[dependency].neededBy or entry.name
+        byName[dependency].needed = true
       end
     end
   end
@@ -72,29 +72,41 @@ end
 
 -- the core makes the change when the current pass of the main loop ends, then emits ecs.pluginsChanged, which refreshes every list
 local function toggle(entry)
-  if entry and not (entry.enabled and entry.neededBy) then
+  if entry and not (entry.enabled and entry.needed) then
     (entry.enabled and ecs.plugins.disable or ecs.plugins.enable)(entry.name)
   end
 end
 
 local function stateText(entry)
-  local needed = entry.enabled and entry.neededBy and ", needed by " .. entry.neededBy or ""
-  return (entry.failed and "failed" or entry.enabled and "enabled" or "disabled") .. needed
+  return entry.failed and "failed" or entry.enabled and "enabled" or "disabled"
 end
 
--- the list's elements: the title, then a row for each plugin with its state, version and description; a click, or Return on the chosen one, toggles it, unless an enabled plugin needs it
+-- the list's elements: the title, then a row for each plugin with its state, version, description and the plugins it depends on;
+-- a click, or Return on the chosen one, toggles it, unless an enabled plugin needs it, which fades its row
 local function view(list)
   local rows = {}
 
   for _, entry in ipairs(list.plugins) do
-    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, {
+    local faded = entry.enabled and entry.needed
+    local depends = entry.depends or {}
+
+    local children = {
       ui.row({ gap = 12 }, {
-        ui.text(entry.name),
+        ui.text(entry.name, { color = faded and "textDim" or nil }),
         ui.text(entry.version, { style = STYLES.note }),
-        ui.text(stateText(entry), { style = entry.enabled and STYLES.heading or STYLES.note }),
+        ui.text(stateText(entry), { style = entry.enabled and not faded and STYLES.heading or STYLES.note }),
       }),
-      entry.description ~= "" and ui.text(entry.description, { style = STYLES.note }) or ui.space({ height = 0 }),
-    })
+    }
+
+    if entry.description ~= "" then
+      children[#children + 1] = ui.text(entry.description, { style = STYLES.note, wrap = true })
+    end
+
+    if #depends > 0 then
+      children[#children + 1] = ui.text("Depends on " .. table.concat(depends, ", "), { style = STYLES.note, wrap = true })
+    end
+
+    rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, children)
   end
 
   if #rows == 0 then
@@ -103,7 +115,7 @@ local function view(list)
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Plugins", { style = STYLES.title }),
-    ui.text("Return enables or disables the chosen plugin. A plugin stays enabled while an enabled plugin needs it.", { style = STYLES.note }),
+    ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note }),
     ui.list({
       id = "list",
       selected = list.selected,
