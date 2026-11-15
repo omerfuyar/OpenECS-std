@@ -69,6 +69,7 @@ struct UiProps
     UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
     UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
+    const char *placeholder;     // the text an empty field shows, dimmed, until it is typed in
     const char *look;            // a toggle's look: "check" or "switch"
     f64 min;                     // a slider's or number's least value; min and max count when they differ
     f64 max;                     // a slider's or number's greatest value
@@ -236,6 +237,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "tooltip", props->tooltip);
     Ui_SetString(table, "title", props->title);
     Ui_SetString(table, "label", props->label);
+    Ui_SetString(table, "placeholder", props->placeholder);
     Ui_SetString(table, "look", props->look);
     Ui_SetString(table, "sort", props->sort);
 
