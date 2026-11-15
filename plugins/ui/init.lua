@@ -909,8 +909,29 @@ function elements.field(text, props)
   return node
 end
 
+-- the number that a number field's text gives: a number, or a sum of numbers such as 32*4 or (10+2)/3, which Lua works out with
+-- nothing else in reach; nil for any other text
+local function readNumber(text)
+  local number = tonumber(text)
+
+  if number == nil and text:find("^[%d%.%s%+%-%*/%%%^%(%)eE]+$") then
+    local chunk = load("return " .. text, "=number", "t", {})
+    local ok, result = false, nil
+
+    if chunk then
+      ok, result = pcall(chunk)
+    end
+
+    if ok and type(result) == "number" and result == result and result ~= math.huge and result ~= -math.huge then
+      number = result
+    end
+  end
+
+  return number
+end
+
 -- a field for a number, kept from min to max if they are given and rounded to step if it is given; onChange gets the number at each edit
--- that is a number, and onSubmit at Return; Up and Down change it by step, or by 1, and give it to both
+-- that is a number or a sum, and onSubmit at Return; Up and Down change it by step, or by 1, and give it to both
 function elements.number(value, props)
   local node = elements.field("", props)
   local onChange, onSubmit = node.onChange, node.onSubmit
@@ -919,7 +940,7 @@ function elements.number(value, props)
   node.text = formatNumber(node.value)
 
   node.onChange = function(text)
-    local number = tonumber(text)
+    local number = readNumber(text)
 
     if number ~= nil and onChange then
       onChange(snapNumber(node, number))
@@ -928,7 +949,7 @@ function elements.number(value, props)
 
   -- a text that is not a number keeps the field typing
   node.onSubmit = function(text)
-    local number = tonumber(text)
+    local number = readNumber(text)
 
     if number == nil then
       return false
@@ -1495,7 +1516,7 @@ local function paintTyped(node, surface, state)
   end)
 
   -- a number field marks a typed text that is not a number
-  local valid = node.valid ~= false and not (editing and node.isNumber and tonumber(state.typed) == nil)
+  local valid = node.valid ~= false and not (editing and node.isNumber and readNumber(state.typed) == nil)
   draw.outline(surface, box.x, box.y, box.width, box.height, 1, not valid and INVALID_COLOR or editing and "accent" or "tabShown")
 end
 
@@ -2257,7 +2278,7 @@ end
 
 -- Up and Down change an edited number field's number by its step, or by 1, from what is typed, or from its value if that is not a number, and give it at once
 local function stepNumber(node, state, up)
-  local number = snapNumber(node, (tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
+  local number = snapNumber(node, (readNumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
   state.typed = formatNumber(number)
   state.cursorPosition, state.anchor = #state.typed + 1, nil
   node.onChange(state.typed)
