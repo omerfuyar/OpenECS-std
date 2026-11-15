@@ -32,6 +32,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 26. markdown
 27. syntax
 28. video
+29. The files panel
+30. The viewer
+31. The console
 
 ## 1. Rules
 
@@ -500,6 +503,43 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Its sound plays in a stream of mixer's (3), which video fills as it decodes, a little ahead of the frames. A paused video stops its stream, and playing starts a new one.
 - A timer decodes the playing videos while there are some, by the time since its last tick.
 - `video.free(video)` closes a video at once; its handle is gone otherwise, when no one uses it.
+
+## 29. The files panel
+
+- The first-party Lua plugin `files` shows the files of one folder as a tree, for tools that work on a folder, such as a game's project. It is built with ui (5) and fs (10), and knows nothing of the tool that uses it.
+- The tool names the folder with `files.setFolder(path)`, a path that ends with a slash, or an empty text for none; `files.folder()` gives it. The panel type `files.tree`, titled "Files", shows what is in it, apart from what starts with a dot. fs watches the folder and the folders in it, so the tree follows changes made outside the tool.
+- A click on a file chooses it, and a double click, a second click within 0.4 seconds, opens it. A click on a folder opens or closes it. `files.selected(panel)` gives a panel's chosen file, by its path in the folder.
+- Above the tree are a field for a name, a dropdown of kinds and New, then Rename and Delete. New makes a folder, an empty file, or a kind that the tool gives, in the chosen folder. Rename gives the chosen file the name; a name with folders moves it. Delete asks first.
+- The tool says what it adds with `files.setHandlers(handlers)`, a table whose fields may each be left out:
+
+  | Field        | Is                                                                                                   |
+  | ------------ | ---------------------------------------------------------------------------------------------------- |
+  | `open`       | Opens a file at a double click, by its path in the folder. Without it, a file does not open.         |
+  | `choose`     | Shows a file that a click, Up or Down chose, by its path in the folder, such as in a preview.        |
+  | `kinds`      | Kinds of file that New makes, each with its `label` and `make(path)`, which makes it and gives whether it did and why not. |
+  | `rename`     | Renames or moves a file in place of the panel, such as to change what names it.                     |
+  | `delete`     | Deletes a file in place of the panel, such as into the system's trash.                               |
+  | `deleteNote` | Gives a text that the question before a delete adds, such as the files that name the file.           |
+
+- A file dragged out of the tree is a drag of type `file-list` with its path, as another application's files come (OpenECS DESIGN 7.9), so a panel that takes dropped files takes it too.
+- After a change that the panel makes, it emits `files.changed`.
+- A panel's saved state is the folders it has open.
+
+## 30. The viewer
+
+- The first-party Lua plugin `viewer` shows a file as what it is, with the standard loaders: an image with image (6), shown through ui (5), a sound with audio (7), which mixer (3) plays, and a text with syntax (27). It knows nothing of the tool that uses it.
+- `viewer.open(path)` shows a file in the panel that shows it, or in the first panel of type `viewer.file` that is open, or in a new one; the panel gets the focus. `viewer.show(path)` shows a file as a preview: in the panel that shows it, or in the first one open, without the focus; with no panel open, it does nothing. `viewer.reload(path)` reads the file again in the panels that show it.
+- An image fills the panel: a large one whole, and a small one by a whole number of times, at most 16. A sound has Play and Stop, and its length.
+- A text shows in the mono font, coloured by syntax when syntax knows its language, its first 2000 lines of at most its first MiB. A file with a zero byte is not text. Of any other file, the panel shows its size.
+- A panel's saved state is the file's path.
+
+## 31. The console
+
+- The first-party Lua plugin `console` is a log that other plugins add lines to, such as what a program they run prints. It is built with ui (5), and knows nothing of the tool that uses it. Its panel type is `console.log`, titled "Console".
+- `console.add(text, level)` adds a text's lines, each with its level: `info`, `warn` or `error`, which colours it. The console keeps the last 2000 lines. `console.clear()` empties it, as its Clear button does, and `console.lines()` gives the lines, each with its text and level.
+- A line that names a file and a line, such as `src/main.lua:12`, is a link. A click on it, or `console.open(file, line)`, opens the file at the line in the user's code editor, with the command of the setting `console.editor`, in which `{file}` and `{line}` stand for them. A relative path starts at the folder that `console.setFolder(path)` names.
+- The console starts the command with process (20), after checking that its program is there, as a path or in the folders of `PATH`. When it is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
+- The panel follows its last line as lines are added.
 
 ---
 

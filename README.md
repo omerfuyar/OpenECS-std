@@ -29,6 +29,9 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
 - **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
+- **files:** a folder's files as a tree, to open, make, rename, move and delete them, which a tool tells how its files open.
+- **viewer:** shows a file as what it is: an image, a sound or a text.
+- **console:** a log that plugins add lines to, whose lines that name a file open it in a code editor.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 
