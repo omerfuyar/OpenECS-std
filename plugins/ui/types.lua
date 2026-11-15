@@ -55,6 +55,7 @@
 ---@field size? number The font size of its text, in layout units.
 ---@field font? string A font name of draw, such as "ui" or "mono".
 ---@field tooltip? string A text that shows when the pointer rests on it.
+---@field onMenu? fun(x: number, y: number) A release of the right button on it gives the place, in layout units, such as to open ui.menu there; Lua only.
 ---@field selectable? boolean false keeps a list's child, such as a heading, from being an item.
 
 ---A column or a row: with onClick, it is clicked like a button.
@@ -69,6 +70,7 @@
 ---@field selected? integer|integer[] The chosen item's number, from 1, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first.
 ---@field onSelect? fun(item: integer, how: "toggle"|"range"|nil, between: integer[]?) A press on an item gives its number; with Ctrl, how is "toggle", and with Shift "range", with the numbers from the first chosen item to it.
 ---@field onActivate? fun(item: integer) A click on an item gives its number.
+---@field onMenu? fun(item: integer?, x: number, y: number) A right click gives the item under it, which a right press chose if it was not, or nil beside the items, and the place.
 
 ---@class ui.GroupProps: ui.Props
 ---@field title? string
@@ -97,6 +99,7 @@
 ---@field selected? integer|integer[] The chosen row's number, from 1, or a list of the chosen ones' numbers.
 ---@field onSelect? fun(row: integer, how: "toggle"|"range"|nil, between: integer[]?) As a list's.
 ---@field onActivate? fun(row: integer)
+---@field onMenu? fun(row: integer?, x: number, y: number)
 ---@field onSort? fun(column: string) A click on a title gives its column's id.
 ---@field sort? string The id of the column the rows are sorted by, which shows an arrow.
 ---@field ascending? boolean The arrow points up.
@@ -114,6 +117,7 @@
 ---@field selected? any The chosen node's id, or a list of the chosen ones' ids, each highlighted; Up and Down move from the first.
 ---@field onSelect? fun(id: any, how: "toggle"|"range"|nil, between: any[]?) As a list's, with ids; between holds the shown nodes from the first chosen one to it.
 ---@field onActivate? fun(id: any)
+---@field onMenu? fun(id: any, x: number, y: number) A right click gives the node's id, or nil beside the nodes, and the place.
 ---@field onToggle? fun(id: any, open: boolean) A click on an arrow gives the node's id and its new state.
 
 ---@class ui.SeparatorProps: ui.Props

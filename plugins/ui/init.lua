@@ -478,7 +478,7 @@ local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up alpha "
-  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu"):gmatch("%S+") do
   PROPS[name] = true
 end
 
@@ -594,6 +594,8 @@ function elements.list(props, children)
         child.stretch = true
       end
 
+      child.chosen = chosen[index]
+
       if chosen[index] and child.background == nil then
         child.background = "selected"
       end
@@ -686,6 +688,10 @@ function elements.tree(nodes, props)
     props.onActivate(ids[index])
   end
 
+  listProps.onMenu = props.onMenu and function(index, x, y)
+    props.onMenu(index and ids[index], x, y)
+  end
+
   local node = elements.list(listProps, rows)
   node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
   return node
@@ -745,7 +751,7 @@ function elements.table(columns, rows, props)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
 end
@@ -2814,6 +2820,40 @@ local function handlePointerUp(panel, state, x, y)
   return pressed ~= nil
 end
 
+-- a press of the right button on a list's item that is not chosen chooses it alone, so the menu that the release opens is about it
+local function handleMenuDown(panel, state, x, y)
+  local item = find(state.root, x, y, isListItem)
+
+  if item and not item.chosen then
+    selectItem(item.list, item.itemIndex, nil)
+    panel:redraw()
+  end
+
+  return item ~= nil
+end
+
+-- a release of the right button gives the place to the innermost element under it with onMenu, such as to open a menu there; a list
+-- gives its item under the place first, or nil beside its items
+local function handleMenuUp(state, x, y)
+  local node = find(state.root, x, y, function(node)
+    return node.onMenu ~= nil or (isListItem(node) and node.list.onMenu ~= nil)
+  end)
+
+  if not node then
+    return false
+  end
+
+  if node.onMenu == nil then
+    node.list.onMenu(node.itemIndex, x, y)
+  elseif isList(node) then
+    node.onMenu(nil, x, y)
+  else
+    node.onMenu(x, y)
+  end
+
+  return true
+end
+
 -- handles a panel's event: calls the callbacks of the elements it reaches
 local function handleEvent(panel, event)
   local state = panelState(panel)
@@ -2849,6 +2889,10 @@ local function handleEvent(panel, event)
     return handlePointerDown(panel, state, event, x, y)
   elseif event.type == "pointerUp" and event.button == 1 then
     return handlePointerUp(panel, state, x, y)
+  elseif event.type == "pointerDown" and event.button == 3 then
+    return handleMenuDown(panel, state, x, y)
+  elseif event.type == "pointerUp" and event.button == 3 then
+    return handleMenuUp(state, x, y)
   elseif event.type == "wheel" then
     local scroll = find(state.root, x, y, scrollable)
 
