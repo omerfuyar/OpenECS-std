@@ -104,7 +104,7 @@ end
 function add(text, level)
   text = tostring(text):gsub("\r?\n$", "")
   level = level or "info"
-  local time = os.date("%H:%M:%S")
+  local time = tostring(os.date("%H:%M:%S"))
   local last = entries[#entries]
   if last and last.text == text and last.level == level then
     last.count, last.time = last.count + 1, time
