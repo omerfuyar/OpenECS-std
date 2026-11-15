@@ -60,6 +60,7 @@
 ---A column or a row: with onClick, it is clicked like a button.
 ---@class ui.ContainerProps: ui.Props
 ---@field onClick? fun()
+---@field wrap? boolean A row in a column puts the children that do not fit the rest of a line on the next line.
 
 ---A scroll element; it needs an id, which keeps its offset.
 ---@class ui.ScrollProps: ui.Props
