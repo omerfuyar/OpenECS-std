@@ -66,7 +66,7 @@ struct UiProps
     UiFlag selectable;           // UI_FALSE for a list's child that is not an item, such as a heading
     UiFlag clickable;            // a column or row that is clicked like a button; UI_CLICKED takes the click
     const char *title;           // a group's title
-    UiFlag wrap;                 // text that breaks into lines at its width
+    UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
     UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
     const char *look;            // a toggle's look: "check" or "switch"

@@ -967,9 +967,44 @@ end
 
 local measure
 
+-- the lines of a row with wrap = true: each line takes the children that fit its width after the ones before, and a child wider than the width
+-- has a line of its own; each line is { first, last, height }, and the row is as wide as its widest line
+local function measureWrapped(node, state, rowRoom)
+  local gap = node.gap or 0
+  local lines, widest, height = {}, 0, 0
+  local line = nil
+
+  for i, child in ipairs(node.children) do
+    local childWidth, childHeight = measure(child, state, nil)
+
+    if line and line.width + gap + childWidth > rowRoom then
+      line = nil
+    end
+
+    if not line then
+      line = { first = i, width = -gap, height = 0 }
+      lines[#lines + 1] = line
+    end
+
+    line.last, line.width, line.height = i, line.width + gap + childWidth, math.max(line.height, childHeight)
+  end
+
+  for i, each in ipairs(lines) do
+    widest, height = math.max(widest, each.width), height + each.height + (i > 1 and gap or 0)
+  end
+
+  node.layout.lines = lines
+  return widest, height
+end
+
 -- the size of a container's children, along and across its direction
 local function measureChildren(node, state, room)
   local along, across = 0, 0
+
+  -- a row with wrap = true in a column breaks its children into lines at the column's width
+  if horizontal(node) and node.wrap and (node.width or room) then
+    return measureWrapped(node, state, (node.width or room) - 2 * paddingOf(node))
+  end
 
   -- a column's children may take its width less its padding, and a scroll element's less its scroll bar too; a row's take what they need
   local inner = nil
@@ -1119,6 +1154,8 @@ function measure(node, state, room)
   return layout.naturalWidth, layout.naturalHeight
 end
 
+local arrangeLine
+
 -- places an element and its children in a rectangle; measure ran first
 -- a scroll element's content moves up by its offset, which is kept from 0 to as far as the content goes
 local function arrange(node, x, y, width, height, state)
@@ -1145,6 +1182,18 @@ local function arrange(node, x, y, width, height, state)
 
     innerY = innerY - layout.offset
     innerHeight = math.max(layout.contentHeight - 2 * padding, innerHeight)
+  end
+
+  -- a wrapped row places each of its lines as a row of its own, below the line before
+  if node.layout.lines then
+    local lineY = innerY
+
+    for _, line in ipairs(node.layout.lines) do
+      arrangeLine(node, line, innerX, lineY, innerWidth, state)
+      lineY = lineY + line.height + gap
+    end
+
+    return
   end
 
   -- the main axis: the natural sizes, then the room that is left, shared by the growing children
@@ -1192,6 +1241,37 @@ local function arrange(node, x, y, width, height, state)
     end
 
     along = along + childSize + gap
+  end
+end
+
+-- places the children of one line of a wrapped row, from its left: the room the line leaves is shared by its growing children, and each child
+-- is aligned in the line's height by the row's align
+function arrangeLine(node, line, x, y, width, state)
+  local gap, grows = node.gap or 0, 0
+
+  for i = line.first, line.last do
+    local grow = node.children[i].grow
+    grows = grows + (grow == true and 1 or grow or 0)
+  end
+
+  local room, along = width - line.width, x
+
+  for i = line.first, line.last do
+    local child = node.children[i]
+    local grow = child.grow == true and 1 or child.grow or 0
+    local childWidth = child.layout.naturalWidth + (grows > 0 and room > 0 and room * grow / grows or 0)
+    local cross, crossAt = child.layout.naturalHeight, y
+
+    if stretches(child, true) and not child.height then
+      cross = line.height
+    else
+      local align = node.align or "center"
+      crossAt = y + (align == "center" and (line.height - cross) / 2 or align == "end" and line.height - cross or 0)
+    end
+
+    child.layout.vertical = child.vertical == nil or child.vertical
+    arrange(child, along, crossAt, childWidth, cross, state)
+    along = along + childWidth + gap
   end
 end
 
