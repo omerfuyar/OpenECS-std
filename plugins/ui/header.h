@@ -74,6 +74,7 @@ struct UiProps
     f64 max;                     // a slider's or number's greatest value
     f64 step;                    // what a slider's or number's value is rounded to
     UiFlag valid;                // UI_FALSE marks a field's text as wrong, and keeps Return from giving it
+    UiFlag alpha;                // a colour element whose picker has an alpha bar, and gives "#RRGGBBAA"
     const char *sort;            // the id of the column a table is sorted by
     UiFlag ascending;            // a table's sort arrow points up
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
@@ -267,7 +268,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     {
         const char *name;
         UiFlag flag;
-    } flags[] = {{"stretch", props->stretch}, {"selectable", props->selectable}, {"clickable", props->clickable}, {"wrap", props->wrap}, {"vertical", props->vertical}, {"valid", props->valid}, {"ascending", props->ascending}, {"onActivate", props->onActivate ? UI_TRUE : UI_UNSET}, {"onSort", props->onSort ? UI_TRUE : UI_UNSET}};
+    } flags[] = {{"stretch", props->stretch}, {"selectable", props->selectable}, {"clickable", props->clickable}, {"wrap", props->wrap}, {"vertical", props->vertical}, {"valid", props->valid}, {"alpha", props->alpha}, {"ascending", props->ascending}, {"onActivate", props->onActivate ? UI_TRUE : UI_UNSET}, {"onSort", props->onSort ? UI_TRUE : UI_UNSET}};
 
     for (usz i = 0; i < UI__COUNT(flags); i++)
     {
@@ -622,6 +623,29 @@ static inline void Ui_OpenList(i32 *selected, const UiProps *props)
     Ui_Open("list", &chosen);
 }
 
+/// @brief Opens a section: a heading of a title with an arrow, over the next descriptions, until Ui_Close. Whether it is open is in open, which a
+/// click on the heading changes; ui leaves out its children while it is closed, so the plugin may skip describing them. Its props need an id.
+/// @return Whether a click changed open.
+static inline bool Ui_OpenSection(bool *open, const char *title, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onToggle");
+    *open = taken != nullptr ? ECSValue_GetBool(ECSValue_GetTableField(taken, "value"), *open) : *open;
+    ECSValue *description = Ui_Open("section", props);
+    Ui_SetString(description, "value", title);
+    Ui_SetBool(description, "open", *open);
+    return taken != nullptr;
+}
+
+/// @brief A colour, "#RRGGBB" or "#RRGGBBAA", in a buffer of a capacity, which the picker that a click opens changes; 10 bytes hold any.
+/// @return Whether it changed.
+static inline bool Ui_Color(char *buffer, usz capacity, const UiProps *props)
+{
+    const ECSValue *taken = Ui_Take(props->id, "onChange");
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(taken, "value"), nullptr));
+    Ui_SetString(Ui_Add("color", props), "value", buffer);
+    return taken != nullptr;
+}
+
 /// @brief The item of a list or the row of a table that was activated, with a click or Return, from 1, or 0 if none was. Its props need onActivate = true.
 static inline i32 Ui_Activated(const char *id)
 {
@@ -771,6 +795,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_GROUP(...) for (int UI__LATCH = (Ui_Open("group", &(UiProps){__VA_ARGS__}), 0); UI__LATCH < 1; UI__LATCH++, Ui_Close())
 
 /// @brief A list whose children are its items: selected points to the chosen item's number, from 1, which a press changes. UI_ACTIVATED gives a clicked item.
+#define UI_SECTION(open, title, ...) for (int UI__LATCH = (Ui_OpenSection((open), (title), &(UiProps){__VA_ARGS__}), 0); UI__LATCH < 1; UI__LATCH++, Ui_Close())
 #define UI_LIST(selected, ...) for (int UI__LATCH = (Ui_OpenList((selected), &(UiProps){__VA_ARGS__}), 0); UI__LATCH < 1; UI__LATCH++, Ui_Close())
 
 /// @brief Elements without children. Those that take a pointer write what the user changed into it, and give whether it changed.
@@ -785,6 +810,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_DROPDOWN(selected, choices, ...) Ui_Choice("dropdown", (selected), (choices), &(UiProps){__VA_ARGS__})
 #define UI_FIELD(buffer, capacity, ...) Ui_Field((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_KEY(buffer, capacity, ...) Ui_Key((buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_COLOR(buffer, capacity, ...) Ui_Color((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_TABLE(selected, columns, cells, rowCount, ...) Ui_Table((selected), (columns), (cells), (rowCount), &(UiProps){__VA_ARGS__})
 #define UI_TREE(selected, nodes, ...) Ui_Tree((selected), (nodes), &(UiProps){__VA_ARGS__})
 #define UI_SEPARATOR(...) ((void)Ui_Add("separator", &(UiProps){__VA_ARGS__}))

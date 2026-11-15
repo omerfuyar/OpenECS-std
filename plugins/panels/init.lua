@@ -8,7 +8,7 @@ local ui = require("ui")
 -- ui's own styles, which the first-party views share so they look alike
 local STYLES = ui.styles()
 
--- version of a list's saved state: the panel type that was chosen
+-- version of a list's saved state: the panel type that was chosen, and the plugins whose sections are closed
 local STATE_VERSION = 1
 
 local lists = {} -- every open list's state, by its panel handle
@@ -27,12 +27,21 @@ local function readTypes()
   return types
 end
 
+-- reads the types again; the list's items are the types of the open sections, which Up and Down choose
 local function refresh(list)
-  local chosen = list.types[list.selected]
+  local chosen = list.items[list.selected]
   list.types = readTypes()
-  list.selected = math.min(math.max(list.selected, 1), math.max(#list.types, 1))
+  list.items = {}
 
-  for i, entry in ipairs(list.types) do
+  for _, entry in ipairs(list.types) do
+    if not list.closed[entry.plugin] then
+      list.items[#list.items + 1] = entry
+    end
+  end
+
+  list.selected = math.min(math.max(list.selected, 1), math.max(#list.items, 1))
+
+  for i, entry in ipairs(list.items) do
     if chosen and entry.name == chosen.name then
       list.selected = i
     end
@@ -58,29 +67,44 @@ local function open(entry)
   end
 end
 
--- the list's elements: the title, then for each plugin a heading with its description and a row for each of its panel types, which a click,
--- or Return on the chosen one, opens
+-- the list's elements: the title, then for each plugin a section of its name, which a click opens and closes, with its description and a row
+-- for each of its panel types, which a click, or Return on the chosen one, opens
 local function view(list)
-  local rows = {}
-  local plugin
+  local sections, rows = {}, nil
 
-  for _, entry in ipairs(list.types) do
-    if entry.plugin ~= plugin then
-      plugin = entry.plugin
-      rows[#rows + 1] = ui.column({ style = STYLES.item, padding = 4, selectable = false }, {
-        ui.text(plugin, { style = STYLES.note, color = "text" }),
-        entry.description ~= "" and ui.text(entry.description, { style = STYLES.note }) or ui.space({ height = 0 }),
-      })
+  -- a section takes its children when it is made, so each plugin's is made once its rows are
+  local function addSection(plugin)
+    sections[#sections + 1] = ui.section(plugin, {
+      id = "plugin:" .. plugin,
+      open = not list.closed[plugin],
+      onToggle = function(open)
+        list.closed[plugin] = not open or nil
+        refresh(list)
+      end,
+    }, rows)
+  end
+
+  for i, entry in ipairs(list.types) do
+    if i == 1 or entry.plugin ~= list.types[i - 1].plugin then
+      rows = {}
+
+      if entry.description ~= "" then
+        rows[1] = ui.text(entry.description, { style = STYLES.note, wrap = true, selectable = false })
+      end
     end
 
     rows[#rows + 1] = ui.row({ style = STYLES.item }, {
       ui.text(entry.title),
       ui.text(entry.name, { style = STYLES.note }),
     })
+
+    if i == #list.types or entry.plugin ~= list.types[i + 1].plugin then
+      addSection(entry.plugin)
+    end
   end
 
-  if #rows == 0 then
-    rows[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
+  if #sections == 0 then
+    sections[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
@@ -93,9 +117,9 @@ local function view(list)
         list.panel:redraw()
       end,
       onActivate = function(index)
-        open(list.types[index])
+        open(list.items[index])
       end,
-    }, rows),
+    }, sections),
   })
 end
 
@@ -104,8 +128,15 @@ ecs.panel.registerType({
   title = "Panels",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local list = { panel = panel, types = {}, selected = 1 }
+    local list = { panel = panel, types = {}, items = {}, selected = 1, closed = {} }
     lists[panel] = list
+
+    if version == STATE_VERSION and saved then
+      for _, plugin in ipairs(saved.closed or {}) do
+        list.closed[plugin] = true
+      end
+    end
+
     refresh(list)
 
     -- the list has the keys from the start, so Up, Down and Return work at once
@@ -113,7 +144,7 @@ ecs.panel.registerType({
 
     -- the type chosen last time is chosen again
     if version == STATE_VERSION and saved and saved.selected then
-      for i, entry in ipairs(list.types) do
+      for i, entry in ipairs(list.items) do
         if entry.name == saved.selected then
           list.selected = i
         end
@@ -127,8 +158,14 @@ ecs.panel.registerType({
     lists[state.panel] = nil
   end,
   saveState = function(state)
-    local chosen = state.types[state.selected]
-    return { selected = chosen and chosen.name or nil }
+    local chosen, closed = state.items[state.selected], {}
+
+    for plugin in pairs(state.closed) do
+      closed[#closed + 1] = plugin
+    end
+
+    table.sort(closed)
+    return { selected = chosen and chosen.name or nil, closed = closed }
   end,
   draw = function(state, surface)
     ui.show(state.panel, surface, view(state))

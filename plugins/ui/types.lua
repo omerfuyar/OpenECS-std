@@ -73,6 +73,16 @@
 ---@class ui.GroupProps: ui.Props
 ---@field title? string
 
+---A section: a heading with an arrow over its children. The plugin keeps whether it is open.
+---@class ui.SectionProps: ui.Props
+---@field open? boolean Whether its children show; true if missing.
+---@field onToggle? fun(open: boolean) A click on the heading gives the new state.
+
+---A colour element; a click opens a picker.
+---@class ui.ColorProps: ui.Props
+---@field alpha? boolean Whether the picker has an alpha bar, and gives "#RRGGBBAA".
+---@field onChange? fun(color: string) Gets the colour a press in the picker ends on, as "#RRGGBB", or "#RRGGBBAA" with alpha.
+
 ---A column of a table.
 ---@class ui.TableColumn
 ---@field id string The key of the column's cells in each row.
@@ -169,12 +179,12 @@
 ---@field type string The element's type, which names its function, such as "column" or "button".
 ---@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button, onActivate = true
 ---and onSort = true ask a list, table or tree for those callbacks, and a field with valid = false refuses Return.
----@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number or a path.
+---@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number, a path, a section's title or a colour.
 ---@field choices? string[] A selector's, tabs' or dropdown's choices.
 ---@field columns? ui.TableColumn[] A table's columns.
 ---@field rows? ui.TableRow[] A table's rows.
 ---@field nodes? ui.TreeNode[] A tree's nodes.
----@field open? table<any, boolean> A tree's open nodes, by id.
+---@field open? boolean|table<any, boolean> Whether a section is open, or a tree's open nodes, by id.
 ---@field selected? any A tree's chosen node's id, or the number of a selector's, tabs' or dropdown's chosen one.
 ---@field children? ui.Description[] A container's children.
 

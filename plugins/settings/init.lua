@@ -7,7 +7,7 @@ local ui = require("ui")
 -- ui's own styles, which the first-party views share so they look alike
 local STYLES = ui.styles()
 
--- version of a window's saved state: the setting that was chosen
+-- version of a window's saved state: the setting that was chosen, and the owners whose sections are closed
 local STATE_VERSION = 1
 
 local windows = {} -- every open window's state, by its panel handle
@@ -107,12 +107,21 @@ local function read(setting, typed)
   return typed
 end
 
+-- reads the settings again; the window's items are the settings of the open sections, which Up and Down choose
 local function refresh(window)
-  local chosen = window.settings[window.selected]
+  local chosen = window.items[window.selected]
   window.settings = readSettings()
-  window.selected = math.min(math.max(window.selected, 1), math.max(#window.settings, 1))
+  window.items = {}
 
-  for i, setting in ipairs(window.settings) do
+  for _, setting in ipairs(window.settings) do
+    if not window.closed[setting.owner] then
+      window.items[#window.items + 1] = setting
+    end
+  end
+
+  window.selected = math.min(math.max(window.selected, 1), math.max(#window.items, 1))
+
+  for i, setting in ipairs(window.items) do
     if chosen and setting.name == chosen.name then
       window.selected = i
     end
@@ -195,9 +204,16 @@ local function control(window, setting)
     end,
   })
 
-  -- a colour shows beside its field
+  -- a colour has a picker beside its field
   if setting.type == "color" then
-    return ui.row({ gap = 6, grow = 1 }, { ui.column({ width = 18, height = 18, background = setting.value, border = "textDim" }), fieldElement })
+    local picker = ui.color(setting.value, {
+      id = "color:" .. setting.name,
+      alpha = #setting.value == 9,
+      onChange = function(color)
+        set(window, setting, color)
+      end,
+    })
+    return ui.row({ gap = 6, grow = 1 }, { picker, fieldElement })
   end
 
   return fieldElement
@@ -216,7 +232,7 @@ end
 
 -- changes the chosen setting one step, in the user's settings file
 local function change(window, direction)
-  local setting = window.settings[window.selected]
+  local setting = window.items[window.selected]
   local value = setting and step(setting, direction)
 
   if value ~= nil then
@@ -226,7 +242,7 @@ end
 
 -- toggles or cycles the chosen setting, or starts typing its value
 local function edit(window)
-  local setting = window.settings[window.selected]
+  local setting = window.items[window.selected]
 
   if not setting then
     return
@@ -237,17 +253,27 @@ local function edit(window)
   end
 end
 
--- the window's elements: the title, then the settings, each owner's under its name
+-- the window's elements: the title, then the settings, each owner's in a section of its name, which a click opens and closes
 local function view(window)
-  local rows, owner = {}, nil
+  local sections, rows = {}, {}
 
-  for _, setting in ipairs(window.settings) do
-    if setting.owner ~= owner then
-      owner = setting.owner
-      rows[#rows + 1] = ui.text(owner == "ecs" and "Core" or owner, { style = STYLES.heading, selectable = false })
-    end
-
+  for i, setting in ipairs(window.settings) do
     rows[#rows + 1] = settingRow(window, setting)
+
+    -- a section takes its children when it is made, so each owner's is made once its rows are
+    if i == #window.settings or setting.owner ~= window.settings[i + 1].owner then
+      local owner = setting.owner
+
+      sections[#sections + 1] = ui.section(owner == "ecs" and "Core" or owner, {
+        id = "owner:" .. owner,
+        open = not window.closed[owner],
+        onToggle = function(open)
+          window.closed[owner] = not open or nil
+          refresh(window)
+        end,
+      }, rows)
+      rows = {}
+    end
   end
 
   -- a press on a row chooses its setting, and the row's control gets the press too; Up and Down choose a setting
@@ -259,7 +285,7 @@ local function view(window)
       window.selected = index
       window.panel:redraw()
     end,
-  }, rows)
+  }, sections)
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Settings", { style = STYLES.title }),
@@ -272,15 +298,22 @@ ecs.panel.registerType({
   title = "Settings",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local window = { panel = panel, settings = {}, selected = 1, invalid = {} }
+    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {} }
     windows[panel] = window
+
+    if version == STATE_VERSION and saved then
+      for _, owner in ipairs(saved.closed or {}) do
+        window.closed[owner] = true
+      end
+    end
+
     refresh(window)
 
     -- the list has the keys from the start, so Up, Down and Return work at once
     ui.edit(panel, "list")
 
     if version == STATE_VERSION and saved and saved.selected then
-      for i, setting in ipairs(window.settings) do
+      for i, setting in ipairs(window.items) do
         if setting.name == saved.selected then
           window.selected = i
         end
@@ -294,8 +327,14 @@ ecs.panel.registerType({
     windows[state.panel] = nil
   end,
   saveState = function(state)
-    local chosen = state.settings[state.selected]
-    return { selected = chosen and chosen.name or nil }
+    local chosen, closed = state.items[state.selected], {}
+
+    for owner in pairs(state.closed) do
+      closed[#closed + 1] = owner
+    end
+
+    table.sort(closed)
+    return { selected = chosen and chosen.name or nil, closed = closed }
   end,
   draw = function(state, surface)
     ui.show(state.panel, surface, view(state))
@@ -306,7 +345,7 @@ ecs.panel.registerType({
     end
 
     -- Return edits the chosen setting, when no element of the window takes it
-    if not ui.event(state.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #state.settings > 0 then
+    if not ui.event(state.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #state.items > 0 then
       edit(state)
     end
   end,
@@ -345,7 +384,7 @@ local function forWindow(act)
   return function(panel)
     local window = windows[panel]
 
-    if window and #window.settings > 0 and not ui.focus(panel) then
+    if window and #window.items > 0 and not ui.focus(panel) then
       act(window)
     end
   end
