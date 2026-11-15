@@ -1633,7 +1633,16 @@ function paint(node, surface, state)
   elseif TAKES_TYPING[node.type] then
     paintTyped(node, surface, state)
   elseif node.type == "image" and box.picture then
-    draw.image(surface, box.picture, box.x, box.y, box.width, box.height)
+    -- an image with a width or a height fits inside its box, keeping its shape, in the middle of it
+    local width, height = box.width, box.height
+
+    if node.width or node.height then
+      local imageWidth, imageHeight = draw.imageSize(box.picture)
+      local fit = math.min(box.width / imageWidth, box.height / imageHeight)
+      width, height = imageWidth * fit, imageHeight * fit
+    end
+
+    draw.image(surface, box.picture, box.x + (box.width - width) / 2, box.y + (box.height - height) / 2, width, height)
   elseif node.type == "disclosure" then
     paintDisclosure(node, surface)
   elseif node.type == "separator" and box.vertical then
