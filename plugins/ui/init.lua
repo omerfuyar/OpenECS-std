@@ -1805,11 +1805,21 @@ end
 
 local MODIFIER_KEYS = { ["Left Ctrl"] = true, ["Right Ctrl"] = true, ["Left Shift"] = true, ["Right Shift"] = true, ["Left Alt"] = true, ["Right Alt"] = true, ["Left GUI"] = true, ["Right GUI"] = true }
 
--- opens a dropdown's choices in a popup below it; a click or Return chooses one
-local function openDropdown(panel, state, node)
-  local choices = node.choices
+-- the text that a key adds to a dropdown's search: a key of one character, or Space; Shift gives - as _
+local function searchCharacter(event)
+  if event.key == "Space" then
+    return " "
+  elseif #event.key == 1 and not event.ctrl and not event.alt and not event.super then
+    return event.shift and event.key == "-" and "_" or event.key:lower()
+  end
+end
 
-  if #choices == 0 then
+-- opens a dropdown's choices in a popup below it; a click or Return chooses one. Typing searches: the popup shows what is typed
+-- in its first row, and below it only the choices that hold it, whatever their case; Backspace takes a character off
+local function openDropdown(panel, state, node)
+  local all = node.choices
+
+  if #all == 0 then
     return
   end
 
@@ -1817,15 +1827,40 @@ local function openDropdown(panel, state, node)
   local textSize = node.size or fontSize()
   local font = fontOf(node)
   local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
-  local width, height = box.width, rowHeight * #choices
+  local width = box.width
   local scale = state.scale
   local hover = 1
+  local typed = ""
+  local choices = all
   local popup
 
-  for i, choice in ipairs(choices) do
+  for i, choice in ipairs(all) do
     if choice == node.value then
       hover = i
     end
+  end
+
+  -- the rows above the choices: one for what is typed, while something is
+  local function top()
+    return typed ~= "" and 1 or 0
+  end
+
+  local function height()
+    return rowHeight * math.max(1, #choices + top())
+  end
+
+  local function search()
+    choices = {}
+
+    for _, choice in ipairs(all) do
+      if typed == "" or tostring(choice):lower():find(typed, 1, true) then
+        choices[#choices + 1] = choice
+      end
+    end
+
+    hover = 1
+    popup:setSize(width, height())
+    popup:redraw()
   end
 
   local function choose(index)
@@ -1835,7 +1870,7 @@ local function openDropdown(panel, state, node)
   end
 
   local function choiceAt(y)
-    local index = math.floor(y / scale / rowHeight) + 1
+    local index = math.floor(y / scale / rowHeight) + 1 - top()
     return choices[index] ~= nil and index or nil
   end
 
@@ -1843,13 +1878,18 @@ local function openDropdown(panel, state, node)
   popup, message = panel:openPopup({
     anchor = { x = box.x * state.scale, y = box.y * state.scale, width = box.width * state.scale, height = box.height * state.scale },
     width = width,
-    height = height,
+    height = height(),
     draw = function(surface)
       scale = surface.scale
-      draw.fill(surface, 0, 0, width, height, "tabRow")
+      local h = height()
+      draw.fill(surface, 0, 0, width, h, "tabRow")
+
+      if typed ~= "" then
+        draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
+      end
 
       for i, choice in ipairs(choices) do
-        local y = (i - 1) * rowHeight
+        local y = (i - 1 + top()) * rowHeight
 
         if i == hover then
           draw.fill(surface, 0, y, width, rowHeight, "tabShown")
@@ -1859,7 +1899,7 @@ local function openDropdown(panel, state, node)
           choice == node.value and "accent" or "text")
       end
 
-      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+      draw.outline(surface, 0, 0, width, h, 1, "tabShown")
     end,
     event = function(event)
       if event.type == "pointerMove" then
@@ -1872,10 +1912,20 @@ local function openDropdown(panel, state, node)
       elseif event.type == "pointerUp" and event.button == 1 and choiceAt(event.y) then
         choose(choiceAt(event.y))
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
-        hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #choices)
-        popup:redraw()
+        if #choices > 0 then
+          hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #choices)
+          popup:redraw()
+        end
       elseif event.type == "keyDown" and isEnter(event) then
-        choose(hover)
+        if choices[hover] ~= nil then
+          choose(hover)
+        end
+      elseif event.type == "keyDown" and event.key == "Backspace" and typed ~= "" then
+        typed = typed:sub(1, -2)
+        search()
+      elseif event.type == "keyDown" and searchCharacter(event) then
+        typed = typed .. searchCharacter(event)
+        search()
       end
     end,
   })
