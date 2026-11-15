@@ -1804,19 +1804,22 @@ local function openMenu(panel, x, y, entries)
     end
   end
 
-  -- the next usable entry from one, a step at a time, which stays where it is when there is none
+  -- the next usable entry from one, a step at a time, round from the last to the first and back, or nil when none is usable
   local function step(from, by)
     local index = from
 
-    repeat
-      index = index + by
-    until index < 1 or index > #entries or usable(index)
+    for _ = 1, #entries do
+      index = (index + by - 1) % #entries + 1
 
-    return usable(index) and index or from
+      if usable(index) then
+        return index
+      end
+    end
+
+    return nil
   end
 
   local hover = step(0, 1)
-  hover = usable(hover) and hover or nil
   local scale = state.scale
 
   local function run(index)
@@ -1866,7 +1869,7 @@ local function openMenu(panel, x, y, entries)
       elseif event.type == "pointerUp" and event.button == 1 and entryAt(event.y / scale) then
         run(entryAt(event.y / scale))
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
-        hover = step(hover or 0, event.key == "Up" and -1 or 1)
+        hover = step(hover or 0, event.key == "Up" and -1 or 1) or hover
         popup:redraw()
       elseif event.type == "keyDown" and isEnter(event) and hover then
         run(hover)
