@@ -201,3 +201,11 @@
 ---@class ui.Taken
 ---@field value boolean|number|string|nil The callback's first argument: a new state, number, text or choice, an item's number, or a node's or column's id.
 ---@field open? boolean onToggle's second argument: whether the node is open now.
+
+---An entry of a menu that ui.menu opens, or a line between entries.
+---@class ui.MenuEntry
+---@field label? string What the entry says.
+---@field line? boolean True makes the entry a line between entries, which has nothing else.
+---@field keys? string The keys that run the same, shown at the entry's right, such as "Ctrl+D".
+---@field enabled? boolean False shows the entry dimmed, and it does not run; true if missing.
+---@field onClick? fun() Runs when the entry is clicked, or chosen with Return; the menu closes first.

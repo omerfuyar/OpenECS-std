@@ -1758,6 +1758,123 @@ local function openDropdown(panel, state, node)
   end
 end
 
+-- opens a menu of entries in a popup at a point of a panel, in layout units, such as where a right click was; an entry is
+-- { label, keys, enabled, onClick }, or { line = true } for a line between entries; a click or Return runs an entry, and closes the menu
+local function openMenu(panel, x, y, entries)
+  local state = panelState(panel)
+  local font = fontOf({})
+  local textSize = fontSize()
+  local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
+  local lineGap = size.paddingY * 2 + 1
+  local tops, width, height = {}, 0, 0
+  local popup
+
+  for i, entry in ipairs(entries) do
+    tops[i] = height
+
+    if entry.line then
+      height = height + lineGap
+    else
+      local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
+      width = math.max(width, measureText(font, entry.label or "", textSize) + keys + 2 * size.paddingX)
+      height = height + rowHeight
+    end
+  end
+
+  if height == 0 then
+    return nil
+  end
+
+  local function usable(index)
+    local entry = entries[index]
+    return entry ~= nil and not entry.line and entry.enabled ~= false
+  end
+
+  local function entryAt(at)
+    for i = #entries, 1, -1 do
+      if at >= tops[i] then
+        return usable(i) and i or nil
+      end
+    end
+  end
+
+  -- the next usable entry from one, a step at a time, which stays where it is when there is none
+  local function step(from, by)
+    local index = from
+
+    repeat
+      index = index + by
+    until index < 1 or index > #entries or usable(index)
+
+    return usable(index) and index or from
+  end
+
+  local hover = step(0, 1)
+  hover = usable(hover) and hover or nil
+  local scale = state.scale
+
+  local function run(index)
+    popup:close()
+    call(entries[index].onClick)
+    panel:redraw()
+  end
+
+  local message
+  popup, message = panel:openPopup({
+    type = "menu",
+    anchor = { x = x * state.scale, y = y * state.scale, width = 0, height = 0 },
+    width = width,
+    height = height,
+    draw = function(surface)
+      scale = surface.scale
+      draw.fill(surface, 0, 0, width, height, "tabRow")
+
+      for i, entry in ipairs(entries) do
+        if entry.line then
+          draw.fill(surface, size.paddingX, tops[i] + size.paddingY, width - 2 * size.paddingX, 1, "tabShown")
+        else
+          if i == hover then
+            draw.fill(surface, 0, tops[i], width, rowHeight, "tabShown")
+          end
+
+          local color = entry.enabled == false and "textDim" or "text"
+          draw.text(surface, font, entry.label or "", size.paddingX, tops[i] + size.paddingY, textSize, color)
+
+          if entry.keys then
+            local keysWidth = measureText(font, entry.keys, textSize)
+            draw.text(surface, font, entry.keys, width - size.paddingX - keysWidth, tops[i] + size.paddingY, textSize, "textDim")
+          end
+        end
+      end
+
+      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+    end,
+    event = function(event)
+      if event.type == "pointerMove" then
+        local index = entryAt(event.y / scale)
+
+        if index ~= hover then
+          hover = index
+          popup:redraw()
+        end
+      elseif event.type == "pointerUp" and event.button == 1 and entryAt(event.y / scale) then
+        run(entryAt(event.y / scale))
+      elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
+        hover = step(hover or 0, event.key == "Up" and -1 or 1)
+        popup:redraw()
+      elseif event.type == "keyDown" and isEnter(event) and hover then
+        run(hover)
+      end
+    end,
+  })
+
+  if not popup then
+    ecs.log.warn(message or "Cannot open the menu.")
+  end
+
+  return popup
+end
+
 -- a colour's text read as red, green, blue and alpha from 0 to 255, or nil for a text that is not "#RRGGBB" or "#RRGGBBAA"
 local function readColor(text)
   local hex = type(text) == "string" and (text:match("^#(%x%x%x%x%x%x%x%x)$") or text:match("^#(%x%x%x%x%x%x)$"))
@@ -3081,6 +3198,17 @@ ecs.service.register({
         .. "@param event The event, as the panel's event gets it\n"
         .. "@return True if ui handled the event, false if it reached no element or the panel was not shown yet",
     fn = handleEvent,
+  },
+  menu = {
+    sig = "void(handle<ecs.panel> panel, float x, float y, value<ui.MenuEntry[]> entries)",
+    doc = "Open a menu of entries in a popup at a point of a panel, such as where a right click was; a click or Return runs an entry and closes the menu\n"
+        .. "@param panel The panel\n"
+        .. "@param x The point's x in the panel, in layout units, as a pointer event's position divided by the surface's scale\n"
+        .. "@param y The point's y\n"
+        .. "@param entries The entries, in order: each a table of its label, the keys that run it too, whether it is enabled, and its onClick, or a line between entries",
+    fn = function(panel, x, y, entries)
+      openMenu(panel, x, y, entries)
+    end,
   },
   forget = {
     sig = "void(handle<ecs.panel> panel)",
