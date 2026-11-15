@@ -167,7 +167,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `number(value, props)`                | A field for a number, kept from `min` to `max` if they are given and rounded to `step` if it is given. It needs an `id`. `onChange(value)` gets the number at each edit that is one, and `onSubmit(value)` when Return is pressed; a text that is not a number is marked and keeps the field typing. Up and Down change the number by `step`, or by 1, and give it to both. A press and a drag sideways on a number that is not typed in changes it by a `step`, or 1, each layout unit, a tenth of that with Shift: `onChange` gets each number, and `onSubmit` the last at the release. A click without a drag types in it. |
   | `color(color, props)`                 | A colour, `"#RRGGBB"` or `"#RRGGBBAA"`, as a swatch. A click opens a picker in a popup: a square of saturation and value, a hue bar beside it, an alpha bar below it with `alpha = true`, and the colour's text. A press and a drag change the colour in the picker, and the colour a press ends on goes to `onChange(color)`, with its alpha only with `alpha = true`. Return closes the picker. |
   | `key(combination, props)`             | A key combination. It needs an `id`. A click, then a key press, changes it: `onChange(combination)`.                                                                                                                         |
-  | `image(path, props)`                  | An image file, at its size, read with image (6) at the surface's scale and drawn with draw.                                                                                                                                  |
+  | `image(path, props)`                  | An image file, at its size, read with image (6) at the surface's scale and drawn with draw. With a `width` or a `height`, it fits inside them, keeping its shape, in their middle.                                                                                                                                  |
   | `space(props)`                        | Empty room, which grows.                                                                                                                                                                                                     |
 
 - Properties of every element: `id`, `style`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours), `color`, `size` and `font` (for text: a font name of draw), and `tooltip`, a text. A column or a row with `onClick` is clicked like a button.
@@ -512,7 +512,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The first-party Lua plugin `files` shows the files of one folder as a tree, for tools that work on a folder, such as a game's project. It is built with ui (5) and fs (10), and knows nothing of the tool that uses it.
 - The tool names the folder with `files.setFolder(path)`, a path that ends with a slash, or an empty text for none; `files.folder()` gives it. The panel type `files.tree`, titled "Files", shows what is in it, apart from what starts with a dot. fs watches the folder and the folders in it, so the tree follows changes made outside the tool.
-- A click on a file chooses it, and a double click, a second click within 0.4 seconds, opens it. A click on a folder opens or closes it. `files.selected(panel)` gives a panel's chosen file, by its path in the folder.
+- The panel shows the folder as a tree, or one folder at a time as a grid, as a file manager does; a selector above it chooses, and a panel's saved state keeps which, with the folder that its grid shows.
+- The grid shows the folder's path as a row of folders, each a button that shows it, and a tile for each of its folders and files, in rows that wrap: an icon over its name. An image's icon is a small picture of it; another file's is a badge of its ending, in the colour of the panel's frame, and a folder's a badge in the accent, unless the tool gives its own.
+- A click on a file chooses it, and a double click, a second click within 0.4 seconds, opens it. A click on a folder opens or closes it in the tree, and shows it in the grid. `files.selected(panel)` gives a panel's chosen file, by its path in the folder.
 - A right click opens a menu (5): on a file or folder, which it chooses, New for a folder, each kind that the tool gives and an empty file, then Open, Rename and Delete; beside the files, the New entries only. New makes the file in the chosen folder, or the chosen file's, or beside the files in the shown folder. New and Rename show a field for the name above the tree, which has the keys: Return makes the file or renames it, and Cancel closes the field. A name with folders moves the file. Delete asks first.
 - The tool says what it adds with `files.setHandlers(handlers)`, a table whose fields may each be left out:
 
@@ -524,10 +526,11 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `rename`     | Renames or moves a file in place of the panel, such as to change what names it.                     |
   | `delete`     | Deletes a file in place of the panel, such as into the system's trash.                               |
   | `deleteNote` | Gives a text that the question before a delete adds, such as the files that name the file.           |
+  | `icon`       | Gives a file's icon in the grid: `{ image }`, an image by its path in the folder, or `{ label, color }`, a badge; nil for the panel's own. |
 
 - A file dragged out of the tree is a drag of type `file-list` with its path, as another application's files come (OpenECS DESIGN 7.9), so a panel that takes dropped files takes it too.
 - After a change that the panel makes, it emits `files.changed`.
-- A panel's saved state is the folders it has open.
+- A panel's saved state is the folders it has open in the tree, whether it shows the grid, and the grid's folder.
 
 ## 30. The viewer
 
