@@ -539,11 +539,13 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 31. The console
 
-- The first-party Lua plugin `console` is a log that other plugins add lines to, such as what a program they run prints. It is built with ui (5), and knows nothing of the tool that uses it. Its panel type is `console.log`, titled "Console".
-- `console.add(text, level)` adds a text's lines, each with its level: `info`, `warn` or `error`, which colours it. The console keeps the last 2000 lines. `console.clear()` empties it, as its Clear button does, and `console.lines()` gives the lines, each with its text and level.
-- A line that names a file and a line, such as `src/main.lua:12`, is a link. A click on it, or `console.open(file, line)`, opens the file at the line in the user's code editor, with the command of the setting `console.editor`, in which `{file}` and `{line}` stand for them. A relative path starts at the folder that `console.setFolder(path)` names.
+- The first-party Lua plugin `console` is a log that other plugins add entries to, such as what a program they run prints. It is built with ui (5), and knows nothing of the tool that uses it. Its panel type is `console.log`, titled "Console".
+- `console.add(text, level)` adds an entry: a text, which may hold many lines, with its level, `info`, `warn` or `error`. An entry shows as a box framed in its level's colour, with the time it was added, the first file and line it names, and its text. An entry equal to the last one, in text and level, stacks on it: its count shows, and its time is the last one's. The console keeps the last 2000 entries. `console.clear()` empties it, as its Clear button does, and `console.entries()` gives the entries (`console.Entry`).
+- Toggles above the entries filter them by level, and show how many each level has. A panel's saved state is the levels it hides.
+- `console.run()` says that the tool starts a run of its program, such as a game that plays; the console clears then when the setting `console.clearOnRun` is on, which its Clear on Run toggle sets, and which is on by default.
+- The first file and line that an entry names, such as `src/main.lua:12`, is a link. A click on it, or `console.open(file, line)`, opens the file at the line in the user's code editor, with the command of the setting `console.editor`, in which `{file}` and `{line}` stand for them. A relative path starts at the folder that `console.setFolder(path)` names.
 - The console starts the command with process (20), after checking that its program is there, as a path or in the folders of `PATH`. When it is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
-- The panel follows its last line as lines are added.
+- The panel follows its last entry as entries are added.
 
 ---
 
