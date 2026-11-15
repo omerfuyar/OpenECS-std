@@ -19,6 +19,13 @@ local COLORS = { warn = "#e5c07b", error = "#e06c75" }
 ---@field count integer how many times it was added in a row
 ---@field file string? the first file that it names
 ---@field line integer? the line of that file
+---@field links console.Link[]? more links, which the plugin that added it gives
+
+---A link of an entry's, after its place: a text, and what a click on it does.
+---@class console.Link
+---@field text string
+---@field tooltip string?
+---@field onClick fun()
 
 local entries = {} ---@type console.Entry[]
 local panels = {} ---@type table<ecs.Panel, table>
@@ -101,21 +108,39 @@ local function openFile(file, line)
   end
 end
 
-function add(text, level)
+function add(text, level, links)
   text = tostring(text):gsub("\r?\n$", "")
+  links = type(links) == "table" and #links > 0 and links or nil
   level = level or "info"
   local time = tostring(os.date("%H:%M:%S"))
   local last = entries[#entries]
   if last and last.text == text and last.level == level then
     last.count, last.time = last.count + 1, time
+    last.links = links or last.links
   else
     local file, number = text:match("([%w_%-./\\]+%.%a+):(%d+)")
-    entries[#entries + 1] = { text = text, level = level, time = time, count = 1, file = file, line = tonumber(number) }
+    entries[#entries + 1] = { text = text, level = level, time = time, count = 1, file = file, line = tonumber(number), links = links }
   end
   while #entries > LIMIT do
     table.remove(entries, 1)
   end
   redraw()
+end
+
+-- The links that the plugin that added an entry gave, in a row.
+local function linksOf(entry)
+  if not entry.links then
+    return false
+  end
+  local out = {}
+  for _, link in ipairs(entry.links) do
+    out[#out + 1] = ui.text({ { text = link.text, link = "action" } }, {
+      style = STYLES.note, tooltip = link.tooltip, onLink = function()
+        link.onClick()
+      end,
+    })
+  end
+  return ui.row({ gap = 8 }, out)
 end
 
 -- An entry's box: its time, the place it names as a link, and its count, above its text, framed in its level's colour.
@@ -129,6 +154,7 @@ local function entryBox(i, entry)
           openFile(entry.file, entry.line)
         end,
       }) or false,
+      linksOf(entry),
       ui.space(),
       entry.count > 1 and ui.text("×" .. entry.count, { style = STYLES.note, tooltip = "Added this many times in a row" }) or false,
     }),
@@ -202,7 +228,7 @@ ecs.panel.registerType({
 })
 
 ecs.service.register({
-  add = { sig = "void(string text, string level)", doc = "Add an entry to the console, which stacks on the last one when it is equal\n@param text The entry's text, which may hold many lines\n@param level info, warn or error", fn = add },
+  add = { sig = "void(string text, string level, value links)", doc = "Add an entry to the console, which stacks on the last one when it is equal\n@param text The entry's text, which may hold many lines\n@param level info, warn or error\n@param links Lua only, or nil: more links after the place it names, each a table of its text, tooltip and onClick (console.Link)", fn = add },
   clear = { sig = "void()", doc = "Clear the console", fn = function()
     entries = {}
     redraw()

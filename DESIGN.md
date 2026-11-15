@@ -542,6 +542,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - Toggles above the entries filter them by level, and show how many each level has. A panel's saved state is the levels it hides.
 - `console.run()` says that the tool starts a run of its program, such as a game that plays; the console clears then when the setting `console.clearOnRun` is on, which its Clear on Run toggle sets, and which is on by default.
 - The first file and line that an entry names, such as `src/main.lua:12`, is a link. A click on it, or `console.open(file, line)`, opens the file at the line in the user's code editor, with the command of the setting `console.editor`, in which `{file}` and `{line}` stand for them. A relative path starts at the folder that `console.setFolder(path)` names.
+- From Lua, `console.add(text, level, links)` may give an entry more links, shown after its place: each a table of its text, a tooltip and `onClick`, the function that a click calls (`console.Link`). A tool links an error to what it came from this way, such as the object that raised it. An entry that stacks takes the last links.
 - The console starts the command with process (20), after checking that its program is there, as a path or in the folders of `PATH`. When it is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
 - The panel follows its last entry as entries are added.
 
