@@ -480,7 +480,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1490,7 +1490,12 @@ local function paintTyped(node, surface, state)
       -- a dragged number shows the number the drag gives, before the panel has taken it
       local drag = state.numberDrag
       local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
-      draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      -- an empty field shows its placeholder, dimmed, until it is typed in
+      if shown == "" and node.placeholder then
+        draw.text(surface, font, ellipsize(font, tostring(node.placeholder), textSize, room), box.x + size.paddingX, textY, textSize, "textDim")
+      else
+        draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      end
     end
   end)
 
@@ -3248,7 +3253,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 

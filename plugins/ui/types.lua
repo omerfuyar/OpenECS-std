@@ -166,6 +166,7 @@
 ---@field onChange? fun(text: string) Gets each edit.
 ---@field onSubmit? fun(text: string): boolean? Gets the text when Return is pressed; false keeps typing.
 ---@field valid? boolean false marks the text as wrong.
+---@field placeholder? string The text an empty field shows, dimmed, until it is typed in, such as Search.
 
 ---@class ui.NumberProps: ui.Props
 ---@field id string
