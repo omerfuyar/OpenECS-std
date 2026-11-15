@@ -21,6 +21,7 @@ local panels = {} ---@type table<ecs.Panel, table>
 ---@field rename? fun(from: string, to: string): boolean?, string? renames or moves a file in place of the panel
 ---@field delete? fun(path: string): boolean? deletes a file in place of the panel
 ---@field deleteNote? fun(path: string): string? a text for the question before a file is deleted, such as the files that name it
+---@field icon? fun(path: string): {image: string?, label: string?, color: string?}? a file's icon in the grid: an image by its path in the folder, or a badge's label and colour
 local handlers = {}
 local menu
 
@@ -179,8 +180,8 @@ end
 
 -- the menu of a right click: about the file under it, which the click chose, or beside the files about the folder; New makes a
 -- file in the chosen folder, or in the chosen file's
-menu = function(state, id, x, y)
-  local into = id and folderOf(state) or ""
+menu = function(state, id, x, y, into)
+  into = into or id and folderOf(state) or ""
   local entries = {
     { label = "New folder", onClick = function() ask(state, { kind = "folder", folder = into, label = "New folder", text = "" }) end },
   }
@@ -205,7 +206,109 @@ menu = function(state, id, x, y)
   ui.menu(state.panel, x, y, entries)
 end
 
+-- a click on a file or folder: a folder opens or closes in the tree, or the grid goes into it, and a second click on a file soon
+-- after the first, a double click, opens it with the tool's handler
+local function activate(state, id)
+  if isFolder(id) then
+    if state.view == "grid" then
+      state.dir, state.selected = id .. "/", nil
+    else
+      state.open[id] = not state.open[id] or nil
+    end
+  elseif state.clicked == id then
+    state.clicked = nil
+    if handlers.open then
+      handlers.open(id)
+    end
+  else
+    state.clicked = id
+    ecs.timer.start(0.4, false, function()
+      if state.clicked == id then
+        state.clicked = nil
+      end
+    end)
+  end
+end
+
+-- chooses a file, and shows it with the tool's handler
+local function choose(state, id)
+  state.selected = id
+  if handlers.choose and not isFolder(id) then
+    handlers.choose(id)
+  end
+end
+
+local IMAGES = { png = true, jpg = true, jpeg = true, bmp = true, tga = true, gif = true, svg = true }
+local TILE = 84
+local ICON = 48
+
+-- a file's icon in the grid: the tool's, a picture of an image, or a badge of the file's ending, in a colour of its own
+local function icon(path, dir)
+  local given = handlers.icon and handlers.icon(path)
+  if type(given) == "table" and given.image then
+    return ui.image(folder .. given.image, { width = ICON, height = ICON })
+  end
+  local ending = (path:match("%.(%w+)$") or ""):lower()
+  if not given and IMAGES[ending] then
+    return ui.image(folder .. path, { width = ICON, height = ICON })
+  end
+  local label = type(given) == "table" and given.label or dir and "DIR" or ending ~= "" and ending:upper():sub(1, 4) or "FILE"
+  local color = type(given) == "table" and given.color or dir and "accent" or "tabShown"
+  return ui.column({ width = ICON, height = ICON, background = color, align = "center", padding = 4 }, {
+    ui.space(),
+    ui.text(label, { size = 12, color = dir and "background" or "text" }),
+    ui.space(),
+  })
+end
+
+-- the grid: the path of the shown folder as a row of folders to click, then a tile for each of its files, in rows that wrap
+local function grid(state, children)
+  local dir = state.dir
+  if dir ~= "" and not isFolder(dir:sub(1, -2)) then
+    dir, state.dir = "", ""
+  end
+  local crumbs = { ui.button(folder:match("([^/\\]+)[/\\]$") or "/", { id = "crumb:", tooltip = "Show this folder", onClick = function()
+    state.dir = ""
+  end }) }
+  local walked = ""
+  for part in dir:gmatch("([^/]+)/") do
+    walked = walked .. part .. "/"
+    local at = walked
+    crumbs[#crumbs + 1] = ui.text("›", { style = STYLES.note })
+    crumbs[#crumbs + 1] = ui.button(part, { id = "crumb:" .. at, tooltip = "Show this folder", onClick = function()
+      state.dir = at
+    end })
+  end
+  children[#children + 1] = ui.row({ gap = 4, align = "center", wrap = true }, crumbs)
+  local tiles = {}
+  state.tiles = {}
+  for _, entry in ipairs(nodes(dir:sub(1, -2))) do
+    local id = entry.id
+    state.tiles[#state.tiles + 1] = id
+    tiles[#tiles + 1] = ui.column({
+      id = "tile:" .. id, width = TILE, padding = 4, gap = 4, align = "center", tooltip = entry.label,
+      background = state.selected == id and "selected" or nil, hoverBackground = "tab",
+      onClick = function()
+        activate(state, id)
+      end,
+      onMenu = function(x, y)
+        choose(state, id)
+        menu(state, id, x, y)
+      end,
+    }, {
+      icon(id, entry.children ~= nil),
+      ui.text(entry.label, { size = 12 }),
+    })
+  end
+  children[#children + 1] = ui.scroll({ id = "grid", grow = 1, onMenu = function(x, y)
+    menu(state, nil, x, y, dir)
+  end }, {
+    #tiles > 0 and ui.row({ gap = 4, wrap = true }, tiles) or ui.text("The folder is empty.", { style = STYLES.note }),
+  })
+end
+
 local function draw(state, surface)
+  state.scale = surface.scale
   local children = {}
   if folder == "" then
     children[1] = ui.text("No folder is open.", { style = STYLES.note })
@@ -229,31 +332,25 @@ local function draw(state, surface)
     if state.message then
       children[#children + 1] = ui.text(tostring(state.message), { color = "#e06c75", wrap = true })
     end
+    children[#children + 1] = ui.row({}, {
+      ui.selector(state.view == "grid" and 2 or 1, { "Tree", "Grid" }, {
+        id = "view", tooltip = "The folder as a tree, or one folder at a time as a grid of icons", onSelect = function(choice)
+          state.view = choice == 2 and "grid" or "tree"
+        end,
+      }),
+    })
+  end
+  if folder ~= "" and state.view == "grid" then
+    grid(state, children)
+  elseif folder ~= "" then
     children[#children + 1] = ui.tree(nodes(""), {
       id = "tree", open = state.open, selected = state.selected, grow = 1, tooltip = "A right click opens a menu",
       onSelect = function(id)
-        state.selected, state.pressed = id, id
-        if handlers.choose and not isFolder(id) then
-          handlers.choose(id)
-        end
+        state.pressed = id
+        choose(state, id)
       end,
       onActivate = function(id)
-        if isFolder(id) then
-          state.open[id] = not state.open[id] or nil
-        elseif state.clicked == id then
-          -- a double click opens a file: the second click, soon after the first
-          state.clicked = nil
-          if handlers.open then
-            handlers.open(id)
-          end
-        else
-          state.clicked = id
-          ecs.timer.start(0.4, false, function()
-            if state.clicked == id then
-              state.clicked = nil
-            end
-          end)
-        end
+        activate(state, id)
       end,
       onToggle = function(id, open)
         state.open[id] = open or nil
@@ -271,9 +368,11 @@ ecs.panel.registerType({
   title = "Files",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local state = { panel = panel, open = {} }
+    local state = { panel = panel, open = {}, view = "tree", dir = "", tiles = {} }
     if version == STATE_VERSION and type(saved) == "table" then
       state.open = saved.open or {}
+      state.view = saved.view == "grid" and "grid" or "tree"
+      state.dir = type(saved.dir) == "string" and saved.dir or ""
     end
     panels[panel] = state
     return state
@@ -283,6 +382,19 @@ ecs.panel.registerType({
     -- A file is dragged out of the tree as a list of paths, as another application's files come.
     if event.type == "pointerDown" then
       state.pressed, state.pressX, state.pressY = nil, event.x, event.y
+      -- in the grid, a press chooses the tile under it, which a drag takes
+      if state.view == "grid" and event.button == 1 then
+        local scale = state.scale or 1
+        for _, id in ipairs(state.tiles) do
+          local rect = ui.rect(state.panel, "tile:" .. id)
+          local x, y = event.x / scale, event.y / scale
+          if rect and x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height then
+            state.pressed = id
+            choose(state, id)
+            state.panel:redraw()
+          end
+        end
+      end
     elseif event.type == "pointerMove" and state.pressed then
       if math.abs(event.x - state.pressX) + math.abs(event.y - state.pressY) > 8 then
         state.panel:startDrag("file-list", { folder .. state.pressed })
@@ -294,7 +406,7 @@ ecs.panel.registerType({
     ui.event(state.panel, event)
   end,
   saveState = function(state)
-    return { open = state.open }
+    return { open = state.open, view = state.view, dir = state.dir }
   end,
   destroy = function(state)
     ui.forget(state.panel)
