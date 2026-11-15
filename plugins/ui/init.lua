@@ -275,7 +275,41 @@ local function ellipsize(font, text, textSize, width)
   return prefix(text, low) .. "…"
 end
 
--- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own,
+-- the parts of a word that may each start a line: a word wider than the width breaks after its slashes, so a path breaks between its folders,
+-- and a part still wider breaks between characters
+local function wordParts(font, word, textSize, width)
+  if measureText(font, word, textSize) <= width then
+    return { word }
+  end
+
+  local parts = {}
+
+  for part in word:gmatch("[^/\\]*[/\\]?") do
+    local rest = part
+
+    while rest ~= "" do
+      local low, high = 1, utf8.len(rest) or #rest
+
+      while low < high do
+        local middle = (low + high + 1) // 2
+
+        if measureText(font, prefix(rest, middle), textSize) <= width then
+          low = middle
+        else
+          high = middle - 1
+        end
+      end
+
+      local fits = prefix(rest, low)
+      parts[#parts + 1] = fits
+      rest = rest:sub(#fits + 1)
+    end
+  end
+
+  return parts
+end
+
+-- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width breaks into parts (wordParts),
 -- and a line keeps the blanks it starts with, so indented text stays indented
 local function wrap(font, text, textSize, width)
   local lines = {}
@@ -284,13 +318,16 @@ local function wrap(font, text, textSize, width)
     local current = paragraph:match("^%s+")
 
     for word in paragraph:gmatch("%S+") do
-      local joined = current and (current:find("%S") and current .. " " or current) .. word or word
+      for i, part in ipairs(wordParts(font, word, textSize, width)) do
+        local words = current and current:find("%S")
+        local joined = current and (words and i == 1 and current .. " " or current) .. part or part
 
-      if current and current:find("%S") and measureText(font, joined, textSize) > width then
-        lines[#lines + 1] = current
-        current = word
-      else
-        current = joined
+        if words and measureText(font, joined, textSize) > width then
+          lines[#lines + 1] = current
+          current = part
+        else
+          current = joined
+        end
       end
     end
 
@@ -374,8 +411,11 @@ local function layoutSpans(node, textSize, width)
           add(blanks, span, true)
         end
 
+        -- a word wider than the width breaks into parts, as in wrap
         if word ~= "" then
-          add(word, span, false)
+          for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width) or { word }) do
+            add(wordPart, span, false)
+          end
         end
       end
     end
