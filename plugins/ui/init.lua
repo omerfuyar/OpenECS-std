@@ -19,6 +19,9 @@ local SIZES = {
 
 local size = {}
 
+-- how far, in layout units, a press on a number moves before it drags the number, so a click that shakes is still a click
+local NUMBER_DRAG_START = 3
+
 local function readSizes()
   for _, entry in ipairs(SIZES) do
     size[entry[1]] = ecs.setting.get("ui." .. entry[1]) or entry[2]
@@ -478,7 +481,7 @@ local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up alpha "
-  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu"):gmatch("%S+") do
   PROPS[name] = true
 end
 
@@ -594,6 +597,8 @@ function elements.list(props, children)
         child.stretch = true
       end
 
+      child.chosen = chosen[index]
+
       if chosen[index] and child.background == nil then
         child.background = "selected"
       end
@@ -686,6 +691,10 @@ function elements.tree(nodes, props)
     props.onActivate(ids[index])
   end
 
+  listProps.onMenu = props.onMenu and function(index, x, y)
+    props.onMenu(index and ids[index], x, y)
+  end
+
   local node = elements.list(listProps, rows)
   node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
   return node
@@ -745,7 +754,7 @@ function elements.table(columns, rows, props)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
 end
@@ -1478,7 +1487,10 @@ local function paintTyped(node, surface, state)
     elseif editing then
       draw.text(surface, font, "Press a key", box.x + size.paddingX, textY, textSize, "textDim")
     else
-      draw.text(surface, font, ellipsize(font, node.text, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      -- a dragged number shows the number the drag gives, before the panel has taken it
+      local drag = state.numberDrag
+      local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
+      draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
     end
   end)
 
@@ -1836,6 +1848,126 @@ local function openDropdown(panel, state, node)
   if not popup then
     ecs.log.warn(message or "Cannot open the choices.")
   end
+end
+
+-- opens a menu of entries in a popup at a point of a panel, in layout units, such as where a right click was; an entry is
+-- { label, keys, enabled, onClick }, or { line = true } for a line between entries; a click or Return runs an entry, and closes the menu
+local function openMenu(panel, x, y, entries)
+  local state = panelState(panel)
+  local font = fontOf({})
+  local textSize = fontSize()
+  local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
+  local lineGap = size.paddingY * 2 + 1
+  local tops, width, height = {}, 0, 0
+  local popup
+
+  for i, entry in ipairs(entries) do
+    tops[i] = height
+
+    if entry.line then
+      height = height + lineGap
+    else
+      local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
+      width = math.max(width, measureText(font, entry.label or "", textSize) + keys + 2 * size.paddingX)
+      height = height + rowHeight
+    end
+  end
+
+  if height == 0 then
+    return nil
+  end
+
+  local function usable(index)
+    local entry = entries[index]
+    return entry ~= nil and not entry.line and entry.enabled ~= false
+  end
+
+  local function entryAt(at)
+    for i = #entries, 1, -1 do
+      if at >= tops[i] then
+        return usable(i) and i or nil
+      end
+    end
+  end
+
+  -- the next usable entry from one, a step at a time, round from the last to the first and back, or nil when none is usable
+  local function step(from, by)
+    local index = from
+
+    for _ = 1, #entries do
+      index = (index + by - 1) % #entries + 1
+
+      if usable(index) then
+        return index
+      end
+    end
+
+    return nil
+  end
+
+  local hover = step(0, 1)
+  local scale = state.scale
+
+  local function run(index)
+    popup:close()
+    call(entries[index].onClick)
+    panel:redraw()
+  end
+
+  local message
+  popup, message = panel:openPopup({
+    type = "menu",
+    anchor = { x = x * state.scale, y = y * state.scale, width = 0, height = 0 },
+    width = width,
+    height = height,
+    draw = function(surface)
+      scale = surface.scale
+      draw.fill(surface, 0, 0, width, height, "tabRow")
+
+      for i, entry in ipairs(entries) do
+        if entry.line then
+          draw.fill(surface, size.paddingX, tops[i] + size.paddingY, width - 2 * size.paddingX, 1, "tabShown")
+        else
+          if i == hover then
+            draw.fill(surface, 0, tops[i], width, rowHeight, "tabShown")
+          end
+
+          local color = entry.enabled == false and "textDim" or "text"
+          draw.text(surface, font, entry.label or "", size.paddingX, tops[i] + size.paddingY, textSize, color)
+
+          if entry.keys then
+            local keysWidth = measureText(font, entry.keys, textSize)
+            draw.text(surface, font, entry.keys, width - size.paddingX - keysWidth, tops[i] + size.paddingY, textSize, "textDim")
+          end
+        end
+      end
+
+      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+    end,
+    event = function(event)
+      if event.type == "pointerMove" then
+        local index = entryAt(event.y / scale)
+
+        if index ~= hover then
+          hover = index
+          popup:redraw()
+        end
+      elseif event.type == "pointerUp" and event.button == 1 and entryAt(event.y / scale) then
+        run(entryAt(event.y / scale))
+      elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
+        hover = step(hover or 0, event.key == "Up" and -1 or 1) or hover
+        popup:redraw()
+      elseif event.type == "keyDown" and isEnter(event) and hover then
+        run(hover)
+      end
+    end,
+  })
+
+  if not popup then
+    ecs.log.warn(message or "Cannot open the menu.")
+  end
+
+  return popup
 end
 
 -- a colour's text read as red, green, blue and alpha from 0 to 255, or nil for a text that is not "#RRGGBB" or "#RRGGBBAA"
@@ -2621,7 +2753,7 @@ local function paintInspector(surface, state, width, height)
 end
 
 -- a move of the pointer: a drag of a scroll bar, of a field's selection or of a slider goes on; otherwise the element under it is hovered
-local function handlePointerMove(panel, state, x, y)
+local function handlePointerMove(panel, state, x, y, shift)
   local root = state.root
   state.pointerX, state.pointerY = x, y
 
@@ -2644,6 +2776,28 @@ local function handlePointerMove(panel, state, x, y)
     end
 
     panel:redraw()
+    return true
+  end
+
+  local drag = state.numberDrag
+
+  if drag then
+    local node = findById(root, drag.id)
+    local moved = x - drag.x
+
+    -- a drag of a few units, so a click that shakes is still a click; then each unit is a step, or a tenth of one with Shift
+    if node and (drag.moved or math.abs(moved) > NUMBER_DRAG_START) then
+      drag.moved = true
+      local step = (node.step and node.step > 0) and node.step or 1
+      local number = snapNumber(node, drag.value + moved * step * (shift and 0.1 or 1))
+
+      if number ~= drag.shown then
+        drag.shown = number
+        node.onChange(formatNumber(number))
+        panel:redraw()
+      end
+    end
+
     return true
   end
 
@@ -2741,7 +2895,11 @@ local function handlePointerDown(panel, state, event, x, y)
   state.pressed = node
   state.keyTarget, state.showRing = target and target.id, false
 
-  if node and node.type == "field" then
+  if node and node.isNumber and state.editing ~= node.id then
+    -- a press on a number that is not typed in waits: a drag sideways changes the number, and a release without one types in it
+    stopEditing(panel, state)
+    state.numberDrag = { id = node.id, x = x, value = node.value, moved = false }
+  elseif node and node.type == "field" then
     -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
     local edited = state.editing == node.id
     local textX = textStart(node, state)
@@ -2766,8 +2924,19 @@ end
 -- a release of the first button: a click is a press and a release on the same element
 local function handlePointerUp(panel, state, x, y)
   local pressed = state.pressed
-  state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
+  local drag = state.numberDrag
+  state.pressed, state.dragging, state.sliding, state.selecting, state.numberDrag = nil, nil, nil, nil, nil
   local node = find(state.root, x, y, interactive)
+
+  -- a drag gives its last number to onSubmit; a press that did not drag types in the number, with the cursor where it was pressed
+  local dragged = drag and findById(state.root, drag.id)
+
+  if dragged and drag.moved then
+    dragged.onSubmit(formatNumber(drag.shown or drag.value))
+  elseif dragged then
+    startEditing(panel, state, dragged)
+    state.cursorPosition = positionAt(dragged, state.typed, textStart(dragged, state), drag.x)
+  end
 
   if pressed and node and node.id == pressed.id and node.type == pressed.type and not TAKES_TYPING[node.type] and node.type ~= "slider" then
     activate(panel, state, node, x, y)
@@ -2775,6 +2944,40 @@ local function handlePointerUp(panel, state, x, y)
 
   panel:redraw()
   return pressed ~= nil
+end
+
+-- a press of the right button on a list's item that is not chosen chooses it alone, so the menu that the release opens is about it
+local function handleMenuDown(panel, state, x, y)
+  local item = find(state.root, x, y, isListItem)
+
+  if item and not item.chosen then
+    selectItem(item.list, item.itemIndex, nil)
+    panel:redraw()
+  end
+
+  return item ~= nil
+end
+
+-- a release of the right button gives the place to the innermost element under it with onMenu, such as to open a menu there; a list
+-- gives its item under the place first, or nil beside its items
+local function handleMenuUp(state, x, y)
+  local node = find(state.root, x, y, function(node)
+    return node.onMenu ~= nil or (isListItem(node) and node.list.onMenu ~= nil)
+  end)
+
+  if not node then
+    return false
+  end
+
+  if node.onMenu == nil then
+    node.list.onMenu(node.itemIndex, x, y)
+  elseif isList(node) then
+    node.onMenu(nil, x, y)
+  else
+    node.onMenu(x, y)
+  end
+
+  return true
 end
 
 -- handles a panel's event: calls the callbacks of the elements it reaches
@@ -2807,11 +3010,15 @@ local function handleEvent(panel, event)
   local x, y = (event.x or 0) / state.scale, (event.y or 0) / state.scale
 
   if event.type == "pointerMove" then
-    return handlePointerMove(panel, state, x, y)
+    return handlePointerMove(panel, state, x, y, event.shift)
   elseif event.type == "pointerDown" and event.button == 1 then
     return handlePointerDown(panel, state, event, x, y)
   elseif event.type == "pointerUp" and event.button == 1 then
     return handlePointerUp(panel, state, x, y)
+  elseif event.type == "pointerDown" and event.button == 3 then
+    return handleMenuDown(panel, state, x, y)
+  elseif event.type == "pointerUp" and event.button == 3 then
+    return handleMenuUp(state, x, y)
   elseif event.type == "wheel" then
     local scroll = find(state.root, x, y, scrollable)
 
@@ -2881,8 +3088,11 @@ function services.show(panel, surface, root)
   state.pressed = state.pressed and findById(root, state.pressed.id) or nil
   state.root = root
 
+  -- an element that ui.edit named before it was shown gets the keys now, or never
   if state.editAtShow then
-    services.edit(panel, state.editAtShow)
+    local id = state.editAtShow
+    services.edit(panel, id)
+    state.editAtShow = nil
   end
 
   draw.fill(surface, 0, 0, width, height, "background")
@@ -2978,7 +3188,7 @@ end
 function services.edit(panel, id)
   local state = panelState(panel)
   local node = state.root and findById(state.root, id)
-  state.editAtShow = not state.root and id or nil
+  state.editAtShow = not node and id or nil
 
   -- the keyboard's target follows, without its ring, as after a click
   if node and TAKES_TYPING[node.type] then
@@ -3162,6 +3372,17 @@ ecs.service.register({
         .. "@return True if ui handled the event, false if it reached no element or the panel was not shown yet",
     fn = handleEvent,
   },
+  menu = {
+    sig = "void(handle<ecs.panel> panel, float x, float y, value<ui.MenuEntry[]> entries)",
+    doc = "Open a menu of entries in a popup at a point of a panel, such as where a right click was; a click or Return runs an entry and closes the menu\n"
+        .. "@param panel The panel\n"
+        .. "@param x The point's x in the panel, in layout units, as a pointer event's position divided by the surface's scale\n"
+        .. "@param y The point's y\n"
+        .. "@param entries The entries, in order: each a table of its label, the keys that run it too, whether it is enabled, and its onClick, or a line between entries",
+    fn = function(panel, x, y, entries)
+      openMenu(panel, x, y, entries)
+    end,
+  },
   forget = {
     sig = "void(handle<ecs.panel> panel)",
     doc = "Forget a panel's state\n"
@@ -3213,8 +3434,8 @@ ecs.service.register({
     sig = "void(handle<ecs.panel> panel, string id)",
     doc = "Give an element the keys\n"
         .. "@param panel The panel that shows the element, often the focused panel that a key passes\n"
-        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or in the first one when the panel was not"
-        .. " shown yet; another id does nothing",
+        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or else in the next one, such as an element"
+        .. " that shows from the next draw; another id does nothing",
     fn = services.edit,
   },
   reveal = {

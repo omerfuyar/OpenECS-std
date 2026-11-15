@@ -22,6 +22,7 @@ local panels = {} ---@type table<ecs.Panel, table>
 ---@field delete? fun(path: string): boolean? deletes a file in place of the panel
 ---@field deleteNote? fun(path: string): string? a text for the question before a file is deleted, such as the files that name it
 local handlers = {}
+local menu
 
 ecs.event.declare("changed", "The shown folder's files changed")
 
@@ -141,62 +142,95 @@ local function delete(state)
   ecs.event.emit("files.changed")
 end
 
+-- makes a file of a kind, or renames the chosen file, with the name that the field took
+local function finish(state, asking, name)
+  if name == "" then
+    return say(state, false, "Type a name first.")
+  end
+  if asking.kind == "rename" then
+    local to = name:find("/", 1, true) and name or ((asking.path:match("^(.*/)[^/]*$") or "") .. name)
+    state.selected = asking.path
+    return rename(state, to)
+  end
+  local path = asking.folder .. name
+  if asking.kind == "folder" then
+    say(state, fs.makeFolder(folder .. path))
+  elseif asking.kind == "file" then
+    if fs.info(folder .. path) then
+      return say(state, false, path .. " is there already.")
+    end
+    local file = io.open(folder .. path, "wb")
+    if file then
+      file:close()
+    end
+    say(state, file ~= nil, "The file could not be made.")
+  else
+    say(state, handlers.kinds[asking.kind].make(path))
+  end
+  ecs.event.emit("files.changed")
+end
+
+-- asks for a name in the field above the tree, which gets the keys
+local function ask(state, asking)
+  state.asking, state.message = asking, nil
+  ui.edit(state.panel, "name")
+  state.panel:redraw()
+end
+
+-- the menu of a right click: about the file under it, which the click chose, or beside the files about the folder; New makes a
+-- file in the chosen folder, or in the chosen file's
+menu = function(state, id, x, y)
+  local into = id and folderOf(state) or ""
+  local entries = {
+    { label = "New folder", onClick = function() ask(state, { kind = "folder", folder = into, label = "New folder", text = "" }) end },
+  }
+  for i, kind in ipairs(handlers.kinds or {}) do
+    entries[#entries + 1] = { label = "New " .. kind.label:lower(), onClick = function()
+      ask(state, { kind = i, folder = into, label = "New " .. kind.label:lower(), text = "" })
+    end }
+  end
+  entries[#entries + 1] = { label = "New file", onClick = function() ask(state, { kind = "file", folder = into, label = "New file", text = "" }) end }
+  if id then
+    local isDir = isFolder(id)
+    entries[#entries + 1] = { line = true }
+    entries[#entries + 1] = { label = "Open", enabled = not isDir and handlers.open ~= nil, onClick = function() handlers.open(id) end }
+    entries[#entries + 1] = { label = "Rename", onClick = function()
+      ask(state, { kind = "rename", path = id, label = "Rename", text = id:match("[^/]*$") })
+    end }
+    entries[#entries + 1] = { label = "Delete", onClick = function()
+      state.selected = id
+      delete(state)
+    end }
+  end
+  ui.menu(state.panel, x, y, entries)
+end
+
 local function draw(state, surface)
   local children = {}
   if folder == "" then
     children[1] = ui.text("No folder is open.", { style = STYLES.note })
   else
-    local kinds = { "Folder" }
-    for _, kind in ipairs(handlers.kinds or {}) do
-      kinds[#kinds + 1] = kind.label
+    -- the name field shows while a menu's New or Rename asks for a name: Return makes the file or renames it
+    local asking = state.asking
+    if asking then
+      children[#children + 1] = ui.row({ gap = 4, align = "center" }, {
+        ui.text(asking.label),
+        ui.field(asking.text, { id = "name", grow = 1, tooltip = "Return takes the name; a name with folders moves the file", onChange = function(text)
+          asking.text = text
+        end, onSubmit = function(text)
+          state.asking = nil
+          finish(state, asking, text)
+        end }),
+        ui.button("Cancel", { id = "cancel", tooltip = "Close the field", onClick = function()
+          state.asking = nil
+        end }),
+      })
     end
-    kinds[#kinds + 1] = "File"
-    children[#children + 1] = ui.row({ gap = 4, align = "center" }, {
-      ui.field(state.name, { id = "name", grow = 1, tooltip = "A name, for a new file or a rename", onChange = function(text)
-        state.name = text
-      end }),
-      ui.dropdown(math.min(state.kind, #kinds), kinds, { id = "kind", tooltip = "What New makes", onSelect = function(choice)
-        state.kind = choice
-      end }),
-      ui.button("New", { id = "new", tooltip = "Make a new file of this name and kind", onClick = function()
-        local choice = math.min(state.kind, #kinds)
-        if state.name == "" then
-          return say(state, false, "Type a name first.")
-        end
-        local path = folderOf(state) .. state.name
-        if choice == 1 then
-          say(state, fs.makeFolder(folder .. path))
-        elseif choice == #kinds then
-          if fs.info(folder .. path) then
-            return say(state, false, path .. " is there already.")
-          end
-          local file = io.open(folder .. path, "wb")
-          if file then
-            file:close()
-          end
-          say(state, file ~= nil, "The file could not be made.")
-        else
-          say(state, handlers.kinds[choice - 1].make(path))
-        end
-        ecs.event.emit("files.changed")
-      end }),
-    })
-    children[#children + 1] = ui.row({ gap = 4 }, {
-      ui.button("Rename", { id = "rename", tooltip = "Give the chosen file the name; a name with folders moves it", onClick = function()
-        if state.selected and state.name ~= "" then
-          local to = state.name:find("/", 1, true) and state.name or ((state.selected:match("^(.*/)[^/]*$") or "") .. state.name)
-          rename(state, to)
-        end
-      end }),
-      ui.button("Delete", { id = "delete", onClick = function()
-        delete(state)
-      end }),
-    })
     if state.message then
       children[#children + 1] = ui.text(tostring(state.message), { color = "#e06c75", wrap = true })
     end
     children[#children + 1] = ui.tree(nodes(""), {
-      id = "tree", open = state.open, selected = state.selected, grow = 1,
+      id = "tree", open = state.open, selected = state.selected, grow = 1, tooltip = "A right click opens a menu",
       onSelect = function(id)
         state.selected, state.pressed = id, id
         if handlers.choose and not isFolder(id) then
@@ -224,6 +258,9 @@ local function draw(state, surface)
       onToggle = function(id, open)
         state.open[id] = open or nil
       end,
+      onMenu = function(id, x, y)
+        menu(state, id, x, y)
+      end,
     })
   end
   ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, children))
@@ -234,7 +271,7 @@ ecs.panel.registerType({
   title = "Files",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local state = { panel = panel, open = {}, name = "", kind = 1 }
+    local state = { panel = panel, open = {} }
     if version == STATE_VERSION and type(saved) == "table" then
       state.open = saved.open or {}
     end
