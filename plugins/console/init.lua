@@ -176,12 +176,14 @@ ecs.panel.registerType({
   draw = function(state, surface)
     local counts = { info = 0, warn = 0, error = 0 }
     local items = {}
+    local search = state.search and state.search:lower()
     for i, entry in ipairs(entries) do
       counts[entry.level] = (counts[entry.level] or 0) + entry.count
-      if not state.hidden[entry.level] then
+      if not state.hidden[entry.level] and (not search or entry.text:lower():find(search, 1, true)) then
         items[#items + 1] = entryBox(i, entry)
       end
     end
+    state.shown = #items
     if #items == 0 then
       items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note })
     end
@@ -195,6 +197,12 @@ ecs.panel.registerType({
         end,
       })
     end
+    -- the search shows only the entries whose text holds what is typed, whatever its case
+    header[#header + 1] = ui.field(state.search or "", { id = "search", width = 160, tooltip = "Show only the entries that hold this text",
+      onChange = function(text)
+        state.search = text ~= "" and text or nil
+      end,
+    })
     header[#header + 1] = ui.space()
     header[#header + 1] = ui.toggle(ecs.setting.get("console.clearOnRun") == true, {
       id = "clearOnRun", label = "Clear on run", tooltip = "Clear the console when the tool starts a run, such as a game that plays",
@@ -218,8 +226,9 @@ ecs.panel.registerType({
   event = function(state, event)
     ui.event(state.panel, event)
   end,
+  -- the levels it hides, and how many entries show, which a test reads
   saveState = function(state)
-    return { hidden = state.hidden }
+    return { hidden = state.hidden, shown = state.shown }
   end,
   destroy = function(state)
     ui.forget(state.panel)
