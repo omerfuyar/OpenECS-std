@@ -266,14 +266,14 @@ ecs.panel.registerType({
 })
 
 ecs.service.register({
-  setFolder = { sig = "void(string folder)", doc = "Show a folder, by its path ending with a slash; an empty text shows none", fn = setFolder },
-  folder = { sig = "string()", doc = "The shown folder", fn = function()
+  setFolder = { sig = "void(string folder)", doc = "Show a folder in the files panels\n@param folder The folder's path, ending with a slash; an empty text shows none", fn = setFolder },
+  folder = { sig = "string()", doc = "The shown folder\n@return The folder's path, ending with a slash, or an empty text", fn = function()
     return folder
   end },
-  setHandlers = { sig = "void(value handlers)", doc = "Say how files open, which files New makes, and what a rename and a delete do (files.Handlers)", fn = function(given)
+  setHandlers = { sig = "void(value handlers)", doc = "Say how files open, which files New makes, and what a rename and a delete do\n@param handlers The handlers (files.Handlers)", fn = function(given)
     handlers = given or {}
   end },
-  selected = { sig = "string(handle<ecs.panel> panel)", doc = "The chosen file of a files panel, by its path in the folder", fn = function(panel)
+  selected = { sig = "string(handle<ecs.panel> panel)", doc = "The chosen file of a files panel\n@param panel The files panel\n@return The file's path in the folder, or an empty text", fn = function(panel)
     return panels[panel] and panels[panel].selected or ""
   end },
 })
