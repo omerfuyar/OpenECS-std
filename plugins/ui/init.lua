@@ -19,6 +19,9 @@ local SIZES = {
 
 local size = {}
 
+-- how far, in layout units, a press on a number moves before it drags the number, so a click that shakes is still a click
+local NUMBER_DRAG_START = 3
+
 local function readSizes()
   for _, entry in ipairs(SIZES) do
     size[entry[1]] = ecs.setting.get("ui." .. entry[1]) or entry[2]
@@ -1484,7 +1487,10 @@ local function paintTyped(node, surface, state)
     elseif editing then
       draw.text(surface, font, "Press a key", box.x + size.paddingX, textY, textSize, "textDim")
     else
-      draw.text(surface, font, ellipsize(font, node.text, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      -- a dragged number shows the number the drag gives, before the panel has taken it
+      local drag = state.numberDrag
+      local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
+      draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
     end
   end)
 
@@ -2756,7 +2762,7 @@ local function paintInspector(surface, state, width, height)
 end
 
 -- a move of the pointer: a drag of a scroll bar, of a field's selection or of a slider goes on; otherwise the element under it is hovered
-local function handlePointerMove(panel, state, x, y)
+local function handlePointerMove(panel, state, x, y, shift)
   local root = state.root
   state.pointerX, state.pointerY = x, y
 
@@ -2779,6 +2785,28 @@ local function handlePointerMove(panel, state, x, y)
     end
 
     panel:redraw()
+    return true
+  end
+
+  local drag = state.numberDrag
+
+  if drag then
+    local node = findById(root, drag.id)
+    local moved = x - drag.x
+
+    -- a drag of a few units, so a click that shakes is still a click; then each unit is a step, or a tenth of one with Shift
+    if node and (drag.moved or math.abs(moved) > NUMBER_DRAG_START) then
+      drag.moved = true
+      local step = (node.step and node.step > 0) and node.step or 1
+      local number = snapNumber(node, drag.value + moved * step * (shift and 0.1 or 1))
+
+      if number ~= drag.shown then
+        drag.shown = number
+        node.onChange(formatNumber(number))
+        panel:redraw()
+      end
+    end
+
     return true
   end
 
@@ -2876,7 +2904,11 @@ local function handlePointerDown(panel, state, event, x, y)
   state.pressed = node
   state.keyTarget, state.showRing = target and target.id, false
 
-  if node and node.type == "field" then
+  if node and node.isNumber and state.editing ~= node.id then
+    -- a press on a number that is not typed in waits: a drag sideways changes the number, and a release without one types in it
+    stopEditing(panel, state)
+    state.numberDrag = { id = node.id, x = x, value = node.value, moved = false }
+  elseif node and node.type == "field" then
     -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
     local edited = state.editing == node.id
     local textX = textStart(node, state)
@@ -2901,8 +2933,19 @@ end
 -- a release of the first button: a click is a press and a release on the same element
 local function handlePointerUp(panel, state, x, y)
   local pressed = state.pressed
-  state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
+  local drag = state.numberDrag
+  state.pressed, state.dragging, state.sliding, state.selecting, state.numberDrag = nil, nil, nil, nil, nil
   local node = find(state.root, x, y, interactive)
+
+  -- a drag gives its last number to onSubmit; a press that did not drag types in the number, with the cursor where it was pressed
+  local dragged = drag and findById(state.root, drag.id)
+
+  if dragged and drag.moved then
+    dragged.onSubmit(formatNumber(drag.shown or drag.value))
+  elseif dragged then
+    startEditing(panel, state, dragged)
+    state.cursorPosition = positionAt(dragged, state.typed, textStart(dragged, state), drag.x)
+  end
 
   if pressed and node and node.id == pressed.id and node.type == pressed.type and not TAKES_TYPING[node.type] and node.type ~= "slider" then
     activate(panel, state, node, x, y)
@@ -2976,7 +3019,7 @@ local function handleEvent(panel, event)
   local x, y = (event.x or 0) / state.scale, (event.y or 0) / state.scale
 
   if event.type == "pointerMove" then
-    return handlePointerMove(panel, state, x, y)
+    return handlePointerMove(panel, state, x, y, event.shift)
   elseif event.type == "pointerDown" and event.button == 1 then
     return handlePointerDown(panel, state, event, x, y)
   elseif event.type == "pointerUp" and event.button == 1 then
