@@ -66,8 +66,8 @@
 ---@field id string
 
 ---@class ui.ListProps: ui.ScrollProps
----@field selected? integer The chosen item's number, from 1.
----@field onSelect? fun(item: integer) A press on an item gives its number.
+---@field selected? integer|integer[] The chosen item's number, from 1, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first.
+---@field onSelect? fun(item: integer, how: "toggle"|"range"|nil, between: integer[]?) A press on an item gives its number; with Ctrl, how is "toggle", and with Shift "range", with the numbers from the first chosen item to it.
 ---@field onActivate? fun(item: integer) A click on an item gives its number.
 
 ---@class ui.GroupProps: ui.Props
@@ -94,8 +94,8 @@
 
 ---@class ui.TableProps: ui.Props
 ---@field id string
----@field selected? integer The chosen row's number, from 1.
----@field onSelect? fun(row: integer)
+---@field selected? integer|integer[] The chosen row's number, from 1, or a list of the chosen ones' numbers.
+---@field onSelect? fun(row: integer, how: "toggle"|"range"|nil, between: integer[]?) As a list's.
 ---@field onActivate? fun(row: integer)
 ---@field onSort? fun(column: string) A click on a title gives its column's id.
 ---@field sort? string The id of the column the rows are sorted by, which shows an arrow.
@@ -111,8 +111,8 @@
 ---@class ui.TreeProps: ui.Props
 ---@field id string
 ---@field open? table<any, boolean> The open nodes, by id.
----@field selected? any The chosen node's id.
----@field onSelect? fun(id: any)
+---@field selected? any The chosen node's id, or a list of the chosen ones' ids, each highlighted; Up and Down move from the first.
+---@field onSelect? fun(id: any, how: "toggle"|"range"|nil, between: any[]?) As a list's, with ids; between holds the shown nodes from the first chosen one to it.
 ---@field onActivate? fun(id: any)
 ---@field onToggle? fun(id: any, open: boolean) A click on an arrow gives the node's id and its new state.
 

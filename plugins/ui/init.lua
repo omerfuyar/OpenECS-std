@@ -570,6 +570,19 @@ function elements.list(props, children)
   local node = elements.scroll(props, flat)
   node.items = {}
 
+  -- selected is the chosen item's number, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first
+  local chosen = {}
+
+  if type(node.selected) == "table" then
+    for _, index in ipairs(node.selected) do
+      chosen[index] = true
+    end
+
+    node.selected = node.selected[1]
+  elseif node.selected then
+    chosen[node.selected] = true
+  end
+
   for _, child in ipairs(node.children) do
     if child.selectable ~= false then
       local index = #node.items + 1
@@ -581,7 +594,7 @@ function elements.list(props, children)
         child.stretch = true
       end
 
-      if index == node.selected and child.background == nil then
+      if chosen[index] and child.background == nil then
         child.background = "selected"
       end
 
@@ -599,7 +612,8 @@ end
 
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
--- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
+-- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
+-- and onToggle(id, open) its new state
 function elements.tree(nodes, props)
   props = props or {}
   ecs.check(props.id, "A tree needs an id, which keeps its offset.")
@@ -642,14 +656,30 @@ function elements.tree(nodes, props)
   local listProps = shallowCopy(props)
   listProps.open, listProps.onToggle, listProps.selected = nil, nil, nil
 
+  local indexOf, selected = {}, {}
+
   for index, id in ipairs(ids) do
-    if id == props.selected then
-      listProps.selected = index
-    end
+    indexOf[id] = index
   end
 
-  listProps.onSelect = props.onSelect and function(index)
-    props.onSelect(ids[index])
+  for _, id in ipairs(type(props.selected) == "table" and props.selected or { props.selected }) do
+    selected[#selected + 1] = indexOf[id]
+  end
+
+  listProps.selected = #selected > 0 and selected or nil
+
+  listProps.onSelect = props.onSelect and function(index, how, between)
+    local betweenIds = nil
+
+    if between then
+      betweenIds = {}
+
+      for i, other in ipairs(between) do
+        betweenIds[i] = ids[other]
+      end
+    end
+
+    props.onSelect(ids[index], how, betweenIds)
   end
 
   listProps.onActivate = props.onActivate and function(index)
@@ -2585,6 +2615,23 @@ local function grabScrollbar(panel, state, scroll, y)
   return true
 end
 
+-- gives a list's onSelect an item that a press chose, and how: "toggle" with Ctrl, to add it to the chosen ones or take it out,
+-- and "range" with Shift, with the items from the first chosen one to it, in the order shown
+local function selectItem(list, index, how)
+  local between = nil
+
+  if how == "range" then
+    local from = list.selected or index
+    between = {}
+
+    for other = from, index, from <= index and 1 or -1 do
+      between[#between + 1] = other
+    end
+  end
+
+  call(list.onSelect, index, how, between)
+end
+
 -- a press of the first button: a list's item under it is chosen and its list gets the keys, and the element under it is pressed and gets them
 local function handlePointerDown(panel, state, event, x, y)
   local root = state.root
@@ -2597,8 +2644,10 @@ local function handlePointerDown(panel, state, event, x, y)
   -- a press on a list's item chooses it; the element under the pointer still gets the press
   local item = find(root, x, y, isListItem)
 
-  if item and item.itemIndex ~= item.list.selected then
-    call(item.list.onSelect, item.itemIndex)
+  local how = event.shift and "range" or event.ctrl and "toggle" or nil
+
+  if item and (how or item.itemIndex ~= item.list.selected) then
+    selectItem(item.list, item.itemIndex, how)
   end
 
   local node = find(root, x, y, interactive)
