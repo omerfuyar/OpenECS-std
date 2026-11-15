@@ -55,7 +55,7 @@ local INVALID_COLOR = "#E0505A"
 local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
 
 -- the elements that take the pointer
-local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true }
+local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true, color = true }
 
 -- the elements that take typing while they have the keys
 local TAKES_TYPING = { field = true, key = true }
@@ -477,7 +477,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -550,9 +550,24 @@ function elements.scroll(props, children)
   return node
 end
 
--- a scroll element whose children are items to choose; children with selectable = false, such as headings, are not items
+-- a scroll element whose children are items to choose; children with selectable = false, such as headings, are not items;
+-- a section's heading is not an item, and the children of an open section are items of the list, so Up and Down go through every section
 function elements.list(props, children)
-  local node = elements.scroll(props, children)
+  local flat = {}
+
+  for place = 1, #(children or {}) do
+    local child = children[place]
+
+    if child and child.section then
+      for _, sectionChild in ipairs(child.children) do
+        flat[#flat + 1] = sectionChild
+      end
+    else
+      flat[#flat + 1] = child
+    end
+  end
+
+  local node = elements.scroll(props, flat)
   node.items = {}
 
   for _, child in ipairs(node.children) do
@@ -703,6 +718,47 @@ function elements.table(columns, rows, props)
   local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
+end
+
+-- a heading with an arrow, which a click opens and closes, over its children while it is open; the plugin keeps open, true if missing,
+-- and onToggle(open) gets the new state, as a tree's nodes do; in a list, the heading is not an item, and the children are the list's items
+function elements.section(title, props, children)
+  props = props or {}
+  local open = props.open ~= false
+  local onToggle = props.onToggle
+  local columnProps = shallowCopy(props)
+  columnProps.open, columnProps.onToggle = nil, nil
+  local node = element("column", columnProps, {})
+  node.section = true
+
+  node.children[1] = elements.row({ id = node.id and node.id .. ":heading" or nil, gap = 4, selectable = false, stretch = true, onClick = function()
+    if onToggle then
+      onToggle(not open)
+    end
+  end }, {
+    element("disclosure", { open = open }),
+    elements.text(tostring(title or ""), { style = styles.heading }),
+  })
+  node.children[1].place = 1
+
+  for place = 1, open and #(children or {}) or 0 do
+    local child = children[place]
+
+    if child then
+      child.place = place + 1
+      node.children[#node.children + 1] = child
+    end
+  end
+
+  return node
+end
+
+-- a colour, "#RRGGBB" or "#RRGGBBAA": a swatch, which a click opens in a picker; onChange(color) gets the colour that a press
+-- in the picker ends on, with its alpha only when alpha = true
+function elements.color(value, props)
+  local node = element("color", props)
+  node.value = tostring(value or "#000000")
+  return node
 end
 
 -- a column with a frame and a title
@@ -1001,6 +1057,8 @@ function measure(node, state, room)
     width, height = measureText(font, node.text, textSize), line
   elseif node.type == "button" then
     width, height = measureText(font, node.label, textSize) + 2 * size.paddingX, boxed
+  elseif node.type == "color" then
+    width, height = 2 * boxed, boxed
   elseif node.type == "dropdown" then
     local widest = 0
 
@@ -1428,6 +1486,15 @@ function paint(node, surface, state)
     local shown = ellipsize(font, node.label, textSize, box.width - 2 * size.paddingX)
     local width = measureText(font, shown, textSize)
     draw.text(surface, font, shown, box.x + (box.width - width) / 2, textY, textSize, node.color or "text")
+  elseif node.type == "color" then
+    -- the swatch shows a colour with alpha over a light and a dark half, so its alpha shows
+    draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "tabShown" or "tab")
+    local inset = size.paddingY
+    local width, height = box.width - 2 * inset, box.height - 2 * inset
+    draw.fill(surface, box.x + inset, box.y + inset, width / 2, height, "#FFFFFF")
+    draw.fill(surface, box.x + inset + width / 2, box.y + inset, width / 2, height, "#000000")
+    draw.fill(surface, box.x + inset, box.y + inset, width, height, node.value)
+    draw.outline(surface, box.x + inset, box.y + inset, width, height, 1, "textDim")
   elseif node.type == "dropdown" then
     draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "tabShown" or "tab")
     local room = box.width - 3 * size.paddingX - line / 2
@@ -1661,6 +1728,203 @@ local function openDropdown(panel, state, node)
   end
 end
 
+-- a colour's text read as red, green, blue and alpha from 0 to 255, or nil for a text that is not "#RRGGBB" or "#RRGGBBAA"
+local function readColor(text)
+  local hex = type(text) == "string" and (text:match("^#(%x%x%x%x%x%x%x%x)$") or text:match("^#(%x%x%x%x%x%x)$"))
+
+  if not hex then
+    return nil
+  end
+
+  return tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16), #hex == 8 and tonumber(hex:sub(7, 8), 16) or 255
+end
+
+-- red, green and blue from 0 to 1 of a hue, a saturation and a value, each from 0 to 1
+local function hsvToRgb(hue, saturation, value)
+  local sector = (hue % 1) * 6
+  local whole = math.floor(sector)
+  local low, falling, rising = value * (1 - saturation), value * (1 - saturation * (sector - whole)), value * (1 - saturation * (1 - sector + whole))
+  local channels = ({
+    { value, rising, low }, { falling, value, low }, { low, value, rising }, { low, falling, value }, { rising, low, value }, { value, low, falling },
+  })[whole % 6 + 1]
+  return channels[1], channels[2], channels[3]
+end
+
+-- a hue, a saturation and a value, each from 0 to 1, of red, green and blue from 0 to 1
+local function rgbToHsv(red, green, blue)
+  local high, low = math.max(red, green, blue), math.min(red, green, blue)
+  local range = high - low
+  local hue = 0
+
+  if range > 0 and high == red then
+    hue = ((green - blue) / range) % 6
+  elseif range > 0 and high == green then
+    hue = (blue - red) / range + 2
+  elseif range > 0 then
+    hue = (red - green) / range + 4
+  end
+
+  return hue / 6, high > 0 and range / high or 0, high
+end
+
+-- a picker's sizes, in layout units: the square of saturation and value, the bars of hue and alpha beside and below it, and the pixels of the
+-- square's image, which draw stretches
+local PICKER = { square = 160, bar = 16, gap = 8, pixels = 64 }
+
+-- the image of a picker's square at a hue: saturation grows to the right and value upwards
+local function squareImage(hue)
+  local pixels = {}
+
+  for y = 0, PICKER.pixels - 1 do
+    for x = 0, PICKER.pixels - 1 do
+      local red, green, blue = hsvToRgb(hue, x / (PICKER.pixels - 1), 1 - y / (PICKER.pixels - 1))
+      pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+    end
+  end
+
+  return draw.newImage(PICKER.pixels, PICKER.pixels, table.concat(pixels))
+end
+
+-- the image of the hue bar, from red at the top round to red at the bottom
+local function hueImage()
+  local pixels = {}
+
+  for y = 0, PICKER.pixels - 1 do
+    local red, green, blue = hsvToRgb(y / PICKER.pixels, 1, 1)
+    pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+  end
+
+  return draw.newImage(1, PICKER.pixels, table.concat(pixels))
+end
+
+-- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
+-- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange; Return closes it
+local function openColorPicker(panel, state, node)
+  local red, green, blue, alpha = readColor(node.value)
+  red, green, blue, alpha = red or 0, green or 0, blue or 0, alpha or 255
+  local hue, saturation, value = rgbToHsv(red / 255, green / 255, blue / 255)
+  alpha = node.alpha and alpha or 255
+  local width = PICKER.square + PICKER.gap + PICKER.bar + 2 * PICKER.gap
+  local textSize = node.size or fontSize()
+  local font = fontOf(node)
+  local line = lineHeight(font, textSize)
+  local height = PICKER.square + 3 * PICKER.gap + line + (node.alpha and PICKER.bar + PICKER.gap or 0)
+  local box, scale = node.layout, state.scale
+  local square, hues, squareHue, dragging = nil, hueImage(), nil, nil
+  local popup
+
+  local function text()
+    local r, g, b = hsvToRgb(hue, saturation, value)
+    local color = ("#%02X%02X%02X"):format(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+    return node.alpha and color .. ("%02X"):format(alpha) or color
+  end
+
+  -- a press chooses the part it is on: the square, the hue bar or the alpha bar; the press and a drag after it change that part
+  local function pick(pixelX, pixelY)
+    local x, y = pixelX / scale - PICKER.gap, pixelY / scale - PICKER.gap
+    local barX = PICKER.square + PICKER.gap
+
+    if not dragging and x >= 0 and x < PICKER.square and y >= 0 and y < PICKER.square then
+      dragging = "square"
+    elseif not dragging and x >= barX and y >= 0 and y < PICKER.square then
+      dragging = "hue"
+    elseif not dragging and node.alpha and y >= barX then
+      dragging = "alpha"
+    end
+
+    if dragging == "square" then
+      saturation, value = clamp(x / PICKER.square, 0, 1), clamp(1 - y / PICKER.square, 0, 1)
+    elseif dragging == "hue" then
+      hue = clamp(y / PICKER.square, 0, 0.9999)
+    elseif dragging == "alpha" then
+      alpha = math.floor(clamp(x / (barX + PICKER.bar), 0, 1) * 255 + 0.5)
+    end
+  end
+
+  local message
+  popup, message = panel:openPopup({
+    anchor = { x = box.x * scale, y = box.y * scale, width = box.width * scale, height = box.height * scale },
+    width = width,
+    height = height,
+    draw = function(surface)
+      scale = surface.scale
+      draw.fill(surface, 0, 0, width, height, "tabRow")
+
+      -- the square's image is made again when the hue changes
+      if squareHue ~= hue then
+        if square then
+          draw.freeImage(square)
+        end
+
+        square, squareHue = squareImage(hue), hue
+      end
+
+      local barX = PICKER.gap + PICKER.square + PICKER.gap
+
+      if square then
+        draw.image(surface, square, PICKER.gap, PICKER.gap, PICKER.square, PICKER.square)
+      end
+
+      if hues then
+        draw.image(surface, hues, barX, PICKER.gap, PICKER.bar, PICKER.square)
+      end
+
+      -- rings mark the chosen saturation and value, and lines the hue and the alpha
+      draw.circle(surface, PICKER.gap + saturation * PICKER.square, PICKER.gap + (1 - value) * PICKER.square, 5, 2, value > 0.5 and "#000000" or "#FFFFFF")
+      draw.fill(surface, barX - 2, PICKER.gap + hue * PICKER.square - 1, PICKER.bar + 4, 2, "text")
+
+      if node.alpha then
+        local barY, barWidth = PICKER.gap + PICKER.square + PICKER.gap, PICKER.square + PICKER.gap + PICKER.bar
+        draw.fill(surface, PICKER.gap, barY, barWidth / 2, PICKER.bar, "#FFFFFF")
+        draw.fill(surface, PICKER.gap + barWidth / 2, barY, barWidth / 2, PICKER.bar, "#000000")
+
+        -- the bar fades the colour from transparent on its left to opaque on its right, in steps
+        local r, g, b = hsvToRgb(hue, saturation, value)
+
+        for step = 0, 31 do
+          local color = ("#%02X%02X%02X%02X"):format(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5), math.floor(step / 31 * 255 + 0.5))
+          draw.fill(surface, PICKER.gap + step * barWidth / 32, barY, barWidth / 32 + 0.5, PICKER.bar, color)
+        end
+
+        draw.fill(surface, PICKER.gap + alpha / 255 * barWidth - 1, barY - 2, 2, PICKER.bar + 4, "text")
+      end
+
+      -- the colour's text, as onChange will get it
+      draw.text(surface, font, text(), PICKER.gap, height - PICKER.gap - line, textSize, "text")
+      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+    end,
+    event = function(event)
+      if event.type == "pointerDown" and event.button == 1 then
+        dragging = nil
+        pick(event.x, event.y)
+        popup:redraw()
+      elseif event.type == "pointerMove" and dragging then
+        pick(event.x, event.y)
+        popup:redraw()
+      elseif event.type == "pointerUp" and event.button == 1 and dragging then
+        dragging = nil
+        call(node.onChange, text())
+        panel:redraw()
+      elseif event.type == "keyDown" and isEnter(event) then
+        popup:close()
+      end
+    end,
+    closed = function()
+      if square then
+        draw.freeImage(square)
+      end
+
+      if hues then
+        draw.freeImage(hues)
+      end
+    end,
+  })
+
+  if not popup then
+    ecs.log.warn(message or "Cannot open the colour picker.")
+  end
+end
+
 -- starts editing a field or key element, as a click on it does
 local function startEditing(panel, state, node)
   if state.editing ~= node.id then
@@ -1692,6 +1956,8 @@ local function activate(panel, state, node, x, y)
     end
   elseif node.type == "dropdown" then
     openDropdown(panel, state, node)
+  elseif node.type == "color" then
+    openColorPicker(panel, state, node)
   elseif TAKES_TYPING[node.type] then
     startEditing(panel, state, node)
   end
@@ -2628,20 +2894,22 @@ local CALLBACKS = {
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
   tree = { "onSelect", "onActivate", "onToggle" },
+  section = { "onToggle" },
+  color = { "onChange" },
 }
 
 -- what each type's element function takes besides its props: its children, a value, choices, columns and rows, or nodes; the others take a value
 local TAKES = {
   column = "children", row = "children", scroll = "children", list = "children", group = "children",
   selector = "choices", tabs = "choices", dropdown = "choices",
-  table = "table", tree = "tree", separator = "none", space = "none",
+  table = "table", tree = "tree", section = "section", separator = "none", space = "none",
 }
 
 -- the props a description may have: those of ui.Props and of each element's, without the callbacks, and what asks for one
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -2716,6 +2984,15 @@ local function build(panel, description)
   elseif takes == "tree" then
     props.open, props.selected = description.open, description.selected
     return make(description.nodes, props)
+  elseif takes == "section" then
+    local children = {}
+
+    for i, child in ipairs(description.children or {}) do
+      children[i] = build(panel, child)
+    end
+
+    props.open = description.open
+    return make(description.value, props, children)
   elseif takes == "none" then
     return make(props)
   end
@@ -2858,6 +3135,23 @@ ecs.service.register({
         .. "@param children The elements, from the top, below the title; none if nil\n"
         .. "@return The group",
     fn = elements.group,
+  },
+  section = {
+    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Element[]?> children)",
+    doc = "A heading with an arrow over elements, which a click on the heading shows and hides; in a list, its elements are the list's items\n"
+        .. "@param title The heading's text\n"
+        .. "@param props The section's properties (ui.SectionProps); the plugin keeps open, and onToggle gets the new state\n"
+        .. "@param children The elements, from the top, below the heading while it is open; none if nil\n"
+        .. "@return The section",
+    fn = elements.section,
+  },
+  color = {
+    sig = "value<ui.Element>(string color, value<ui.ColorProps?> props)",
+    doc = "A colour, as a swatch, which a click opens in a picker\n"
+        .. "@param color The colour, \"#RRGGBB\" or \"#RRGGBBAA\"\n"
+        .. "@param props The element's properties (ui.ColorProps); onChange gets the colour a press in the picker ends on\n"
+        .. "@return The colour element",
+    fn = elements.color,
   },
   table = {
     sig = "value<ui.Element>(value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows, value<ui.TableProps?> props)",
