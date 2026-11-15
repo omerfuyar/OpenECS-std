@@ -180,6 +180,18 @@ ecs.service.register({
       ecs.layout.open("viewer.file", { path = path })
     end
   end },
+  show = { sig = "void(string path)", doc = "Show a file in the viewer that shows it, or the first one open, as a preview; with no viewer open, do nothing", fn = function(path)
+    local free
+    for _, state in pairs(panels) do
+      if state.path == path then
+        return
+      end
+      free = free or state
+    end
+    if free then
+      load(free, path)
+    end
+  end },
   reload = { sig = "void(string path)", doc = "Read a file again in the viewers that show it", fn = function(path)
     for _, state in pairs(panels) do
       if state.path == path then

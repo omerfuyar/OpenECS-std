@@ -15,7 +15,8 @@ local panels = {} ---@type table<ecs.Panel, table>
 
 ---What the tool gives the files panel. Every field may be left out.
 ---@class files.Handlers
----@field open? fun(path: string) opens a file, by its path in the folder
+---@field open? fun(path: string) opens a file, by its path in the folder, at a double click
+---@field choose? fun(path: string) shows a file that a click or a key chose, by its path in the folder, such as in a preview
 ---@field kinds? {label: string, make: fun(path: string): boolean?, string?}[] the files that New makes: make gets the new file's path in the folder
 ---@field rename? fun(from: string, to: string): boolean?, string? renames or moves a file in place of the panel
 ---@field delete? fun(path: string): boolean? deletes a file in place of the panel
@@ -198,12 +199,15 @@ local function draw(state, surface)
       id = "tree", open = state.open, selected = state.selected, grow = 1,
       onSelect = function(id)
         state.selected, state.pressed = id, id
+        if handlers.choose and not isFolder(id) then
+          handlers.choose(id)
+        end
       end,
       onActivate = function(id)
         if isFolder(id) then
           state.open[id] = not state.open[id] or nil
         elseif state.clicked == id then
-          -- the second click on a file, soon after the first, opens it
+          -- a double click opens a file: the second click, soon after the first
           state.clicked = nil
           if handlers.open then
             handlers.open(id)

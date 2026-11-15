@@ -506,13 +506,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The first-party Lua plugin `files` shows the files of one folder as a tree, for tools that work on a folder, such as a game's project. It is built with ui (5) and fs (10), and knows nothing of the tool that uses it.
 - The tool names the folder with `files.setFolder(path)`, a path that ends with a slash, or an empty text for none; `files.folder()` gives it. The panel type `files.tree`, titled "Files", shows what is in it, apart from what starts with a dot. fs watches the folder and the folders in it, so the tree follows changes made outside the tool.
-- A click on a file chooses it, and a second click within 0.4 seconds opens it. A click on a folder opens or closes it. `files.selected(panel)` gives a panel's chosen file, by its path in the folder.
+- A click on a file chooses it, and a double click, a second click within 0.4 seconds, opens it. A click on a folder opens or closes it. `files.selected(panel)` gives a panel's chosen file, by its path in the folder.
 - Above the tree are a field for a name, a dropdown of kinds and New, then Rename and Delete. New makes a folder, an empty file, or a kind that the tool gives, in the chosen folder. Rename gives the chosen file the name; a name with folders moves it. Delete asks first.
 - The tool says what it adds with `files.setHandlers(handlers)`, a table whose fields may each be left out:
 
   | Field        | Is                                                                                                   |
   | ------------ | ---------------------------------------------------------------------------------------------------- |
-  | `open`       | Opens a file, by its path in the folder. Without it, a file does not open.                           |
+  | `open`       | Opens a file at a double click, by its path in the folder. Without it, a file does not open.         |
+  | `choose`     | Shows a file that a click, Up or Down chose, by its path in the folder, such as in a preview.        |
   | `kinds`      | Kinds of file that New makes, each with its `label` and `make(path)`, which makes it and gives whether it did and why not. |
   | `rename`     | Renames or moves a file in place of the panel, such as to change what names it.                     |
   | `delete`     | Deletes a file in place of the panel, such as into the system's trash.                               |
@@ -525,7 +526,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 30. The viewer
 
 - The first-party Lua plugin `viewer` shows a file as what it is, with the standard loaders: an image with image (6), shown through ui (5), a sound with audio (7), which mixer (3) plays, and a text with syntax (27). It knows nothing of the tool that uses it.
-- `viewer.open(path)` shows a file in the panel that shows it, or in the first panel of type `viewer.file` that is open, or in a new one; the panel gets the focus. `viewer.reload(path)` reads the file again in the panels that show it.
+- `viewer.open(path)` shows a file in the panel that shows it, or in the first panel of type `viewer.file` that is open, or in a new one; the panel gets the focus. `viewer.show(path)` shows a file as a preview: in the panel that shows it, or in the first one open, without the focus; with no panel open, it does nothing. `viewer.reload(path)` reads the file again in the panels that show it.
 - An image fills the panel: a large one whole, and a small one by a whole number of times, at most 16. A sound has Play and Stop, and its length.
 - A text shows in the mono font, coloured by syntax when syntax knows its language, its first 2000 lines of at most its first MiB. A file with a zero byte is not text. Of any other file, the panel shows its size.
 - A panel's saved state is the file's path.
