@@ -1669,7 +1669,8 @@ function paint(node, surface, state)
     local radius = size.checkSize / 2
     local centerY = box.y + box.height / 2
     local span = node.max - node.min
-    local knobX = box.x + radius + (span > 0 and (node.value - node.min) / span or 0) * (box.width - 2 * radius)
+    local value = state.sliding == node.id and state.slid or node.value
+    local knobX = box.x + radius + (span > 0 and (value - node.min) / span or 0) * (box.width - 2 * radius)
     draw.fill(surface, box.x + radius, centerY - 2, box.width - 2 * radius, 4, "tabRow")
     draw.fill(surface, box.x + radius, centerY - 2, knobX - box.x - radius, 4, "accent")
     draw.circle(surface, knobX, centerY, radius, 0, (hover or state.sliding == node.id) and "accent" or "text")
@@ -2672,12 +2673,13 @@ local function handleKeyDown(panel, state, event)
   return true
 end
 
--- sets a slider from the pointer, and calls onChange if its value changes
-local function slide(node, x)
+-- sets a slider from the pointer, and calls onChange if its value changes; the drag keeps the value, which the slider shows until the
+-- release, also when the panel takes it only at onSubmit
+local function slide(state, node, x)
   local value = sliderValue(node, x)
 
-  if value ~= node.value then
-    node.value = value
+  if value ~= (state.slid or node.value) then
+    state.slid, node.value = value, value
     call(node.onChange, value)
   end
 end
@@ -2913,7 +2915,7 @@ local function handlePointerMove(panel, state, x, y, shift)
     local node = findById(root, state.sliding)
 
     if node then
-      slide(node, x)
+      slide(state, node, x)
     end
 
     panel:redraw()
@@ -3027,8 +3029,8 @@ local function handlePointerDown(panel, state, event, x, y)
   elseif node and node.type == "key" then
     startEditing(panel, state, node)
   elseif node and node.type == "slider" then
-    state.sliding = node.id
-    slide(node, x)
+    state.sliding, state.slid = node.id, nil
+    slide(state, node, x)
   end
 
   if node or item then
@@ -3051,8 +3053,10 @@ local function handlePointerUp(panel, state, x, y)
 
   -- a slider gives the value that its press ended on to onSubmit
   if slid and slid.type == "slider" then
-    call(slid.onSubmit, slid.value)
+    call(slid.onSubmit, state.slid or slid.value)
   end
+
+  state.slid = nil
 
   if dragged and drag.moved then
     dragged.onSubmit(formatNumber(drag.shown or drag.value))
