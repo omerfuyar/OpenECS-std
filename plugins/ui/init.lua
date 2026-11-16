@@ -481,7 +481,7 @@ local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder "
-  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu"):gmatch("%S+") do
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
 
@@ -695,8 +695,18 @@ function elements.tree(nodes, props)
     props.onMenu(index and ids[index], x, y)
   end
 
+  listProps.onDrag = props.onDrag and function(index)
+    return props.onDrag(ids[index])
+  end
+
+  listProps.onDrop = props.onDrop and function(index, where, dataType, value)
+    props.onDrop(index and ids[index], where, dataType, value)
+  end
+
   local node = elements.list(listProps, rows)
   node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  -- data dropped on the middle of a node goes into it
+  node.dropInto = true
   return node
 end
 
@@ -754,7 +764,7 @@ function elements.table(columns, rows, props)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
 end
@@ -858,6 +868,7 @@ function elements.toggle(on, props)
 end
 
 -- a number between min and max, 0 and 1 if missing, which a drag changes; step rounds it
+-- onChange gets each value of a drag, and onSubmit the one that its release ends on; Left and Right give theirs to both
 function elements.slider(value, props)
   local node = element("slider", props)
   node.min, node.max = node.min or 0, node.max or 1
@@ -2545,6 +2556,7 @@ local function nudgeSlider(node, forward)
 
   if value ~= node.value then
     call(node.onChange, value)
+    call(node.onSubmit, value)
   end
 end
 
@@ -2908,6 +2920,24 @@ local function handlePointerMove(panel, state, x, y, shift)
     return true
   end
 
+  -- a press on an item of a list with onDrag, and a move of the drag threshold, drag what onDrag gives as the core's data
+  local itemDrag = state.itemDrag
+
+  if itemDrag and math.abs(x - itemDrag.x) + math.abs(y - itemDrag.y) > (tonumber(ecs.setting.get("ecs.dragThreshold")) or 8) then
+    local list = findById(root, itemDrag.list)
+    state.itemDrag = nil
+
+    if list and list.onDrag then
+      local dataType, value = list.onDrag(itemDrag.index)
+
+      if dataType then
+        state.pressed = nil
+        panel:startDrag(dataType, value)
+        return true
+      end
+    end
+  end
+
   local hover = find(root, x, y, interactive)
 
   if hover ~= state.hover or (hover and hover.type == "selector") then
@@ -2969,6 +2999,8 @@ local function handlePointerDown(panel, state, event, x, y)
     selectItem(item.list, item.itemIndex, how)
   end
 
+  state.itemDrag = item and item.list.onDrag and { list = item.list.id, index = item.itemIndex, x = x, y = y } or nil
+
   local node = find(root, x, y, interactive)
 
   if not node or not TAKES_TYPING[node.type] then
@@ -3010,11 +3042,17 @@ end
 local function handlePointerUp(panel, state, x, y)
   local pressed = state.pressed
   local drag = state.numberDrag
-  state.pressed, state.dragging, state.sliding, state.selecting, state.numberDrag = nil, nil, nil, nil, nil
+  local slid = state.sliding and findById(state.root, state.sliding)
+  state.pressed, state.dragging, state.sliding, state.selecting, state.numberDrag, state.itemDrag = nil, nil, nil, nil, nil, nil
   local node = find(state.root, x, y, interactive)
 
   -- a drag gives its last number to onSubmit; a press that did not drag types in the number, with the cursor where it was pressed
   local dragged = drag and findById(state.root, drag.id)
+
+  -- a slider gives the value that its press ended on to onSubmit
+  if slid and slid.type == "slider" then
+    call(slid.onSubmit, slid.value)
+  end
 
   if dragged and drag.moved then
     dragged.onSubmit(formatNumber(drag.shown or drag.value))
@@ -3065,6 +3103,37 @@ local function handleMenuUp(state, x, y)
   return true
 end
 
+-- data dropped on the panel goes to the innermost element under it with onDrop; a list gives its item under the place, or nil beside its
+-- items, and where on the item it landed: before it in its upper half and after it in its lower half, or for a tree before it in its upper
+-- quarter, after it in its lower quarter and into it between
+local function handleDrop(state, x, y, dataType, value)
+  local node = find(state.root, x, y, function(node)
+    return node.onDrop ~= nil or (isListItem(node) and node.list.onDrop ~= nil)
+  end)
+
+  if not node then
+    return false
+  end
+
+  if node.onDrop == nil then
+    local box, list = node.layout, node.list
+    local part = box.height > 0 and (y - box.y) / box.height or 0.5
+    local where = part < 0.5 and "before" or "after"
+
+    if list.dropInto then
+      where = part < 0.25 and "before" or part >= 0.75 and "after" or "into"
+    end
+
+    list.onDrop(node.itemIndex, where, dataType, value)
+  elseif isList(node) then
+    node.onDrop(nil, nil, dataType, value)
+  else
+    node.onDrop(dataType, value, x, y)
+  end
+
+  return true
+end
+
 -- handles a panel's event: calls the callbacks of the elements it reaches
 local function handleEvent(panel, event)
   local state = panelState(panel)
@@ -3104,6 +3173,8 @@ local function handleEvent(panel, event)
     return handleMenuDown(panel, state, x, y)
   elseif event.type == "pointerUp" and event.button == 3 then
     return handleMenuUp(state, x, y)
+  elseif event.type == "drop" then
+    return handleDrop(state, x, y, event.dataType, event.value)
   elseif event.type == "wheel" then
     local scroll = find(state.root, x, y, scrollable)
 
@@ -3308,7 +3379,7 @@ local ASKED = { onActivate = true, onSort = true }
 local CALLBACKS = {
   button = { "onClick" },
   toggle = { "onChange" },
-  slider = { "onChange" },
+  slider = { "onChange", "onSubmit" },
   selector = { "onSelect" },
   tabs = { "onSelect" },
   dropdown = { "onSelect" },
@@ -3638,7 +3709,7 @@ ecs.service.register({
   },
   slider = {
     sig = "value<ui.Element>(double value, value<ui.SliderProps?> props)",
-    doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it\n"
+    doc = "A number from min to max, which a drag changes, rounded to step; onChange gets each value of a drag, and onSubmit the one its release ends on\n"
         .. "@param value The number it shows, kept from min to max\n"
         .. "@param props The slider's properties (ui.SliderProps); min and max are 0 and 1 if missing\n"
         .. "@return The slider",

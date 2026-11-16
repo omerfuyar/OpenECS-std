@@ -556,7 +556,7 @@ static inline bool Ui_Number(const char *type, f64 *value, const UiProps *props)
     return taken != nullptr;
 }
 
-/// @brief Whether Return was pressed in the number field with an id since the last draw.
+/// @brief Whether Return was pressed in the number field with an id, or a drag of the slider with an id ended, since the last draw.
 static inline bool Ui_Submitted(const char *id)
 {
     return Ui_Take(id, "onSubmit") != nullptr;
@@ -828,7 +828,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 /// @brief The id of the node of the tree with an id that was activated since the last draw, or nullptr.
 #define UI_ACTIVATED_NODE(id, nodes) Ui_ActivatedNode((id), (nodes))
 
-/// @brief Whether Return was pressed in the number field with an id since the last draw.
+/// @brief Whether Return was pressed in the number field with an id, or a drag of the slider with an id ended, since the last draw.
 #define UI_SUBMITTED(id) Ui_Submitted(id)
 
 /// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr.
