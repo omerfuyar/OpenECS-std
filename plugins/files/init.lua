@@ -5,6 +5,7 @@
 local ecs = require("ecs")
 local ui = require("ui")
 local fs = require("fs")
+local process = require("process")
 
 local STYLES = ui.styles()
 local STATE_VERSION = 1
@@ -81,6 +82,58 @@ local function nodes(dir)
   return list
 end
 
+-- The nodes of a search: the files and folders whose name holds the text, whatever its case, and the folders above them, which
+-- open adds as open; nil when nothing under a node matches.
+local function found(list, search, open)
+  local kept = {}
+  for _, node in ipairs(list) do
+    local children = node.children and found(node.children, search, open)
+    if children and #children > 0 then
+      open[node.id] = true
+      kept[#kept + 1] = { id = node.id, label = node.label, children = children }
+    elseif node.label:lower():find(search, 1, true) then
+      kept[#kept + 1] = { id = node.id, label = node.label, children = node.children and {} or nil }
+    end
+  end
+  return kept
+end
+
+-- Every file and folder whose name holds the text, under a list of nodes, for the grid's search.
+local function flat(list, search, out)
+  for _, node in ipairs(list) do
+    if node.label:lower():find(search, 1, true) then
+      out[#out + 1] = node
+    end
+    flat(node.children or {}, search, out)
+  end
+  return out
+end
+
+local function say(state, ok, message)
+  state.message = not ok and message or nil
+  state.panel:redraw()
+end
+
+-- Shows a file or folder in the system's file manager: chosen, through the file manager's own interface on Linux, or else the
+-- folder that holds it; with Explorer's /select on Windows.
+local function reveal(state, path)
+  local full = folder .. path
+  local started, err
+  if package.config:sub(1, 1) == "\\" then
+    started, err = process.start({ "explorer", "/select," .. full:gsub("/", "\\") }, "")
+  else
+    local out, code = process.run({ "dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.FileManager1", "--type=method_call",
+      "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems", "array:string:file://" .. full, "string:" }, "", "")
+    if out and code == 0 then
+      return
+    end
+    started, err = process.start({ "xdg-open", full:match("^(.*/)[^/]*$") or folder }, "")
+  end
+  if not started then
+    say(state, false, "The file manager did not open: " .. tostring(err))
+  end
+end
+
 local function isFolder(path)
   local info = fs.info(folder .. path)
   return info ~= nil and info.type == "folder"
@@ -95,11 +148,6 @@ local function folderOf(state)
     return chosen .. "/"
   end
   return (chosen:match("^(.*/)[^/]*$") or "")
-end
-
-local function say(state, ok, message)
-  state.message = not ok and message or nil
-  state.panel:redraw()
 end
 
 local function rename(state, to)
@@ -195,6 +243,7 @@ menu = function(state, id, x, y, into)
     local isDir = isFolder(id)
     entries[#entries + 1] = { line = true }
     entries[#entries + 1] = { label = "Open", enabled = not isDir and handlers.open ~= nil, onClick = function() handlers.open(id) end }
+    entries[#entries + 1] = { label = "Show in file manager", onClick = function() reveal(state, id) end }
     entries[#entries + 1] = { label = "Rename", onClick = function()
       ask(state, { kind = "rename", path = id, label = "Rename", text = id:match("[^/]*$") })
     end }
@@ -282,11 +331,15 @@ local function grid(state, children)
   children[#children + 1] = ui.row({ gap = 4, align = "center", wrap = true }, crumbs)
   local tiles = {}
   state.tiles = {}
-  for _, entry in ipairs(nodes(dir:sub(1, -2))) do
+  local entries = nodes(dir:sub(1, -2))
+  if state.search then
+    entries = flat(entries, state.search:lower(), {})
+  end
+  for _, entry in ipairs(entries) do
     local id = entry.id
     state.tiles[#state.tiles + 1] = id
     tiles[#tiles + 1] = ui.column({
-      id = "tile:" .. id, width = TILE, padding = 4, gap = 4, align = "center", tooltip = entry.label,
+      id = "tile:" .. id, width = TILE, padding = 4, gap = 4, align = "center", tooltip = id,
       background = state.selected == id and "selected" or nil, hoverBackground = "tab",
       onClick = function()
         activate(state, id)
@@ -303,7 +356,8 @@ local function grid(state, children)
   children[#children + 1] = ui.scroll({ id = "grid", grow = 1, onMenu = function(x, y)
     menu(state, nil, x, y, dir)
   end }, {
-    #tiles > 0 and ui.row({ gap = 4, wrap = true }, tiles) or ui.text("The folder is empty.", { style = STYLES.note }),
+    #tiles > 0 and ui.row({ gap = 4, wrap = true }, tiles)
+      or ui.text(state.search and "No file's name holds the text." or "The folder is empty.", { style = STYLES.note }),
   })
 end
 
@@ -332,28 +386,42 @@ local function draw(state, surface)
     if state.message then
       children[#children + 1] = ui.text(tostring(state.message), { color = "#e06c75", wrap = true })
     end
-    children[#children + 1] = ui.row({}, {
+    children[#children + 1] = ui.row({ gap = 6, align = "center" }, {
       ui.selector(state.view == "grid" and 2 or 1, { "Tree", "Grid" }, {
         id = "view", tooltip = "The folder as a tree, or one folder at a time as a grid of icons", onSelect = function(choice)
           state.view = choice == 2 and "grid" or "tree"
         end,
       }),
+      ui.field(state.search or "", { id = "search", grow = 1, placeholder = "Search", tooltip = "Shows the files and folders whose name holds the text",
+        onChange = function(text)
+          state.search = text ~= "" and text or nil
+        end }),
     })
   end
   if folder ~= "" and state.view == "grid" then
     grid(state, children)
   elseif folder ~= "" then
-    children[#children + 1] = ui.tree(nodes(""), {
-      id = "tree", open = state.open, selected = state.selected, grow = 1, tooltip = "A right click opens a menu",
+    local shown, open = nodes(""), state.open
+    if state.search then
+      open = {}
+      shown = found(shown, state.search:lower(), open)
+    end
+    children[#children + 1] = ui.tree(shown, {
+      id = "tree", open = open, selected = state.selected, grow = 1, tooltip = "A right click opens a menu",
       onSelect = function(id)
-        state.pressed = id
         choose(state, id)
+      end,
+      -- a file dragged out of the tree is a list of paths, as another application's files come
+      onDrag = function(id)
+        return "file-list", { folder .. id }
       end,
       onActivate = function(id)
         activate(state, id)
       end,
-      onToggle = function(id, open)
-        state.open[id] = open or nil
+      onToggle = function(id, opened)
+        if not state.search then
+          state.open[id] = opened or nil
+        end
       end,
       onMenu = function(id, x, y)
         menu(state, id, x, y)
@@ -379,7 +447,7 @@ ecs.panel.registerType({
   end,
   draw = draw,
   event = function(state, event)
-    -- A file is dragged out of the tree as a list of paths, as another application's files come.
+    -- A file is dragged out of the grid as a list of paths, as the tree drags it.
     if event.type == "pointerDown" then
       state.pressed, state.pressX, state.pressY = nil, event.x, event.y
       -- in the grid, a press chooses the tile under it, which a drag takes
