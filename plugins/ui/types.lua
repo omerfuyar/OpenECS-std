@@ -5,6 +5,9 @@
 ---An element that a function of ui makes; ui.show lays it out and draws it.
 ---@class ui.Element
 
+---A child of a container: an element, or false, which is left out, so a child shows on a condition.
+---@alias ui.Child ui.Element|false
+
 ---An element's rectangle in the last layout, in layout units.
 ---@class ui.Rect
 ---@field x number
@@ -187,6 +190,18 @@
 ---@class ui.KeyProps: ui.Props
 ---@field id string
 ---@field onChange? fun(combination: string)
+
+---A path; it needs an id, which keeps what is typed.
+---@class ui.SearchProps: ui.Props
+---@field id? string The field's id; "search" if missing.
+---@field onChange? fun(query: string) Gets each edit, and "" when the search is cleared.
+---@field onSubmit? fun(query: string): boolean? Gets the query when Return is pressed.
+---@field placeholder? string The text the empty field shows; "Search" if missing.
+---@field results? string The id of the list that shows what matches; Up and Down choose in it while the search has the keys.
+
+---@class ui.PathProps: ui.FieldProps
+---@field dialog? "openFile"|"saveFile"|"openFolder" The file dialog its button opens; "openFile" if missing.
+---@field pattern? string The extensions the dialog shows, such as "ttf;otf"; every file if missing.
 
 ---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description

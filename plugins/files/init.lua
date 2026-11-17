@@ -82,7 +82,7 @@ local function nodes(dir)
   return list
 end
 
--- The nodes of a search: the files and folders whose name holds the text, whatever its case, and the folders above them, which
+-- The nodes of a search: the files and folders whose name matches it (ui.matches), and the folders above them, which
 -- open adds as open; nil when nothing under a node matches.
 local function found(list, search, open)
   local kept = {}
@@ -91,17 +91,17 @@ local function found(list, search, open)
     if children and #children > 0 then
       open[node.id] = true
       kept[#kept + 1] = { id = node.id, label = node.label, children = children }
-    elseif node.label:lower():find(search, 1, true) then
+    elseif ui.matches(search, node.label) then
       kept[#kept + 1] = { id = node.id, label = node.label, children = node.children and {} or nil }
     end
   end
   return kept
 end
 
--- Every file and folder whose name holds the text, under a list of nodes, for the grid's search.
+-- Every file and folder whose name matches a search, under a list of nodes, for the grid's search.
 local function flat(list, search, out)
   for _, node in ipairs(list) do
-    if node.label:lower():find(search, 1, true) then
+    if ui.matches(search, node.label) then
       out[#out + 1] = node
     end
     flat(node.children or {}, search, out)
@@ -333,7 +333,7 @@ local function grid(state, children)
   state.tiles = {}
   local entries = nodes(dir:sub(1, -2))
   if state.search then
-    entries = flat(entries, state.search:lower(), {})
+    entries = flat(entries, state.search, {})
   end
   for _, entry in ipairs(entries) do
     local id = entry.id
@@ -392,10 +392,9 @@ local function draw(state, surface)
           state.view = choice == 2 and "grid" or "tree"
         end,
       }),
-      ui.field(state.search or "", { id = "search", grow = 1, placeholder = "Search", tooltip = "Shows the files and folders whose name holds the text",
-        onChange = function(text)
-          state.search = text ~= "" and text or nil
-        end }),
+      ui.search(state.search or "", { grow = 1, placeholder = "Search files", onChange = function(text)
+        state.search = text ~= "" and text or nil
+      end }),
     })
   end
   if folder ~= "" and state.view == "grid" then
@@ -404,7 +403,7 @@ local function draw(state, surface)
     local shown, open = nodes(""), state.open
     if state.search then
       open = {}
-      shown = found(shown, state.search:lower(), open)
+      shown = found(shown, state.search, open)
     end
     children[#children + 1] = ui.tree(shown, {
       id = "tree", open = open, selected = state.selected, grow = 1, tooltip = "A right click opens a menu",

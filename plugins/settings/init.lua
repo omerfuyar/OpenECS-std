@@ -107,14 +107,30 @@ local function read(setting, typed)
   return typed
 end
 
--- reads the settings again; the window's items are the settings of the open sections, which Up and Down choose
+-- whether a setting matches the window's search, by its name, description, owner or value
+local function matches(window, setting)
+  return ui.matches(window.query, table.concat({ setting.name, setting.description or "", setting.owner or "", show(setting.value) }, "\n"))
+end
+
+-- whether an owner's section shows open: while the window searches, every section with a setting that matches does
+local function isOpen(window, owner)
+  return window.query ~= "" or not window.closed[owner]
+end
+
+-- reads the settings again; the window's items are the settings that match the search in the open sections, which Up and Down choose
 local function refresh(window)
   local chosen = window.items[window.selected]
-  window.settings = readSettings()
+  window.settings = {}
   window.items = {}
 
+  for _, setting in ipairs(readSettings()) do
+    if matches(window, setting) then
+      window.settings[#window.settings + 1] = setting
+    end
+  end
+
   for _, setting in ipairs(window.settings) do
-    if not window.closed[setting.owner] then
+    if isOpen(window, setting.owner) then
       window.items[#window.items + 1] = setting
     end
   end
@@ -180,6 +196,15 @@ local function control(window, setting)
     return ui.dropdown(selected, setting.choices, { id = id, grow = 1, onSelect = function(choice) set(window, setting, setting.choices[choice]) end })
   elseif setting.type == "key" then
     return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) set(window, setting, key) end })
+  elseif setting.type == "path" then
+    -- a path is typed, or chosen with the file dialog, which gives it as if it were typed
+    return ui.path(setting.value, {
+      id = id,
+      grow = 1,
+      onSubmit = function(path)
+        set(window, setting, path)
+      end,
+    })
   end
 
   -- the other types are typed; a text that cannot be read shows as not valid, and Return saves one that can
@@ -219,14 +244,37 @@ local function control(window, setting)
   return fieldElement
 end
 
+-- the value a setting has without the user's: the preset's, the theme's or the default
+local function valueBelowUser(setting)
+  local layers = setting.layers or {}
+
+  if layers.preset ~= nil then
+    return layers.preset
+  elseif layers.theme ~= nil then
+    return layers.theme
+  end
+
+  return layers.default
+end
+
 local function settingRow(window, setting)
+  -- a setting that the user changed shows its name in the accent, and a button that takes the change away
+  local changed = setting.layer == "user"
+  local reset = changed and ui.button("Reset", {
+    id = "reset:" .. setting.name,
+    tooltip = "Back to " .. show(valueBelowUser(setting)),
+    onClick = function()
+      set(window, setting, nil)
+    end,
+  }) or ui.space({ width = 0, grow = 0 })
+
   return ui.row({ id = "row:" .. setting.name, padding = 6, gap = 12 }, {
     -- both columns start from no width and share the row, so every row's control has the same place
     ui.column({ width = 0, grow = 3, gap = 2 }, {
-      ui.text(setting.name),
+      ui.text(setting.name, { color = changed and "accent" or nil }),
       ui.text(setting.description, { style = STYLES.note }),
     }),
-    ui.row({ width = 0, grow = 2 }, { control(window, setting) }),
+    ui.row({ width = 0, grow = 2, gap = 6 }, { control(window, setting), reset }),
   })
 end
 
@@ -266,7 +314,7 @@ local function view(window)
 
       sections[#sections + 1] = ui.section(owner == "ecs" and "Core" or owner, {
         id = "owner:" .. owner,
-        open = not window.closed[owner],
+        open = isOpen(window, owner),
         onToggle = function(open)
           window.closed[owner] = not open or nil
           refresh(window)
@@ -274,6 +322,10 @@ local function view(window)
       }, rows)
       rows = {}
     end
+  end
+
+  if #sections == 0 then
+    sections[1] = ui.text("No setting matches the search.", { style = STYLES.note })
   end
 
   -- a press on a row chooses its setting, and the row's control gets the press too; Up and Down choose a setting
@@ -289,6 +341,14 @@ local function view(window)
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Settings", { style = STYLES.title }),
+    ui.search(window.query, {
+      placeholder = "Search settings",
+      results = "list",
+      onChange = function(query)
+        window.query = query
+        refresh(window)
+      end,
+    }),
     list,
   })
 end
@@ -298,7 +358,7 @@ ecs.panel.registerType({
   title = "Settings",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {} }
+    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {}, query = "" }
     windows[panel] = window
 
     if version == STATE_VERSION and saved then

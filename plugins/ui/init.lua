@@ -150,6 +150,219 @@ local function measureText(font, text, textSize)
   return width
 end
 
+-- whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text.
+-- A view that searches several texts of an item joins them with new lines, so that no word matches across two of them
+local function matchesQuery(query, text)
+  text = tostring(text or ""):lower()
+
+  for word in tostring(query or ""):lower():gmatch("%S+") do
+    if not text:find(word, 1, true) then
+      return false
+    end
+  end
+
+  return true
+end
+
+-- partial drawing ---------------------------------------------------------------------------------------------------------------------
+
+-- A show records its draw calls, each with the rectangle it may change, and compares them with the last show's. While the surface keeps
+-- its pixels, only the rectangle around the calls that changed is drawn again, and the core shows only it: a hover changes a few elements,
+-- and drawing every pixel of a large panel for it would be slow.
+
+local drawn = draw -- the draw plugin's functions; draw below records calls while a show records them
+local recording -- the calls of the show that records them, or nil
+local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
+
+-- room around a call's rectangle, in layout units, for smooth edges and slanted letters
+local CALL_EDGE = 2
+
+local function record(name, key, left, top, right, bottom, ...)
+  local clip = recordClip
+
+  if clip then
+    left, top, right, bottom = math.max(left, clip[1]), math.max(top, clip[2]), math.min(right, clip[3]), math.min(bottom, clip[4])
+    key = key .. "|" .. clip.key
+  end
+
+  recording[#recording + 1] = {
+    name = name,
+    key = name .. key,
+    left = left - CALL_EDGE,
+    top = top - CALL_EDGE,
+    right = right + CALL_EDGE,
+    bottom = bottom + CALL_EDGE,
+    clip = clip,
+    args = table.pack(...),
+  }
+end
+
+draw = setmetatable({}, { __index = drawn })
+
+function draw.fill(surface, x, y, width, height, color)
+  if not recording then
+    return drawn.fill(surface, x, y, width, height, color)
+  end
+
+  record("fill", string.format("%g,%g,%g,%g,%s", x, y, width, height, color), x, y, x + width, y + height, surface, x, y, width, height, color)
+end
+
+function draw.outline(surface, x, y, width, height, thickness, color)
+  if not recording then
+    return drawn.outline(surface, x, y, width, height, thickness, color)
+  end
+
+  record("outline", string.format("%g,%g,%g,%g,%g,%s", x, y, width, height, thickness, color), x, y, x + width, y + height,
+    surface, x, y, width, height, thickness, color)
+end
+
+function draw.circle(surface, x, y, radius, thickness, color)
+  if not recording then
+    return drawn.circle(surface, x, y, radius, thickness, color)
+  end
+
+  record("circle", string.format("%g,%g,%g,%g,%s", x, y, radius, thickness, color), x - radius, y - radius, x + radius, y + radius,
+    surface, x, y, radius, thickness, color)
+end
+
+function draw.image(surface, picture, x, y, width, height)
+  if not recording then
+    return drawn.image(surface, picture, x, y, width, height)
+  end
+
+  record("image", string.format("%s,%g,%g,%g,%g", tostring(picture), x, y, width, height), x, y, x + width, y + height, surface, picture, x, y, width, height)
+end
+
+function draw.text(surface, font, text, x, y, textSize, color)
+  if not recording then
+    return drawn.text(surface, font, text, x, y, textSize, color)
+  end
+
+  local width, line = measureKept(font, text, textSize)
+  record("text", string.format("%s,%q,%g,%g,%g,%s", tostring(font), text, x, y, textSize, color), x, y, x + width, y + line,
+    surface, font, text, x, y, textSize, color)
+  return width
+end
+
+function draw.triangles(surface, points, indices, color)
+  if not recording then
+    return drawn.triangles(surface, points, indices, color)
+  end
+
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+
+  for i = 1, #points // 8 do
+    local x, y = string.unpack("ff", points, (i - 1) * 8 + 1)
+    left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
+  end
+
+  record("triangles", points .. indices .. tostring(color), left, top, right, bottom, surface, points, indices, color)
+end
+
+function draw.clip(surface, x, y, width, height, body)
+  if not recording then
+    return drawn.clip(surface, x, y, width, height, body)
+  end
+
+  local outer = recordClip
+  local clip = { x, y, x + width, y + height, key = string.format("%g,%g,%g,%g", x, y, width, height) }
+
+  if outer then
+    clip[1], clip[2], clip[3], clip[4] = math.max(clip[1], outer[1]), math.max(clip[2], outer[2]), math.min(clip[3], outer[3]), math.min(clip[4], outer[4])
+    clip.key = outer.key .. ";" .. clip.key
+  end
+
+  recordClip = clip
+  local ok, message = pcall(body)
+  recordClip = outer
+
+  if not ok then
+    error(message, 0)
+  end
+end
+
+-- the rectangle around the calls that differ between two shows, { left, top, right, bottom }; nil when none differs, and false when
+-- some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that changed
+-- covers every pixel it changed, old or new, so the pixels outside the rectangle are drawn by the same calls in the same order
+local function changedArea(old, new)
+  local first, most = 1, math.min(#old, #new)
+
+  while first <= most and old[first].key == new[first].key do
+    first = first + 1
+  end
+
+  if first > #old and first > #new then
+    return nil
+  end
+
+  local lastOld, lastNew = #old, #new
+
+  while lastOld >= first and lastNew >= first and old[lastOld].key == new[lastNew].key do
+    lastOld, lastNew = lastOld - 1, lastNew - 1
+  end
+
+  ---@type number[]|false
+  local area = false
+
+  local function add(call)
+    if call.right > call.left and call.bottom > call.top then
+      area = area and { math.min(area[1], call.left), math.min(area[2], call.top), math.max(area[3], call.right), math.max(area[4], call.bottom) }
+        or { call.left, call.top, call.right, call.bottom }
+    end
+  end
+
+  for i = first, lastOld do
+    add(old[i])
+  end
+
+  for i = first, lastNew do
+    add(new[i])
+  end
+
+  return area
+end
+
+-- makes the recorded calls that reach an area, or all of them, each inside its clip
+local function replay(surface, calls, area)
+  local function run()
+    local i = 1
+
+    while i <= #calls do
+      local clip, last = calls[i].clip, i
+
+      while last < #calls and calls[last + 1].clip == clip do
+        last = last + 1
+      end
+
+      local from, to = i, last
+
+      local function group()
+        for k = from, to do
+          local call = calls[k]
+
+          if not area or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2]) then
+            drawn[call.name](table.unpack(call.args, 1, call.args.n))
+          end
+        end
+      end
+
+      if clip then
+        drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], group)
+      else
+        group()
+      end
+
+      i = last + 1
+    end
+  end
+
+  if area then
+    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], run)
+  else
+    run()
+  end
+end
+
 local function lineHeight(font, textSize)
   local _, line = measureKept(font, "Ag", textSize)
   return line
@@ -480,7 +693,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -972,6 +1185,82 @@ function elements.number(value, props)
   end
 
   return node
+end
+
+-- a field for the path of a file, with a button that opens the system's file dialog; dialog is "openFile", "saveFile" or "openFolder", and pattern
+-- the extensions the dialog shows, such as "ttf;otf"; the chosen path goes to onChange and onSubmit, as if it were typed and Return pressed
+function elements.path(text, props)
+  props = props or {}
+  ecs.check(props.id, "A path needs an id, which keeps what is typed.")
+  local rowProps, fieldProps = { id = props.id .. ":path", gap = 4 }, { grow = 1 }
+
+  -- the row takes the place the path has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "dialog" and name ~= "pattern" then
+      fieldProps[name] = value
+    end
+  end
+
+  local browse = elements.button("…", { id = props.id .. ":browse", tooltip = "Choose with the file dialog", onClick = function()
+    local filters = props.pattern and { { name = props.pattern, pattern = props.pattern } } or nil
+    local location = text ~= nil and text ~= "" and text or nil
+    local ok, message = ecs.dialog.show({ type = props.dialog or "openFile", filters = filters, location = location }, function(files)
+      if files and files[1] and props.onChange then
+        props.onChange(files[1])
+      end
+
+      if files and files[1] and props.onSubmit then
+        props.onSubmit(files[1])
+      end
+    end)
+
+    if not ok then
+      ecs.log.warn(message or "Cannot show the file dialog.")
+    end
+  end })
+
+  return elements.row(rowProps, { elements.field(text, fieldProps), browse })
+end
+
+-- a field that narrows what a view shows, with a button that clears it while it holds a text; onChange gets the query at each edit, and
+-- ui.matches tells the view which texts match it. Ctrl+F in the panel gives it the keys, and Escape clears it before taking them away.
+-- results names the list that shows what matches, which Up and Down choose in while the search has the keys
+function elements.search(query, props)
+  props = props or {}
+  local id = props.id or "search"
+  query = tostring(query or "")
+  local rowProps = { id = id .. ":search", gap = 4 }
+  local fieldProps = { id = id, grow = 1, placeholder = "Search", tooltip = "Shows only what holds each word typed; Ctrl+F types here" }
+
+  -- the row takes the place the search has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "id" then
+      fieldProps[name] = value
+    end
+  end
+
+  fieldProps.placeholder = fieldProps.placeholder .. " (Ctrl+F)"
+  local field = elements.field(query, fieldProps)
+  field.isSearch = true
+  local children = { field }
+
+  if query ~= "" then
+    children[2] = elements.button("\u{00D7}", { id = id .. ":clear", tooltip = "Clear the search", onClick = function()
+      if props.onChange then
+        props.onChange("")
+      end
+
+      if props.onSubmit then
+        props.onSubmit("")
+      end
+    end })
+  end
+
+  return elements.row(rowProps, children)
 end
 
 function elements.key(combination, props)
@@ -1703,6 +1992,21 @@ function paint(node, surface, state)
   end
 end
 
+-- the first element, in the order they are shown, that passes a test
+local function firstWhere(node, test)
+  if test(node) then
+    return node
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    local found = firstWhere(child, test)
+
+    if found then
+      return found
+    end
+  end
+end
+
 -- the innermost element at a point that passes a test; scrolled content counts only where it shows
 local function find(node, x, y, test)
   if not contains(node, x, y) then
@@ -1865,7 +2169,7 @@ local function openDropdown(panel, state, node)
     choices = {}
 
     for _, choice in ipairs(all) do
-      if typed == "" or tostring(choice):lower():find(typed, 1, true) then
+      if matchesQuery(typed, choice) then
         choices[#choices + 1] = choice
       end
     end
@@ -2381,6 +2685,8 @@ end
 local MOVE_KEYS = { Left = true, Right = true, Home = true, End = true }
 
 -- handles a key or text event while a field is edited
+local moveSelection -- chooses another item of a list; defined with the list's keys
+
 local function editField(panel, state, node, event)
   -- the cursor is a byte position before which text goes; a character may take several bytes
   -- the selection lies between the anchor and the cursor, and what is typed replaces it
@@ -2431,6 +2737,15 @@ local function editField(panel, state, node, event)
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
       stopEditing(panel, state)
     end
+  elseif node.isSearch and node.results and (key == "Up" or key == "Down") then
+    local results = findById(state.root, node.results)
+
+    if results then
+      moveSelection(state, results, key == "Up" and -1 or 1)
+    end
+  elseif key == "Escape" and node.isSearch and state.typed ~= "" then
+    state.typed, state.cursorPosition, state.anchor = "", 1, nil
+    edited = true
   elseif key == "Escape" then
     stopEditing(panel, state)
   elseif node.isNumber and (key == "Up" or key == "Down") then
@@ -2562,7 +2877,7 @@ local function nudgeSlider(node, forward)
 end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
-local function moveSelection(state, list, step)
+function moveSelection(state, list, step)
   if #list.items == 0 then
     return
   end
@@ -3155,6 +3470,21 @@ local function handleEvent(panel, event)
     hideTooltip(panel, state)
   end
 
+  -- Ctrl+F gives the keys to the panel's search field, the first if it has several
+  if event.type == "keyDown" and event.key == "F" and event.ctrl and not event.alt and not event.shift and not event.super then
+    local search = firstWhere(state.root, function(node)
+      return node.isSearch == true
+    end)
+
+    if search then
+      stopEditing(panel, state)
+      state.keyTarget, state.showRing = search.id, false
+      startEditing(panel, state, search)
+      panel:redraw()
+      return true
+    end
+  end
+
   -- Tab leaves a field too
   if state.editing and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") and not (event.type == "keyDown" and event.key == "Tab") then
     return handleTyping(panel, state, event)
@@ -3255,14 +3585,43 @@ function services.show(panel, surface, root)
     state.editAtShow = nil
   end
 
-  draw.fill(surface, 0, 0, width, height, "background")
-  paint(root, surface, state)
+  -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
+  local last = state.calls
+  state.calls, recording, recordClip = nil, {}, nil
 
-  if inspecting then
-    paintInspector(surface, state, width, height)
-  else
-    paintTooltip(surface, state, width, height)
+  local ok, message = pcall(function()
+    draw.fill(surface, 0, 0, width, height, "background")
+    paint(root, surface, state)
+
+    if inspecting then
+      paintInspector(surface, state, width, height)
+    else
+      paintTooltip(surface, state, width, height)
+    end
+  end)
+
+  local calls = recording
+  recording, recordClip = nil, nil
+
+  if not ok then
+    error(message, 0)
   end
+
+  local area = surface.kept and last and changedArea(last, calls)
+
+  if not surface.kept or not last then
+    replay(surface, calls, nil)
+  elseif area then
+    replay(surface, calls, area)
+    local scale = surface.scale
+    local left, top = math.max(0, math.floor(area[1] * scale)), math.max(0, math.floor(area[2] * scale))
+    local right, bottom = math.min(surface.width, math.ceil(area[3] * scale)), math.min(surface.height, math.ceil(area[4] * scale))
+    surface:changed(left, top, math.max(0, right - left), math.max(0, bottom - top))
+  else
+    surface:changed(0, 0, 0, 0)
+  end
+
+  state.calls = calls
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
@@ -3390,6 +3749,8 @@ local CALLBACKS = {
   number = { "onChange", "onSubmit" },
   key = { "onChange" },
   field = { "onChange", "onSubmit" },
+  path = { "onChange", "onSubmit" },
+  search = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
   tree = { "onSelect", "onActivate", "onToggle" },
@@ -3408,7 +3769,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -3427,7 +3788,7 @@ local function build(panel, description)
   props.clickable = nil
 
   -- a field with valid = false refuses the submit, as a Lua onSubmit that returns false does
-  local refuses = elementType == "field" and props.valid == false
+  local refuses = (elementType == "field" or elementType == "path") and props.valid == false
 
   for _, callback in ipairs(callbacks) do
     local id = props.id
@@ -3607,7 +3968,7 @@ ecs.service.register({
     fn = services.reveal,
   },
   column = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other\n"
         .. "@param props The column's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
         .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
@@ -3615,7 +3976,7 @@ ecs.service.register({
     fn = elements.column,
   },
   row = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements beside each other\n"
         .. "@param props The row's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
         .. "@param children The elements, from the left; one that is false is left out; none if nil\n"
@@ -3623,7 +3984,7 @@ ecs.service.register({
     fn = elements.row,
   },
   scroll = {
-    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other, which scroll\n"
         .. "@param props The scroll element's properties (ui.ScrollProps), which must have an id; it grows unless grow says otherwise\n"
         .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
@@ -3631,7 +3992,7 @@ ecs.service.register({
     fn = elements.scroll,
   },
   list = {
-    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Child[]?> children)",
     doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate\n"
         .. "@param props The list's properties (ui.ListProps), which must have an id\n"
         .. "@param children The items, from the top; those with selectable = false, such as headings, are not items; none if nil\n"
@@ -3639,7 +4000,7 @@ ecs.service.register({
     fn = elements.list,
   },
   group = {
-    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other in a frame, under a title\n"
         .. "@param props The group's properties (ui.GroupProps), with its title; padding, gap and border have defaults\n"
         .. "@param children The elements, from the top, below the title; none if nil\n"
@@ -3647,7 +4008,7 @@ ecs.service.register({
     fn = elements.group,
   },
   section = {
-    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Child[]?> children)",
     doc = "A heading with an arrow over elements, which a click on the heading shows and hides; in a list, its elements are the list's items\n"
         .. "@param title The heading's text\n"
         .. "@param props The section's properties (ui.SectionProps); the plugin keeps open, and onToggle gets the new state\n"
@@ -3761,6 +4122,30 @@ ecs.service.register({
         .. "@param props The field's properties (ui.NumberProps), which must have an id\n"
         .. "@return The number field",
     fn = elements.number,
+  },
+  path = {
+    sig = "value<ui.Element>(string text, value<ui.PathProps?> props)",
+    doc = "A field for the path of a file, with a button that opens the system's file dialog; onChange and onSubmit get the chosen path as a typed one\n"
+        .. "@param text The path, which typing starts from; empty if nil\n"
+        .. "@param props The path's properties (ui.PathProps), which must have an id; dialog chooses the dialog, and pattern the extensions it shows\n"
+        .. "@return The path element",
+    fn = elements.path,
+  },
+  search = {
+    sig = "value<ui.Element>(string query, value<ui.SearchProps?> props)",
+    doc = "A field that narrows what a view shows, with a button that clears it; onChange gets the query at each edit, Ctrl+F types in it, Escape clears it\n"
+        .. "@param query The query it shows; empty if nil\n"
+        .. "@param props The search's properties (ui.SearchProps); its id is \"search\" if it has none\n"
+        .. "@return The search element",
+    fn = elements.search,
+  },
+  matches = {
+    sig = "bool(string query, string text)",
+    doc = "Tell whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text\n"
+        .. "@param query The search's query, as ui.search gives it\n"
+        .. "@param text The text to search; several texts of an item are joined with new lines, so that no word matches across two of them\n"
+        .. "@return True if every word is in the text",
+    fn = matchesQuery,
   },
   key = {
     sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)",

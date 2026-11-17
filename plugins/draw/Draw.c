@@ -1006,7 +1006,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     const ECSSettingDesc monoFont = {
         .name = "monoFont",
-        .type = ECSSettingType_String,
+        .type = ECSSettingType_Path,
         .description = "Monospace TrueType font, draw.font(\"mono\"); empty for the one draw ships with",
         .defaultString = "",
         .Changed = DrawFontsChanged,

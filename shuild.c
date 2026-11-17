@@ -197,15 +197,17 @@ int main(int argc, char **argv)
 
 static void PrintUsage(void)
 {
-    printf("Usage: ./shuild.ignore -o FOLDER -d FOLDER [FLAG...]\n\n"
-           "OpenECS's shuild.c runs this build; see OpenECS's README.md.\n\n"
-           "Flags:\n"
-           "  -o, --output FOLDER  OpenECS's build folder, named from this folder, such as ../build/Debug/\n"
-           "  -d, --dependencies FOLDER\n"
-           "                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n"
-           "  -b, --build TYPE     Build type: debug (the default), release, relwithdebinfo or minsizerel\n"
-           "  -c, --compiler CC    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n"
-           "  -h, --help           Show this help\n");
+    printf(SHUM_COLOR_BOLD("Usage:") " ./shuild.ignore " SHUM_COLOR_GREEN("-o") " " SHUM_COLOR_CYAN("FOLDER") " " SHUM_COLOR_GREEN("-d") " " SHUM_COLOR_CYAN("FOLDER") " [" SHUM_COLOR_GREEN("FLAG") "...]\n");
+    printf("\n");
+    printf("OpenECS's shuild.c runs this build; see OpenECS's README.md.\n");
+    printf("\n");
+    printf(SHUM_COLOR_BOLD("Flags:") "\n");
+    printf("  " SHUM_COLOR_GREEN("-o") ", " SHUM_COLOR_GREEN("--output") " " SHUM_COLOR_CYAN("FOLDER") "  OpenECS's build folder, named from this folder, such as ../build/Debug/\n");
+    printf("  " SHUM_COLOR_GREEN("-d") ", " SHUM_COLOR_GREEN("--dependencies") " " SHUM_COLOR_CYAN("FOLDER") "\n");
+    printf("                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n");
+    printf("  " SHUM_COLOR_GREEN("-b") ", " SHUM_COLOR_GREEN("--build") " " SHUM_COLOR_CYAN("TYPE") "     Build type: debug (the default), release, relwithdebinfo or minsizerel\n");
+    printf("  " SHUM_COLOR_GREEN("-c") ", " SHUM_COLOR_GREEN("--compiler") " " SHUM_COLOR_CYAN("CC") "    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n");
+    printf("  " SHUM_COLOR_GREEN("-h") ", " SHUM_COLOR_GREEN("--help") "           Show this help\n");
 }
 
 /// @brief Stops the build with the usage, what is wrong and the argument.
