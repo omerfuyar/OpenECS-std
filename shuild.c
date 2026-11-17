@@ -104,7 +104,8 @@ static const Library YYJSON = {"yyjson", {"yyjson/src/yyjson.c", NULL}, {NULL}, 
 static const Library TOMLC17 = {"tomlc17", {"tomlc17/src/tomlc17.c", NULL}, {NULL}, {"tomlc17/src", NULL}, "", {NULL}, {NULL}};
 
 // SQLite's amalgamation, one C file, without loading extensions from libraries, with full-text search and the math functions
-static const Library SQLITE = {"sqlite", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
+// it is named sqlite3, as SQLite names it, since shuild keeps each module's cache in a folder of its name, and the plugin is sqlite
+static const Library SQLITE = {"sqlite3", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
 
 // PCRE2's library for 8-bit text, without its JIT, its tests and its tools; glue files in dependencies/other/pcre2 stand for what its configure script writes
 static const Library PCRE2 = {"pcre2",
