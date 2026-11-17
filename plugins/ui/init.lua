@@ -150,6 +150,205 @@ local function measureText(font, text, textSize)
   return width
 end
 
+-- partial drawing ---------------------------------------------------------------------------------------------------------------------
+
+-- A show records its draw calls, each with the rectangle it may change, and compares them with the last show's. While the surface keeps
+-- its pixels, only the rectangle around the calls that changed is drawn again, and the core shows only it: a hover changes a few elements,
+-- and drawing every pixel of a large panel for it would be slow.
+
+local drawn = draw -- the draw plugin's functions; draw below records calls while a show records them
+local recording -- the calls of the show that records them, or nil
+local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
+
+-- room around a call's rectangle, in layout units, for smooth edges and slanted letters
+local CALL_EDGE = 2
+
+local function record(name, key, left, top, right, bottom, ...)
+  local clip = recordClip
+
+  if clip then
+    left, top, right, bottom = math.max(left, clip[1]), math.max(top, clip[2]), math.min(right, clip[3]), math.min(bottom, clip[4])
+    key = key .. "|" .. clip.key
+  end
+
+  recording[#recording + 1] = {
+    name = name,
+    key = name .. key,
+    left = left - CALL_EDGE,
+    top = top - CALL_EDGE,
+    right = right + CALL_EDGE,
+    bottom = bottom + CALL_EDGE,
+    clip = clip,
+    args = table.pack(...),
+  }
+end
+
+draw = setmetatable({}, { __index = drawn })
+
+function draw.fill(surface, x, y, width, height, color)
+  if not recording then
+    return drawn.fill(surface, x, y, width, height, color)
+  end
+
+  record("fill", string.format("%g,%g,%g,%g,%s", x, y, width, height, color), x, y, x + width, y + height, surface, x, y, width, height, color)
+end
+
+function draw.outline(surface, x, y, width, height, thickness, color)
+  if not recording then
+    return drawn.outline(surface, x, y, width, height, thickness, color)
+  end
+
+  record("outline", string.format("%g,%g,%g,%g,%g,%s", x, y, width, height, thickness, color), x, y, x + width, y + height,
+    surface, x, y, width, height, thickness, color)
+end
+
+function draw.circle(surface, x, y, radius, thickness, color)
+  if not recording then
+    return drawn.circle(surface, x, y, radius, thickness, color)
+  end
+
+  record("circle", string.format("%g,%g,%g,%g,%s", x, y, radius, thickness, color), x - radius, y - radius, x + radius, y + radius,
+    surface, x, y, radius, thickness, color)
+end
+
+function draw.image(surface, picture, x, y, width, height)
+  if not recording then
+    return drawn.image(surface, picture, x, y, width, height)
+  end
+
+  record("image", string.format("%s,%g,%g,%g,%g", tostring(picture), x, y, width, height), x, y, x + width, y + height, surface, picture, x, y, width, height)
+end
+
+function draw.text(surface, font, text, x, y, textSize, color)
+  if not recording then
+    return drawn.text(surface, font, text, x, y, textSize, color)
+  end
+
+  local width, line = measureKept(font, text, textSize)
+  record("text", string.format("%s,%q,%g,%g,%g,%s", tostring(font), text, x, y, textSize, color), x, y, x + width, y + line,
+    surface, font, text, x, y, textSize, color)
+  return width
+end
+
+function draw.triangles(surface, points, indices, color)
+  if not recording then
+    return drawn.triangles(surface, points, indices, color)
+  end
+
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+
+  for i = 1, #points // 8 do
+    local x, y = string.unpack("ff", points, (i - 1) * 8 + 1)
+    left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
+  end
+
+  record("triangles", points .. indices .. tostring(color), left, top, right, bottom, surface, points, indices, color)
+end
+
+function draw.clip(surface, x, y, width, height, body)
+  if not recording then
+    return drawn.clip(surface, x, y, width, height, body)
+  end
+
+  local outer = recordClip
+  local clip = { x, y, x + width, y + height, key = string.format("%g,%g,%g,%g", x, y, width, height) }
+
+  if outer then
+    clip[1], clip[2], clip[3], clip[4] = math.max(clip[1], outer[1]), math.max(clip[2], outer[2]), math.min(clip[3], outer[3]), math.min(clip[4], outer[4])
+    clip.key = outer.key .. ";" .. clip.key
+  end
+
+  recordClip = clip
+  local ok, message = pcall(body)
+  recordClip = outer
+
+  if not ok then
+    error(message, 0)
+  end
+end
+
+-- the rectangle around the calls that differ between two shows, { left, top, right, bottom }; nil when none differs, and false when
+-- some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that changed
+-- covers every pixel it changed, old or new, so the pixels outside the rectangle are drawn by the same calls in the same order
+local function changedArea(old, new)
+  local first, most = 1, math.min(#old, #new)
+
+  while first <= most and old[first].key == new[first].key do
+    first = first + 1
+  end
+
+  if first > #old and first > #new then
+    return nil
+  end
+
+  local lastOld, lastNew = #old, #new
+
+  while lastOld >= first and lastNew >= first and old[lastOld].key == new[lastNew].key do
+    lastOld, lastNew = lastOld - 1, lastNew - 1
+  end
+
+  ---@type number[]|false
+  local area = false
+
+  local function add(call)
+    if call.right > call.left and call.bottom > call.top then
+      area = area and { math.min(area[1], call.left), math.min(area[2], call.top), math.max(area[3], call.right), math.max(area[4], call.bottom) }
+        or { call.left, call.top, call.right, call.bottom }
+    end
+  end
+
+  for i = first, lastOld do
+    add(old[i])
+  end
+
+  for i = first, lastNew do
+    add(new[i])
+  end
+
+  return area
+end
+
+-- makes the recorded calls that reach an area, or all of them, each inside its clip
+local function replay(surface, calls, area)
+  local function run()
+    local i = 1
+
+    while i <= #calls do
+      local clip, last = calls[i].clip, i
+
+      while last < #calls and calls[last + 1].clip == clip do
+        last = last + 1
+      end
+
+      local from, to = i, last
+
+      local function group()
+        for k = from, to do
+          local call = calls[k]
+
+          if not area or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2]) then
+            drawn[call.name](table.unpack(call.args, 1, call.args.n))
+          end
+        end
+      end
+
+      if clip then
+        drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], group)
+      else
+        group()
+      end
+
+      i = last + 1
+    end
+  end
+
+  if area then
+    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], run)
+  else
+    run()
+  end
+end
+
 local function lineHeight(font, textSize)
   local _, line = measureKept(font, "Ag", textSize)
   return line
@@ -3292,14 +3491,43 @@ function services.show(panel, surface, root)
     state.editAtShow = nil
   end
 
-  draw.fill(surface, 0, 0, width, height, "background")
-  paint(root, surface, state)
+  -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
+  local last = state.calls
+  state.calls, recording, recordClip = nil, {}, nil
 
-  if inspecting then
-    paintInspector(surface, state, width, height)
-  else
-    paintTooltip(surface, state, width, height)
+  local ok, message = pcall(function()
+    draw.fill(surface, 0, 0, width, height, "background")
+    paint(root, surface, state)
+
+    if inspecting then
+      paintInspector(surface, state, width, height)
+    else
+      paintTooltip(surface, state, width, height)
+    end
+  end)
+
+  local calls = recording
+  recording, recordClip = nil, nil
+
+  if not ok then
+    error(message, 0)
   end
+
+  local area = surface.kept and last and changedArea(last, calls)
+
+  if not surface.kept or not last then
+    replay(surface, calls, nil)
+  elseif area then
+    replay(surface, calls, area)
+    local scale = surface.scale
+    local left, top = math.max(0, math.floor(area[1] * scale)), math.max(0, math.floor(area[2] * scale))
+    local right, bottom = math.min(surface.width, math.ceil(area[3] * scale)), math.min(surface.height, math.ceil(area[4] * scale))
+    surface:changed(left, top, math.max(0, right - left), math.max(0, bottom - top))
+  else
+    surface:changed(0, 0, 0, 0)
+  end
+
+  state.calls = calls
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)

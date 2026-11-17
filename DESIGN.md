@@ -143,6 +143,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The `ui` plugin builds user interfaces from elements, lays them out, draws them with draw (2), and calls their callbacks. It is a Lua plugin, so it keeps the Lua functions it is given as callbacks. Its elements are generic, in the spirit of raygui, Unity's UI and HTML, so tools build their own views from them; it has no views of one domain.
 - A panel describes its elements again each time it draws: `ui.show(panel, surface, root)` lays them out in the surface and draws them. Its `event` passes each event to `ui.event(panel, event)`, which handles the events that reach an element and gives true for them. Its `destroy` calls `ui.forget(panel)`.
+- `ui.show` draws only what changed since the panel's last show, while the surface keeps its pixels: it compares the draw calls of the two shows, draws again the rectangle around the calls that differ, and tells the core that rectangle (OpenECS DESIGN 5.1). So a panel that ui shows draws nothing else into its surface.
 - An element is a table that a function of ui makes, with the element's properties. Each function takes what the element shows first, then its props, then its children:
 
   | Element                               | Is                                                                                                                                                                                                                           |
