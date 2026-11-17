@@ -107,14 +107,30 @@ local function read(setting, typed)
   return typed
 end
 
--- reads the settings again; the window's items are the settings of the open sections, which Up and Down choose
+-- whether a setting matches the window's search, by its name, description, owner or value
+local function matches(window, setting)
+  return ui.matches(window.query, table.concat({ setting.name, setting.description or "", setting.owner or "", show(setting.value) }, "\n"))
+end
+
+-- whether an owner's section shows open: while the window searches, every section with a setting that matches does
+local function isOpen(window, owner)
+  return window.query ~= "" or not window.closed[owner]
+end
+
+-- reads the settings again; the window's items are the settings that match the search in the open sections, which Up and Down choose
 local function refresh(window)
   local chosen = window.items[window.selected]
-  window.settings = readSettings()
+  window.settings = {}
   window.items = {}
 
+  for _, setting in ipairs(readSettings()) do
+    if matches(window, setting) then
+      window.settings[#window.settings + 1] = setting
+    end
+  end
+
   for _, setting in ipairs(window.settings) do
-    if not window.closed[setting.owner] then
+    if isOpen(window, setting.owner) then
       window.items[#window.items + 1] = setting
     end
   end
@@ -298,7 +314,7 @@ local function view(window)
 
       sections[#sections + 1] = ui.section(owner == "ecs" and "Core" or owner, {
         id = "owner:" .. owner,
-        open = not window.closed[owner],
+        open = isOpen(window, owner),
         onToggle = function(open)
           window.closed[owner] = not open or nil
           refresh(window)
@@ -306,6 +322,10 @@ local function view(window)
       }, rows)
       rows = {}
     end
+  end
+
+  if #sections == 0 then
+    sections[1] = ui.text("No setting matches the search.", { style = STYLES.note })
   end
 
   -- a press on a row chooses its setting, and the row's control gets the press too; Up and Down choose a setting
@@ -321,6 +341,13 @@ local function view(window)
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Settings", { style = STYLES.title }),
+    ui.search(window.query, {
+      results = "list",
+      onChange = function(query)
+        window.query = query
+        refresh(window)
+      end,
+    }),
     list,
   })
 end
@@ -330,7 +357,7 @@ ecs.panel.registerType({
   title = "Settings",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {} }
+    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {}, query = "" }
     windows[panel] = window
 
     if version == STATE_VERSION and saved then

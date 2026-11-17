@@ -56,9 +56,23 @@ local function readPlugins()
   return plugins
 end
 
+local function stateText(entry)
+  return entry.failed and "failed" or entry.enabled and "enabled" or "disabled"
+end
+
+-- the plugins that match the list's search, by name, description, state or the plugins they depend on
 local function refresh(list)
   local chosen = list.plugins[list.selected]
-  list.plugins = readPlugins()
+  list.plugins = {}
+
+  for _, entry in ipairs(readPlugins()) do
+    local texts = { entry.name, entry.description or "", entry.version or "", stateText(entry), table.concat(entry.depends or {}, " ") }
+
+    if ui.matches(list.query, table.concat(texts, "\n")) then
+      list.plugins[#list.plugins + 1] = entry
+    end
+  end
+
   list.selected = math.min(math.max(list.selected, 1), math.max(#list.plugins, 1))
 
   for i, entry in ipairs(list.plugins) do
@@ -75,10 +89,6 @@ local function toggle(entry)
   if entry and not (entry.enabled and entry.needed) then
     (entry.enabled and ecs.plugins.disable or ecs.plugins.enable)(entry.name)
   end
-end
-
-local function stateText(entry)
-  return entry.failed and "failed" or entry.enabled and "enabled" or "disabled"
 end
 
 -- the list's elements: the title, then a row for each plugin with its state, version, description and the plugins it depends on;
@@ -103,19 +113,31 @@ local function view(list)
     end
 
     if #depends > 0 then
-      children[#children + 1] = ui.text("Depends on " .. table.concat(depends, ", "), { style = STYLES.note, wrap = true })
+      children[#children + 1] = ui.text("Depends on " .. table.concat(depends, ", "), { style = faded and STYLES.note or STYLES.heading, wrap = true })
     end
 
     rows[#rows + 1] = ui.column({ style = STYLES.item, gap = 6 }, children)
   end
 
   if #rows == 0 then
-    rows[1] = ui.text("No other plugin is in the plugin folders.", { color = "textDim", selectable = false })
+    local empty = list.query ~= "" and "No plugin matches the search." or "No other plugin is in the plugin folders."
+    rows[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Plugins", { style = STYLES.title }),
     ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note }),
+    ui.search(list.query, {
+      results = "list",
+      onChange = function(query)
+        list.query = query
+        refresh(list)
+      end,
+      -- Return toggles the plugin the list chose, as in the list
+      onSubmit = function()
+        toggle(list.plugins[list.selected])
+      end,
+    }),
     ui.list({
       id = "list",
       selected = list.selected,
@@ -135,7 +157,7 @@ ecs.panel.registerType({
   title = "Plugins",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local list = { panel = panel, plugins = {}, selected = 1 }
+    local list = { panel = panel, plugins = {}, selected = 1, query = "" }
     lists[panel] = list
     refresh(list)
 

@@ -20,6 +20,7 @@
 // was clicked, and UI_TOGGLE writes the new state into its bool. The plugin's Init calls Ui_Init, and the panel's Event gives each event to Ui_Event.
 // The macros cover every element of Lua's ui, with the same props, so a plugin in C builds the same interface as one in Lua.
 
+#include <ctype.h>
 #include <string.h>
 
 /// @brief grow = UI_FIXED keeps an element from growing where it would by default, as a scroll or a space does.
@@ -83,6 +84,7 @@ struct UiProps
     bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
     const char *dialog;          // a path's file dialog: "openFile", "saveFile" or "openFolder"
     const char *pattern;         // the extensions a path's file dialog shows, such as "ttf;otf"
+    const char *results;         // a search's list that shows what matches, which Up and Down choose in while the search has the keys
 };
 
 /// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
@@ -244,6 +246,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "sort", props->sort);
     Ui_SetString(table, "dialog", props->dialog);
     Ui_SetString(table, "pattern", props->pattern);
+    Ui_SetString(table, "results", props->results);
 
     const struct
     {
@@ -620,6 +623,59 @@ static inline bool Ui_Path(char *buffer, usz capacity, const UiProps *props)
     return submitted != nullptr;
 }
 
+/// @brief A search field, whose query is in a buffer of a capacity, which each edit and its clear button change. Ui_Matches tells which texts match.
+/// @return Whether the query changed.
+static inline bool Ui_Search(char *buffer, usz capacity, const UiProps *props)
+{
+    const ECSValue *changed = Ui_Take(props->id, "onChange");
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(changed, "value"), nullptr));
+    Ui_SetString(Ui_Add("search", props), "value", buffer);
+    return changed != nullptr;
+}
+
+/// @brief Whether a text matches a search, as ui.matches tells: each word of the query, whatever its case, is somewhere in it; an empty query matches
+/// every text. Several texts of an item are joined with new lines, so that no word matches across two of them.
+static inline bool Ui_Matches(const char *query, const char *text)
+{
+    for (const char *word = query; word != nullptr && *word != '\0';)
+    {
+        while (*word == ' ' || *word == '\t' || *word == '\n')
+        {
+            word++;
+        }
+
+        usz length = 0;
+
+        while (word[length] != '\0' && word[length] != ' ' && word[length] != '\t' && word[length] != '\n')
+        {
+            length++;
+        }
+
+        bool found = length == 0;
+
+        for (const char *at = text; !found && at != nullptr && *at != '\0'; at++)
+        {
+            usz i = 0;
+
+            while (i < length && at[i] != '\0' && tolower((unsigned char)at[i]) == tolower((unsigned char)word[i]))
+            {
+                i++;
+            }
+
+            found = i == length;
+        }
+
+        if (!found)
+        {
+            return false;
+        }
+
+        word += length;
+    }
+
+    return true;
+}
+
 /// @brief A key combination, in a buffer of a capacity, which a click and a key press change.
 /// @return Whether it changed.
 static inline bool Ui_Key(char *buffer, usz capacity, const UiProps *props)
@@ -828,6 +884,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_FIELD(buffer, capacity, ...) Ui_Field((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_KEY(buffer, capacity, ...) Ui_Key((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_PATH(buffer, capacity, ...) Ui_Path((buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_SEARCH(buffer, capacity, ...) Ui_Search((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_COLOR(buffer, capacity, ...) Ui_Color((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_TABLE(selected, columns, cells, rowCount, ...) Ui_Table((selected), (columns), (cells), (rowCount), &(UiProps){__VA_ARGS__})
 #define UI_TREE(selected, nodes, ...) Ui_Tree((selected), (nodes), &(UiProps){__VA_ARGS__})

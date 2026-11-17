@@ -176,10 +176,9 @@ ecs.panel.registerType({
   draw = function(state, surface)
     local counts = { info = 0, warn = 0, error = 0 }
     local items = {}
-    local search = state.search and state.search:lower()
     for i, entry in ipairs(entries) do
       counts[entry.level] = (counts[entry.level] or 0) + entry.count
-      if not state.hidden[entry.level] and (not search or entry.text:lower():find(search, 1, true)) then
+      if not state.hidden[entry.level] and ui.matches(state.search or "", entry.text) then
         items[#items + 1] = entryBox(i, entry)
       end
     end
@@ -197,12 +196,10 @@ ecs.panel.registerType({
         end,
       })
     end
-    -- the search shows only the entries whose text holds what is typed, whatever its case
-    header[#header + 1] = ui.field(state.search or "", { id = "search", width = 160, tooltip = "Show only the entries that hold this text",
-      onChange = function(text)
-        state.search = text ~= "" and text or nil
-      end,
-    })
+    -- the search shows only the entries that hold each word typed
+    header[#header + 1] = ui.search(state.search or "", { width = 160, onChange = function(text)
+      state.search = text ~= "" and text or nil
+    end })
     header[#header + 1] = ui.space()
     header[#header + 1] = ui.toggle(ecs.setting.get("console.clearOnRun") == true, {
       id = "clearOnRun", label = "Clear on run", tooltip = "Clear the console when the tool starts a run, such as a game that plays",

@@ -150,6 +150,20 @@ local function measureText(font, text, textSize)
   return width
 end
 
+-- whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text.
+-- A view that searches several texts of an item joins them with new lines, so that no word matches across two of them
+local function matchesQuery(query, text)
+  text = tostring(text or ""):lower()
+
+  for word in tostring(query or ""):lower():gmatch("%S+") do
+    if not text:find(word, 1, true) then
+      return false
+    end
+  end
+
+  return true
+end
+
 -- partial drawing ---------------------------------------------------------------------------------------------------------------------
 
 -- A show records its draw calls, each with the rectangle it may change, and compares them with the last show's. While the surface keeps
@@ -679,7 +693,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1208,6 +1222,44 @@ function elements.path(text, props)
   end })
 
   return elements.row(rowProps, { elements.field(text, fieldProps), browse })
+end
+
+-- a field that narrows what a view shows, with a button that clears it while it holds a text; onChange gets the query at each edit, and
+-- ui.matches tells the view which texts match it. Ctrl+F in the panel gives it the keys, and Escape clears it before taking them away.
+-- results names the list that shows what matches, which Up and Down choose in while the search has the keys
+function elements.search(query, props)
+  props = props or {}
+  local id = props.id or "search"
+  query = tostring(query or "")
+  local rowProps = { id = id .. ":search", gap = 4 }
+  local fieldProps = { id = id, grow = 1, placeholder = "Search", tooltip = "Shows only what holds each word typed; Ctrl+F types here" }
+
+  -- the row takes the place the search has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "id" then
+      fieldProps[name] = value
+    end
+  end
+
+  local field = elements.field(query, fieldProps)
+  field.isSearch = true
+  local children = { field }
+
+  if query ~= "" then
+    children[2] = elements.button("\u{00D7}", { id = id .. ":clear", tooltip = "Clear the search", onClick = function()
+      if props.onChange then
+        props.onChange("")
+      end
+
+      if props.onSubmit then
+        props.onSubmit("")
+      end
+    end })
+  end
+
+  return elements.row(rowProps, children)
 end
 
 function elements.key(combination, props)
@@ -1939,6 +1991,21 @@ function paint(node, surface, state)
   end
 end
 
+-- the first element, in the order they are shown, that passes a test
+local function firstWhere(node, test)
+  if test(node) then
+    return node
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    local found = firstWhere(child, test)
+
+    if found then
+      return found
+    end
+  end
+end
+
 -- the innermost element at a point that passes a test; scrolled content counts only where it shows
 local function find(node, x, y, test)
   if not contains(node, x, y) then
@@ -2101,7 +2168,7 @@ local function openDropdown(panel, state, node)
     choices = {}
 
     for _, choice in ipairs(all) do
-      if typed == "" or tostring(choice):lower():find(typed, 1, true) then
+      if matchesQuery(typed, choice) then
         choices[#choices + 1] = choice
       end
     end
@@ -2617,6 +2684,8 @@ end
 local MOVE_KEYS = { Left = true, Right = true, Home = true, End = true }
 
 -- handles a key or text event while a field is edited
+local moveSelection -- chooses another item of a list; defined with the list's keys
+
 local function editField(panel, state, node, event)
   -- the cursor is a byte position before which text goes; a character may take several bytes
   -- the selection lies between the anchor and the cursor, and what is typed replaces it
@@ -2667,6 +2736,15 @@ local function editField(panel, state, node, event)
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
       stopEditing(panel, state)
     end
+  elseif node.isSearch and node.results and (key == "Up" or key == "Down") then
+    local results = findById(state.root, node.results)
+
+    if results then
+      moveSelection(state, results, key == "Up" and -1 or 1)
+    end
+  elseif key == "Escape" and node.isSearch and state.typed ~= "" then
+    state.typed, state.cursorPosition, state.anchor = "", 1, nil
+    edited = true
   elseif key == "Escape" then
     stopEditing(panel, state)
   elseif node.isNumber and (key == "Up" or key == "Down") then
@@ -2798,7 +2876,7 @@ local function nudgeSlider(node, forward)
 end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
-local function moveSelection(state, list, step)
+function moveSelection(state, list, step)
   if #list.items == 0 then
     return
   end
@@ -3391,6 +3469,21 @@ local function handleEvent(panel, event)
     hideTooltip(panel, state)
   end
 
+  -- Ctrl+F gives the keys to the panel's search field, the first if it has several
+  if event.type == "keyDown" and event.key == "F" and event.ctrl and not event.alt and not event.shift and not event.super then
+    local search = firstWhere(state.root, function(node)
+      return node.isSearch == true
+    end)
+
+    if search then
+      stopEditing(panel, state)
+      state.keyTarget, state.showRing = search.id, false
+      startEditing(panel, state, search)
+      panel:redraw()
+      return true
+    end
+  end
+
   -- Tab leaves a field too
   if state.editing and (event.type == "text" or event.type == "keyDown" or event.type == "keyUp") and not (event.type == "keyDown" and event.key == "Tab") then
     return handleTyping(panel, state, event)
@@ -3656,6 +3749,7 @@ local CALLBACKS = {
   key = { "onChange" },
   field = { "onChange", "onSubmit" },
   path = { "onChange", "onSubmit" },
+  search = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
   tree = { "onSelect", "onActivate", "onToggle" },
@@ -3674,7 +3768,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -3873,7 +3967,7 @@ ecs.service.register({
     fn = services.reveal,
   },
   column = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other\n"
         .. "@param props The column's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
         .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
@@ -3881,7 +3975,7 @@ ecs.service.register({
     fn = elements.column,
   },
   row = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements beside each other\n"
         .. "@param props The row's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
         .. "@param children The elements, from the left; one that is false is left out; none if nil\n"
@@ -3889,7 +3983,7 @@ ecs.service.register({
     fn = elements.row,
   },
   scroll = {
-    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other, which scroll\n"
         .. "@param props The scroll element's properties (ui.ScrollProps), which must have an id; it grows unless grow says otherwise\n"
         .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
@@ -3897,7 +3991,7 @@ ecs.service.register({
     fn = elements.scroll,
   },
   list = {
-    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Child[]?> children)",
     doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate\n"
         .. "@param props The list's properties (ui.ListProps), which must have an id\n"
         .. "@param children The items, from the top; those with selectable = false, such as headings, are not items; none if nil\n"
@@ -3905,7 +3999,7 @@ ecs.service.register({
     fn = elements.list,
   },
   group = {
-    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other in a frame, under a title\n"
         .. "@param props The group's properties (ui.GroupProps), with its title; padding, gap and border have defaults\n"
         .. "@param children The elements, from the top, below the title; none if nil\n"
@@ -3913,7 +4007,7 @@ ecs.service.register({
     fn = elements.group,
   },
   section = {
-    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Child[]?> children)",
     doc = "A heading with an arrow over elements, which a click on the heading shows and hides; in a list, its elements are the list's items\n"
         .. "@param title The heading's text\n"
         .. "@param props The section's properties (ui.SectionProps); the plugin keeps open, and onToggle gets the new state\n"
@@ -4035,6 +4129,22 @@ ecs.service.register({
         .. "@param props The path's properties (ui.PathProps), which must have an id; dialog chooses the dialog, and pattern the extensions it shows\n"
         .. "@return The path element",
     fn = elements.path,
+  },
+  search = {
+    sig = "value<ui.Element>(string query, value<ui.SearchProps?> props)",
+    doc = "A field that narrows what a view shows, with a button that clears it; onChange gets the query at each edit, Ctrl+F types in it, Escape clears it\n"
+        .. "@param query The query it shows; empty if nil\n"
+        .. "@param props The search's properties (ui.SearchProps); its id is \"search\" if it has none\n"
+        .. "@return The search element",
+    fn = elements.search,
+  },
+  matches = {
+    sig = "bool(string query, string text)",
+    doc = "Tell whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text\n"
+        .. "@param query The search's query, as ui.search gives it\n"
+        .. "@param text The text to search; several texts of an item are joined with new lines, so that no word matches across two of them\n"
+        .. "@return True if every word is in the text",
+    fn = matchesQuery,
   },
   key = {
     sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)",

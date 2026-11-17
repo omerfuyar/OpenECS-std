@@ -51,10 +51,17 @@ local function readEntries()
   return entries
 end
 
--- reads both lists again, and keeps the chosen entry chosen if it is still there
+-- reads both lists again, the entries that match the search by title, name, type or date, and keeps the chosen entry chosen if it is still there
 local function refresh(list)
   local chosen = list.entries[list.selected]
-  list.entries = readEntries()
+  list.entries = {}
+
+  for _, entry in ipairs(readEntries()) do
+    if ui.matches(list.query, table.concat({ entry.title or "", entry.name or "", entry.type, entry.detail or "" }, "\n")) then
+      list.entries[#list.entries + 1] = entry
+    end
+  end
+
   list.selected = math.min(math.max(list.selected, 1), math.max(#list.entries, 1))
 
   for i, entry in ipairs(list.entries) do
@@ -97,11 +104,23 @@ local function view(list)
   end
 
   if #rows == 0 then
-    rows[1] = ui.text("There are no presets and no saved sessions.", { color = "textDim", selectable = false })
+    local empty = list.query ~= "" and "No preset or session matches the search." or "There are no presets and no saved sessions."
+    rows[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("OpenECS", { style = STYLES.title }),
+    ui.search(list.query, {
+      results = "list",
+      onChange = function(query)
+        list.query = query
+        refresh(list)
+      end,
+      -- Return opens the entry the list chose, so a search and Return open a tool
+      onSubmit = function()
+        open(list.entries[list.selected])
+      end,
+    }),
     ui.list({
       id = "list",
       selected = list.selected,
@@ -121,7 +140,7 @@ ecs.panel.registerType({
   title = "Launcher",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local list = { panel = panel, entries = {}, selected = 1 }
+    local list = { panel = panel, entries = {}, selected = 1, query = "" }
     lists[panel] = list
     refresh(list)
 

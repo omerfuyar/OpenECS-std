@@ -27,14 +27,26 @@ local function readTypes()
   return types
 end
 
--- reads the types again; the list's items are the types of the open sections, which Up and Down choose
+-- whether a plugin's section shows open: while the list searches, every section with a type that matches does
+local function isOpen(list, plugin)
+  return list.query ~= "" or not list.closed[plugin]
+end
+
+-- reads the types again, those that match the search by title, name, plugin or description; the list's items are the types of the open
+-- sections, which Up and Down choose
 local function refresh(list)
   local chosen = list.items[list.selected]
-  list.types = readTypes()
+  list.types = {}
   list.items = {}
 
+  for _, entry in ipairs(readTypes()) do
+    if ui.matches(list.query, table.concat({ entry.title or "", entry.name, entry.plugin or "", entry.description or "" }, "\n")) then
+      list.types[#list.types + 1] = entry
+    end
+  end
+
   for _, entry in ipairs(list.types) do
-    if not list.closed[entry.plugin] then
+    if isOpen(list, entry.plugin) then
       list.items[#list.items + 1] = entry
     end
   end
@@ -76,7 +88,7 @@ local function view(list)
   local function addSection(plugin)
     sections[#sections + 1] = ui.section(plugin, {
       id = "plugin:" .. plugin,
-      open = not list.closed[plugin],
+      open = isOpen(list, plugin),
       onToggle = function(open)
         list.closed[plugin] = not open or nil
         refresh(list)
@@ -104,11 +116,23 @@ local function view(list)
   end
 
   if #sections == 0 then
-    sections[1] = ui.text("The tool's plugins have no panel types.", { color = "textDim", selectable = false })
+    local empty = list.query ~= "" and "No panel type matches the search." or "The tool's plugins have no panel types."
+    sections[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Open a panel", { style = STYLES.title }),
+    ui.search(list.query, {
+      results = "list",
+      onChange = function(query)
+        list.query = query
+        refresh(list)
+      end,
+      -- Return opens the type the list chose, so a search and Return open a panel
+      onSubmit = function()
+        open(list.items[list.selected])
+      end,
+    }),
     ui.list({
       id = "list",
       selected = list.selected,
@@ -128,7 +152,7 @@ ecs.panel.registerType({
   title = "Panels",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local list = { panel = panel, types = {}, items = {}, selected = 1, closed = {} }
+    local list = { panel = panel, types = {}, items = {}, selected = 1, closed = {}, query = "" }
     lists[panel] = list
 
     if version == STATE_VERSION and saved then
