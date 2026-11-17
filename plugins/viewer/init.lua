@@ -90,7 +90,7 @@ local function draw(state, surface)
   if not state.path then
     children[1] = ui.text("No file is open.", { style = STYLES.note })
   else
-    children[#children + 1] = ui.text(("%s, %d bytes"):format(state.path, state.size or 0), { style = STYLES.note })
+    children[#children + 1] = ui.text(("%s, %d bytes"):format(state.path, state.size or 0), { style = STYLES.note, wrap = true })
     if state.error then
       children[#children + 1] = ui.text(state.error, { color = "#e06c75", wrap = true })
     elseif state.kind == "image" then
@@ -102,7 +102,7 @@ local function draw(state, surface)
         local fit = math.min(roomW / w, roomH / h)
         fit = fit >= 1 and math.min(16, math.floor(fit)) or fit
         props = { width = w * fit, height = h * fit }
-        children[1] = ui.text(("%s, %d bytes, %d × %d, shown at %d%%"):format(state.path, state.size or 0, w, h, math.floor(fit * 100 + 0.5)), { style = STYLES.note })
+        children[1] = ui.text(("%s, %d bytes, %d × %d, shown at %d%%"):format(state.path, state.size or 0, w, h, math.floor(fit * 100 + 0.5)), { style = STYLES.note, wrap = true })
       end
       children[#children + 1] = ui.image(state.path, props)
     elseif state.kind == "sound" then
@@ -124,7 +124,7 @@ local function draw(state, surface)
     elseif state.kind == "text" then
       local items = {}
       for i, spans in ipairs(state.lines) do
-        items[i] = ui.text(#spans > 0 and spans or " ", { font = "mono" })
+        items[i] = ui.text(#spans > 0 and spans or " ", { font = "mono", wrap = true })
       end
       children[#children + 1] = ui.scroll({ id = "text" }, items)
     else
