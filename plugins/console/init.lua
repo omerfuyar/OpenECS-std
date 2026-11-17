@@ -197,7 +197,7 @@ ecs.panel.registerType({
       })
     end
     -- the search shows only the entries that hold each word typed
-    header[#header + 1] = ui.search(state.search or "", { width = 160, onChange = function(text)
+    header[#header + 1] = ui.search(state.search or "", { width = 200, placeholder = "Search entries", onChange = function(text)
       state.search = text ~= "" and text or nil
     end })
     header[#header + 1] = ui.space()

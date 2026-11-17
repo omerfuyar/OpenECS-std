@@ -111,6 +111,7 @@ local function view(list)
   return ui.column({ style = STYLES.view }, {
     ui.text("OpenECS", { style = STYLES.title }),
     ui.search(list.query, {
+      placeholder = "Search tools and sessions",
       results = "list",
       onChange = function(query)
         list.query = query

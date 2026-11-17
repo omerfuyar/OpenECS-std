@@ -392,7 +392,7 @@ local function draw(state, surface)
           state.view = choice == 2 and "grid" or "tree"
         end,
       }),
-      ui.search(state.search or "", { grow = 1, onChange = function(text)
+      ui.search(state.search or "", { grow = 1, placeholder = "Search files", onChange = function(text)
         state.search = text ~= "" and text or nil
       end }),
     })

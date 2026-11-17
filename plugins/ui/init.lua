@@ -1243,6 +1243,7 @@ function elements.search(query, props)
     end
   end
 
+  fieldProps.placeholder = fieldProps.placeholder .. " (Ctrl+F)"
   local field = elements.field(query, fieldProps)
   field.isSearch = true
   local children = { field }

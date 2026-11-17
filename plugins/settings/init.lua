@@ -342,6 +342,7 @@ local function view(window)
   return ui.column({ style = STYLES.view }, {
     ui.text("Settings", { style = STYLES.title }),
     ui.search(window.query, {
+      placeholder = "Search settings",
       results = "list",
       onChange = function(query)
         window.query = query

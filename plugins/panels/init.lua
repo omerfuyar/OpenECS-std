@@ -123,6 +123,7 @@ local function view(list)
   return ui.column({ style = STYLES.view }, {
     ui.text("Open a panel", { style = STYLES.title }),
     ui.search(list.query, {
+      placeholder = "Search panels",
       results = "list",
       onChange = function(query)
         list.query = query

@@ -128,6 +128,7 @@ local function view(list)
     ui.text("Plugins", { style = STYLES.title }),
     ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note }),
     ui.search(list.query, {
+      placeholder = "Search plugins",
       results = "list",
       onChange = function(query)
         list.query = query
