@@ -604,17 +604,17 @@ static void TextGridPrint(void *gridHandle, const char *text)
     }
 }
 
-/// @brief Gives the size of a cell at a font size, in layout units: the width of a character of the monospace font, and its line height.
-static void TextGridCellSize(f32 size, f32 *retWidth, f32 *retHeight)
+/// @brief Gives the size of a cell at a font size and a surface's scale, in layout units: the width of a character of the monospace font, and its line height, as the grid draws them.
+static void TextGridCellSize(f32 size, f32 scale, f32 *retWidth, f32 *retHeight)
 {
-    TEXTGRID.Measure(TEXTGRID.font, "M", size, 1.0f, retWidth, retHeight);
+    TEXTGRID.Measure(TEXTGRID.font, "M", size, scale > 0.0f ? scale : 1.0f, retWidth, retHeight);
 }
 
-static void TextGridFit(f32 width, f32 height, f32 size, i32 *retColumns, i32 *retRows)
+static void TextGridFit(f32 width, f32 height, f32 size, f32 scale, i32 *retColumns, i32 *retRows)
 {
     f32 cellWidth = 0.0f;
     f32 cellHeight = 0.0f;
-    TextGridCellSize(size, &cellWidth, &cellHeight);
+    TextGridCellSize(size, scale, &cellWidth, &cellHeight);
     *retColumns = cellWidth <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(width / cellWidth));
     *retRows = cellHeight <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(height / cellHeight));
 }
@@ -802,16 +802,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param grid The grid\n"
          "@param column Gets the cursor's column, from 0 at the left; it is the number of columns after print fills a row\n"
          "@param row Gets the cursor's row, from 0 at the top"},
-        {"cell", (ECSFunction)TextGridCellSize, "void(float size, out float width, out float height)",
-         "Give the size of a cell at a font size\n"
+        {"cell", (ECSFunction)TextGridCellSize, "void(float size, float scale, out float width, out float height)",
+         "Give the size of a cell at a font size, as the grid draws it\n"
          "@param size The font size, in layout units\n"
+         "@param scale The scale of the surface the grid is drawn into, as the cell is measured at the size it is drawn at; 1 without a surface\n"
          "@param width Gets a cell's width, in layout units: a character's width in draw's \"mono\" font\n"
          "@param height Gets a cell's height, in layout units: the font's line height"},
-        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, out int columns, out int rows)",
+        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, float scale, out int columns, out int rows)",
          "Give how many cells fit a rectangle at a font size\n"
          "@param width The rectangle's width, in layout units\n"
          "@param height The rectangle's height, in layout units\n"
          "@param size The font size, in layout units\n"
+         "@param scale The scale of the surface the grid is drawn into, as with cell\n"
          "@param columns Gets the number of whole columns that fit, or 0 if the font cannot be opened\n"
          "@param rows Gets the number of whole rows that fit, or 0 if the font cannot be opened"},
         {"draw", (ECSFunction)TextGridDraw, "void(handle<ecs.surface> surface, handle<textgrid.grid> grid, float x, float y, float size, bool cursor)",
