@@ -55,28 +55,61 @@ local function redraw()
   end
 end
 
--- Whether a command's program is there: a path as it is, and a name in the folders of PATH.
--- On Windows a name may lack its ending, so the command is tried as it is.
-local function found(program)
-  if package.config:sub(1, 1) == "\\" then
-    return true
+local isWindows = package.config:sub(1, 1) == "\\"
+
+local function isFile(path)
+  local file = io.open(path, "rb")
+  if file then
+    file:close()
   end
-  local function isFile(path)
-    local file = io.open(path, "rb")
-    if file then
-      file:close()
-    end
-    return file ~= nil
-  end
-  if program:find("/", 1, true) then
-    return isFile(program)
-  end
-  for dir in (os.getenv("PATH") or ""):gmatch("[^:]+") do
-    if isFile(dir .. "/" .. program) then
-      return true
+  return file ~= nil
+end
+
+-- The path of a command's program: a path as it is, and a name in the folders of PATH. On Windows, a name may lack its ending,
+-- such as code for code.cmd, so each ending of PATHEXT is tried too; Windows starts a .cmd or .bat found so through cmd itself.
+local function resolve(program)
+  local endings = { "" }
+  if isWindows then
+    for ending in (os.getenv("PATHEXT") or ".COM;.EXE;.BAT;.CMD"):gmatch("[^;]+") do
+      endings[#endings + 1] = ending
     end
   end
-  return false
+  local function withEnding(path)
+    for _, ending in ipairs(endings) do
+      if isFile(path .. ending) then
+        return path .. ending
+      end
+    end
+  end
+  if program:find("[/\\]") then
+    return withEnding(program)
+  end
+  for dir in (os.getenv("PATH") or ""):gmatch(isWindows and "[^;]+" or "[^:]+") do
+    local path = withEnding(dir .. (isWindows and "\\" or "/") .. program)
+    if path then
+      return path
+    end
+  end
+end
+
+-- The words of a command, split at spaces; a word in double quotes keeps its spaces, such as a path in Program Files.
+local function words(command)
+  local out, at = {}, 1
+  while true do
+    at = command:find("%S", at)
+    if not at then
+      return out
+    end
+    local last
+    if command:sub(at, at) == '"' then
+      last = command:find('"', at + 1, true) or #command + 1
+      out[#out + 1] = command:sub(at + 1, last - 1)
+    else
+      last = (command:find("%s", at) or #command + 1) - 1
+      out[#out + 1] = command:sub(at, last)
+    end
+    at = last + 1
+  end
 end
 
 ---Opens a file at a line in the user's code editor.
@@ -87,16 +120,19 @@ local function openFile(file, line)
     file = folder .. file
   end
   local command = {}
-  for word in tostring(ecs.setting.get("console.editor")):gmatch("%S+") do
+  for _, word in ipairs(words(tostring(ecs.setting.get("console.editor")))) do
     command[#command + 1] = (word:gsub("{file}", function()
       return file
     end):gsub("{line}", tostring(line or 1)))
   end
-  if #command > 0 and found(command[1]) and process.start(command, "") then
-    return
+  local program = command[1] and resolve(command[1])
+  if program then
+    command[1] = program
+    if process.start(command, "") then
+      return
+    end
   end
   -- Without the code editor, the system opens the file with the program that it has for such files.
-  local isWindows = package.config:sub(1, 1) == "\\"
   local opener = isWindows and { "cmd", "/c", "start", "", file } or { "xdg-open", file }
   local started, err = process.start(opener, "")
   if not warned then
@@ -144,9 +180,9 @@ local function linksOf(entry)
 end
 
 -- An entry's box: its time, the place it names as a link, and its count, above its text, framed in its level's colour.
-local function entryBox(i, entry)
+local function entryBox(i, entry, chosen)
   local color = COLORS[entry.level]
-  return ui.column({ id = "entry" .. i, padding = 4, gap = 2, background = "tabRow", border = color or "tabShown" }, {
+  return ui.column({ id = "entry" .. i, padding = 4, gap = 2, background = chosen and "selected" or "tabRow", border = color or "tabShown" }, {
     ui.row({ gap = 8 }, {
       ui.text(entry.time, { style = STYLES.note }),
       entry.file and ui.text({ { text = entry.file .. ":" .. (entry.line or 1), link = "open" } }, {
@@ -159,6 +195,48 @@ local function entryBox(i, entry)
       entry.count > 1 and ui.text("×" .. entry.count, { style = STYLES.note, tooltip = "Added this many times in a row" }) or false,
     }),
     ui.text(entry.text, { font = "mono", color = color, wrap = true }),
+  })
+end
+
+-- Goes to what an entry is about: the file and line it names, or else its first link, such as the object that raised it.
+local function goTo(entry)
+  if entry.file then
+    openFile(entry.file, entry.line)
+  elseif entry.links then
+    entry.links[1].onClick()
+  end
+end
+
+-- Puts an entry's text on the clipboard, with the times it was added in a row when it stacked.
+local function copy(entry)
+  ecs.clipboard.setText(entry.count > 1 and ("%s (×%d)"):format(entry.text, entry.count) or entry.text)
+end
+
+-- A click on an entry chooses it, and a second click on it soon after, a double click, goes to what it is about.
+local function activate(state, entry)
+  if state.clicked == entry then
+    state.clicked = nil
+    goTo(entry)
+  else
+    state.clicked = entry
+    ecs.timer.start(0.4, false, function()
+      if state.clicked == entry then
+        state.clicked = nil
+      end
+    end)
+  end
+end
+
+-- The menu of a right click on an entry, which the click chose.
+local function menu(state, entry, x, y)
+  state.chosen = entry
+  ui.menu(state.panel, x, y, {
+    { label = "Go to", enabled = entry.file ~= nil or entry.links ~= nil, onClick = function()
+      goTo(entry)
+    end },
+    { label = "Copy", keys = "Ctrl+C", onClick = function()
+      copy(entry)
+    end },
   })
 end
 
@@ -175,16 +253,18 @@ ecs.panel.registerType({
   end,
   draw = function(state, surface)
     local counts = { info = 0, warn = 0, error = 0 }
-    local items = {}
+    local items, shown, selected = {}, {}, nil
     for i, entry in ipairs(entries) do
       counts[entry.level] = (counts[entry.level] or 0) + entry.count
       if not state.hidden[entry.level] and ui.matches(state.search or "", entry.text) then
-        items[#items + 1] = entryBox(i, entry)
+        items[#items + 1] = entryBox(i, entry, entry == state.chosen)
+        shown[#items] = entry
+        selected = entry == state.chosen and #items or selected
       end
     end
     state.shown = #items
     if #items == 0 then
-      items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note })
+      items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note, selectable = false })
     end
     -- the levels' toggles filter the entries, and show how many each has
     local header = {}
@@ -213,7 +293,16 @@ ecs.panel.registerType({
     end })
     ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, {
       ui.row({ gap = 8, align = "center", wrap = true }, header),
-      ui.scroll({ id = "entries", gap = 4 }, items),
+      -- a click chooses an entry, a double click goes to what it is about, and a right click opens its menu
+      ui.list({ id = "entries", gap = 4, grow = 1, selected = selected, onSelect = function(index)
+        state.chosen = shown[index]
+      end, onActivate = function(index)
+        activate(state, shown[index])
+      end, onMenu = function(index, x, y)
+        if index and shown[index] then
+          menu(state, shown[index], x, y)
+        end
+      end }, items),
     }))
     if state.follow and #items > 0 and items[#items].id then
       state.follow = false
@@ -225,7 +314,7 @@ ecs.panel.registerType({
   end,
   -- the levels it hides, and how many entries show, which a test reads
   saveState = function(state)
-    return { hidden = state.hidden, shown = state.shown }
+    return { hidden = state.hidden, shown = state.shown, chosen = state.chosen and state.chosen.text or nil }
   end,
   destroy = function(state)
     ui.forget(state.panel)
@@ -252,4 +341,13 @@ ecs.service.register({
     folder = path
   end },
   open = { sig = "void(string file, int line)", doc = "Open a file at a line in the code editor\n@param file The file's path\n@param line The line, from 1", fn = openFile },
+  copy = { sig = "void(handle<ecs.panel> panel)", doc = "Copy the chosen entry's text, as Ctrl+C does in the console\n@param panel The console, as its keys pass the focused panel; nothing happens without a chosen entry or while its search has the keys", fn = function(panel)
+    local state = panels[panel]
+    if state and state.chosen and not ui.focus(panel) then
+      copy(state.chosen)
+    end
+  end },
 })
+
+-- the console's default key; presets and the user's settings can change it
+ecs.key.bind("console.log", "Ctrl+C", "console.copy")

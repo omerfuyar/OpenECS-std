@@ -550,7 +550,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The first-party Lua plugin `viewer` shows a file as what it is, with the standard loaders: an image with image (6), shown through ui (5), a sound with audio (7), which mixer (3) plays, and a text with syntax (27). It knows nothing of the tool that uses it.
 - `viewer.open(path)` shows a file in the panel that shows it, or in the first panel of type `viewer.file` that is open, or in a new one; the panel gets the focus. `viewer.show(path)` shows a file as a preview: in the panel that shows it, or in the first one open, without the focus; with no panel open, it does nothing. `viewer.reload(path)` reads the file again in the panels that show it.
 - An image fills the panel: a large one whole, and a small one by a whole number of times, at most 16. A sound has Play and Stop, and its length.
-- A text shows in the mono font, coloured by syntax when syntax knows its language, its first 2000 lines of at most its first MiB. A file with a zero byte is not text. Of any other file, the panel shows its size.
+- A text shows in the mono font, coloured by syntax when syntax knows its language, its first 2000 lines of at most its first MiB. A line wider than the panel wraps, and so does the file's path above it. A file with a zero byte is not text. Of any other file, the panel shows its size.
 - A panel's saved state is the file's path.
 
 ## 31. The console
@@ -561,7 +561,8 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - `console.run()` says that the tool starts a run of its program, such as a game that plays; the console clears then when the setting `console.clearOnRun` is on, which its Clear on Run toggle sets, and which is on by default.
 - The first file and line that an entry names, such as `src/main.lua:12`, is a link. A click on it, or `console.open(file, line)`, opens the file at the line in the user's code editor, with the command of the setting `console.editor`, in which `{file}` and `{line}` stand for them. A relative path starts at the folder that `console.setFolder(path)` names.
 - From Lua, `console.add(text, level, links)` may give an entry more links, shown after its place: each a table of its text, a tooltip and `onClick`, the function that a click calls (`console.Link`). A tool links an error to what it came from this way, such as the object that raised it. An entry that stacks takes the last links.
-- The console starts the command with process (20), after checking that its program is there, as a path or in the folders of `PATH`. When it is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
+- The command's words are split at spaces, and a word in double quotes keeps its spaces, such as `"C:\Program Files\Editor\editor.exe" {file}`. The console finds its program as a path or in the folders of `PATH`; on Windows it tries each ending of `PATHEXT` too, so `code` finds `code.cmd`, which Windows starts through cmd. It starts the command with process (20). When the program is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
+- The entries are a list. A click on an entry chooses it, and a second click on it within 0.4 seconds, a double click, goes to what it is about: the file and line that it names, or else its first link. A right click opens its menu, of Go to and Copy. Ctrl+C, bound to `console.copy`, copies the chosen entry's text, with its count when it stacked.
 - The panel follows its last entry as entries are added.
 
 ---
