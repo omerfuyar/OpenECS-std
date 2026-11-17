@@ -180,6 +180,15 @@ local function control(window, setting)
     return ui.dropdown(selected, setting.choices, { id = id, grow = 1, onSelect = function(choice) set(window, setting, setting.choices[choice]) end })
   elseif setting.type == "key" then
     return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) set(window, setting, key) end })
+  elseif setting.type == "path" then
+    -- a path is typed, or chosen with the file dialog, which gives it as if it were typed
+    return ui.path(setting.value, {
+      id = id,
+      grow = 1,
+      onSubmit = function(path)
+        set(window, setting, path)
+      end,
+    })
   end
 
   -- the other types are typed; a text that cannot be read shows as not valid, and Return saves one that can
@@ -219,14 +228,37 @@ local function control(window, setting)
   return fieldElement
 end
 
+-- the value a setting has without the user's: the preset's, the theme's or the default
+local function valueBelowUser(setting)
+  local layers = setting.layers or {}
+
+  if layers.preset ~= nil then
+    return layers.preset
+  elseif layers.theme ~= nil then
+    return layers.theme
+  end
+
+  return layers.default
+end
+
 local function settingRow(window, setting)
+  -- a setting that the user changed shows its name in the accent, and a button that takes the change away
+  local changed = setting.layer == "user"
+  local reset = changed and ui.button("Reset", {
+    id = "reset:" .. setting.name,
+    tooltip = "Back to " .. show(valueBelowUser(setting)),
+    onClick = function()
+      set(window, setting, nil)
+    end,
+  }) or ui.space({ width = 0, grow = 0 })
+
   return ui.row({ id = "row:" .. setting.name, padding = 6, gap = 12 }, {
     -- both columns start from no width and share the row, so every row's control has the same place
     ui.column({ width = 0, grow = 3, gap = 2 }, {
-      ui.text(setting.name),
+      ui.text(setting.name, { color = changed and "accent" or nil }),
       ui.text(setting.description, { style = STYLES.note }),
     }),
-    ui.row({ width = 0, grow = 2 }, { control(window, setting) }),
+    ui.row({ width = 0, grow = 2, gap = 6 }, { control(window, setting), reset }),
   })
 end
 

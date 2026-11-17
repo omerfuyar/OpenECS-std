@@ -81,6 +81,8 @@ struct UiProps
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
     bool onActivate;             // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
     bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
+    const char *dialog;          // a path's file dialog: "openFile", "saveFile" or "openFolder"
+    const char *pattern;         // the extensions a path's file dialog shows, such as "ttf;otf"
 };
 
 /// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
@@ -240,6 +242,8 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "placeholder", props->placeholder);
     Ui_SetString(table, "look", props->look);
     Ui_SetString(table, "sort", props->sort);
+    Ui_SetString(table, "dialog", props->dialog);
+    Ui_SetString(table, "pattern", props->pattern);
 
     const struct
     {
@@ -605,6 +609,17 @@ static inline bool Ui_Field(char *buffer, usz capacity, const UiProps *props)
     return submitted != nullptr;
 }
 
+/// @brief A path of a file in a buffer of a capacity, which each edit and the file dialog of its button change.
+/// @return Whether Return was pressed in it, or a file was chosen.
+static inline bool Ui_Path(char *buffer, usz capacity, const UiProps *props)
+{
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(Ui_Take(props->id, "onChange"), "value"), nullptr));
+    const ECSValue *submitted = Ui_Take(props->id, "onSubmit");
+    Ui_CopyText(buffer, capacity, ECSValue_GetString(ECSValue_GetTableField(submitted, "value"), nullptr));
+    Ui_SetString(Ui_Add("path", props), "value", buffer);
+    return submitted != nullptr;
+}
+
 /// @brief A key combination, in a buffer of a capacity, which a click and a key press change.
 /// @return Whether it changed.
 static inline bool Ui_Key(char *buffer, usz capacity, const UiProps *props)
@@ -812,6 +827,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_DROPDOWN(selected, choices, ...) Ui_Choice("dropdown", (selected), (choices), &(UiProps){__VA_ARGS__})
 #define UI_FIELD(buffer, capacity, ...) Ui_Field((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_KEY(buffer, capacity, ...) Ui_Key((buffer), (capacity), &(UiProps){__VA_ARGS__})
+#define UI_PATH(buffer, capacity, ...) Ui_Path((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_COLOR(buffer, capacity, ...) Ui_Color((buffer), (capacity), &(UiProps){__VA_ARGS__})
 #define UI_TABLE(selected, columns, cells, rowCount, ...) Ui_Table((selected), (columns), (cells), (rowCount), &(UiProps){__VA_ARGS__})
 #define UI_TREE(selected, nodes, ...) Ui_Tree((selected), (nodes), &(UiProps){__VA_ARGS__})

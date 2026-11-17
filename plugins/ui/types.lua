@@ -188,6 +188,11 @@
 ---@field id string
 ---@field onChange? fun(combination: string)
 
+---A path; it needs an id, which keeps what is typed.
+---@class ui.PathProps: ui.FieldProps
+---@field dialog? "openFile"|"saveFile"|"openFolder" The file dialog its button opens; "openFile" if missing.
+---@field pattern? string The extensions the dialog shows, such as "ttf;otf"; every file if missing.
+
 ---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description
 ---@field type string The element's type, which names its function, such as "column" or "button".

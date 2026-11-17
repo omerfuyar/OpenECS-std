@@ -480,7 +480,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -972,6 +972,43 @@ function elements.number(value, props)
   end
 
   return node
+end
+
+-- a field for the path of a file, with a button that opens the system's file dialog; dialog is "openFile", "saveFile" or "openFolder", and pattern
+-- the extensions the dialog shows, such as "ttf;otf"; the chosen path goes to onChange and onSubmit, as if it were typed and Return pressed
+function elements.path(text, props)
+  props = props or {}
+  ecs.check(props.id, "A path needs an id, which keeps what is typed.")
+  local rowProps, fieldProps = { id = props.id .. ":path", gap = 4 }, { grow = 1 }
+
+  -- the row takes the place the path has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "dialog" and name ~= "pattern" then
+      fieldProps[name] = value
+    end
+  end
+
+  local browse = elements.button("…", { id = props.id .. ":browse", tooltip = "Choose with the file dialog", onClick = function()
+    local filters = props.pattern and { { name = props.pattern, pattern = props.pattern } } or nil
+    local location = text ~= nil and text ~= "" and text or nil
+    local ok, message = ecs.dialog.show({ type = props.dialog or "openFile", filters = filters, location = location }, function(files)
+      if files and files[1] and props.onChange then
+        props.onChange(files[1])
+      end
+
+      if files and files[1] and props.onSubmit then
+        props.onSubmit(files[1])
+      end
+    end)
+
+    if not ok then
+      ecs.log.warn(message or "Cannot show the file dialog.")
+    end
+  end })
+
+  return elements.row(rowProps, { elements.field(text, fieldProps), browse })
 end
 
 function elements.key(combination, props)
@@ -3390,6 +3427,7 @@ local CALLBACKS = {
   number = { "onChange", "onSubmit" },
   key = { "onChange" },
   field = { "onChange", "onSubmit" },
+  path = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
   tree = { "onSelect", "onActivate", "onToggle" },
@@ -3408,7 +3446,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -3427,7 +3465,7 @@ local function build(panel, description)
   props.clickable = nil
 
   -- a field with valid = false refuses the submit, as a Lua onSubmit that returns false does
-  local refuses = elementType == "field" and props.valid == false
+  local refuses = (elementType == "field" or elementType == "path") and props.valid == false
 
   for _, callback in ipairs(callbacks) do
     local id = props.id
@@ -3761,6 +3799,14 @@ ecs.service.register({
         .. "@param props The field's properties (ui.NumberProps), which must have an id\n"
         .. "@return The number field",
     fn = elements.number,
+  },
+  path = {
+    sig = "value<ui.Element>(string text, value<ui.PathProps?> props)",
+    doc = "A field for the path of a file, with a button that opens the system's file dialog; onChange and onSubmit get the chosen path as a typed one\n"
+        .. "@param text The path, which typing starts from; empty if nil\n"
+        .. "@param props The path's properties (ui.PathProps), which must have an id; dialog chooses the dialog, and pattern the extensions it shows\n"
+        .. "@return The path element",
+    fn = elements.path,
   },
   key = {
     sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)",
