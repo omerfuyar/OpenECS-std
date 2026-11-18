@@ -36,6 +36,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 30. The viewer
 31. The console
 32. The profiler
+33. The key list
 
 ## 1. Rules
 
@@ -577,6 +578,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - A graph (5) shows each of the last passes without its wait, the oldest on the left, in four stacked parts: input, timers and events; layout; panels with their uploads; and the interface with present. A line marks a frame at 60 Hz, and a line of text names the parts in their colours.
 - Tabs choose a table: Plugins, each plugin's own time in the last second, as a share of the second and in milliseconds, its longest call and its calls; Panels, each panel's draw the same way, named by its title and type; Steps, each step's average and longest time over the last passes.
 - Copy report puts the whole profile on the clipboard as text, so a user can send where the time goes.
+
+## 33. The key list
+
+- The first-party Lua plugin `keys` shows every key binding of the tool, and changes them in the user's settings, with `ecs.key.list`, `ecs.key.set` and `ecs.key.functions` (OpenECS DESIGN 7.8). Its panel type is `keys.list`, titled "Keys". It is built with ui (5).
+- The core's settings file loads it for every tool, binds `keys.open` to Alt+W, then `K`, and puts it in the tool's menu (OpenECS DESIGN 12.3). `keys.open` opens the list, or focuses it if it is open.
+- The bindings that run show in a section for each scope: Everywhere, for the whole tool; After the prefix; then each panel type, by its title. A row shows the function's description and name, and its key as a key element (5): a click on it, then a key press, gives the function that key instead. A binding that removes a key shows as Removed.
+- A new key binds the function in the user's settings, and the old key is taken away: the user's own binding goes with nil, and a key that a layer below still binds to the function is removed with false. Remove takes a key away the same way. A row that the user's settings give shows its title in the accent, and a Reset button, which takes the user's binding away, so the preset's or the default applies again.
+- Add a key, above the sections, binds a key for a function, chosen in a dropdown of every function that a key can run, in a scope chosen in another.
+- A search (5) shows only the rows whose key, function, description or scope matches it, with their sections open.
+- The list reads the bindings again when it is shown, on `ecs.pluginsChanged`, when `ecs.prefix` changes, and after each change it makes. The panel's saved state is the scopes whose sections are closed.
 
 ---
 
