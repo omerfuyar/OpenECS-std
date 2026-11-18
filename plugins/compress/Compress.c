@@ -34,21 +34,22 @@ typedef enum CompressFormat
 
 static struct
 {
-    char *error; // why the last call failed
+    ECSPlugin plugin;
 } COMPRESS = {0};
 
-/// @brief Keeps why a call fails, until the next call, and gives it.
+/// @brief Fails a call, as ECS_Fail does, and gives why.
 static OPENECS_PRINTF(1, 2) const char *CompressFail(const char *format, ...)
 {
-    SDL_free(COMPRESS.error);
-    COMPRESS.error = nullptr;
-
     va_list arguments;
     va_start(arguments, format);
-    int length = SDL_vasprintf(&COMPRESS.error, format, arguments);
+    char *message = nullptr;
+    bool formatted = SDL_vasprintf(&message, format, arguments) >= 0;
     va_end(arguments);
 
-    return length < 0 || COMPRESS.error == nullptr ? "out of memory" : COMPRESS.error;
+    const char *error = nullptr;
+    ECS_Fail(COMPRESS.plugin, &error, "%s", formatted ? message : "out of memory");
+    SDL_free(message);
+    return error;
 }
 
 /// @brief Makes a value a buffer of the bytes of an stb_ds array, or an empty string if it has none.
@@ -65,7 +66,7 @@ static bool CompressSetBytes(ECSValue *retValue, const u8 *bytes, const char **r
     return result == SHUResult_Ok;
 }
 
-static bool CompressReadFormat(const char *name, bool detect, CompressFormat *retFormat, const char **retError)
+static bool CompressReadFormat(const char *name, bool detect, CompressFormat *retFormat)
 {
     const char *const names[] = {"gzip", "zlib", "deflate", "zstd", ""};
 
@@ -78,7 +79,7 @@ static bool CompressReadFormat(const char *name, bool detect, CompressFormat *re
         }
     }
 
-    *retError = CompressFail("'%s' is not a format: \"gzip\", \"zlib\", \"deflate\" or \"zstd\"%s", name, detect ? ", or an empty text to tell it from the data" : "");
+    (void)ECS_Check(COMPRESS.plugin, false, "'%s' is not a format: \"gzip\", \"zlib\", \"deflate\" or \"zstd\"%s", name, detect ? ", or an empty text to tell it from the data" : "");
     return false;
 }
 
@@ -95,7 +96,7 @@ static bool CompressDetect(SHUSlice data, CompressFormat *retFormat, const char 
     {
         *retFormat = CompressFormat_Zstd;
     }
-    else if (data.size >= 2 && (bytes[0] & 0x0F) == 8 && ((bytes[0] << 8) | bytes[1]) % 31 == 0)
+    else if (data.size >= 2 && ((u32)bytes[0] & 0x0Fu) == 8 && (((u32)bytes[0] << 8u) | bytes[1]) % 31 == 0)
     {
         *retFormat = CompressFormat_Zlib;
     }
@@ -133,10 +134,9 @@ static int CompressZlibBits(CompressFormat format)
 
 static bool CompressPackZlib(SHUSlice data, CompressFormat format, int level, u8 **retPacked, const char **retError)
 {
-    if (level < 0 || level > 9)
+    if (!ECS_Check(COMPRESS.plugin, level >= 0 && level <= 9, "%s's levels are 1 to 9, and 0 for its default", format == CompressFormat_Gzip ? "gzip" : format == CompressFormat_Zlib ? "zlib"
+                                                                                                                                                                                      : "deflate"))
     {
-        *retError = CompressFail("%s's levels are 1 to 9, and 0 for its default", format == CompressFormat_Gzip ? "gzip" : format == CompressFormat_Zlib ? "zlib"
-                                                                                                                                                         : "deflate");
         return false;
     }
 
@@ -236,9 +236,8 @@ static const ZSTD_customMem COMPRESS_ZSTD_MEMORY = {CompressZstdAlloc, CompressZ
 
 static bool CompressPackZstd(SHUSlice data, int level, u8 **retPacked, const char **retError)
 {
-    if (level < ZSTD_minCLevel() || level > ZSTD_maxCLevel())
+    if (!ECS_Check(COMPRESS.plugin, level >= ZSTD_minCLevel() && level <= ZSTD_maxCLevel(), "zstd's levels are %d to %d, and 0 for its default", ZSTD_minCLevel(), ZSTD_maxCLevel()))
     {
-        *retError = CompressFail("zstd's levels are %d to %d, and 0 for its default", ZSTD_minCLevel(), ZSTD_maxCLevel());
         return false;
     }
 
@@ -313,7 +312,7 @@ static void CompressPack(const char *format, SHUSlice data, int level, ECSValue 
     ECSValue_SetNil(retPacked);
     CompressFormat chosen = CompressFormat_Gzip;
 
-    if (!CompressReadFormat(format, false, &chosen, retError))
+    if (!CompressReadFormat(format, false, &chosen))
     {
         return;
     }
@@ -335,7 +334,7 @@ static void CompressUnpack(const char *format, SHUSlice data, ECSValue *retData,
     ECSValue_SetNil(retData);
     CompressFormat chosen = CompressFormat_Gzip;
 
-    if (!CompressReadFormat(format, true, &chosen, retError) || (chosen == CompressFormat_Detect && !CompressDetect(data, &chosen, retError)))
+    if (!CompressReadFormat(format, true, &chosen) || (chosen == CompressFormat_Detect && !CompressDetect(data, &chosen, retError)))
     {
         return;
     }
@@ -381,9 +380,10 @@ static void CompressUnpackAny(SHUSlice data, ECSValue *retData, const char **ret
 static voidpf ZCALLBACK CompressFileOpen(voidpf opaque, const void *path, int mode)
 {
     (void)opaque;
-    bool read = (mode & ZLIB_FILEFUNC_MODE_READWRITEFILTER) == ZLIB_FILEFUNC_MODE_READ;
-    return SDL_IOFromFile(path, read ? "rb" : (mode & ZLIB_FILEFUNC_MODE_EXISTING) != 0 ? "r+b"
-                                                                                        : "wb");
+    u32 flags = (u32)mode;
+    bool read = (flags & (u32)ZLIB_FILEFUNC_MODE_READWRITEFILTER) == (u32)ZLIB_FILEFUNC_MODE_READ;
+    return SDL_IOFromFile(path, read ? "rb" : (flags & (u32)ZLIB_FILEFUNC_MODE_EXISTING) != 0 ? "r+b"
+                                                                                              : "wb");
 }
 
 static uLong ZCALLBACK CompressFileRead(voidpf opaque, voidpf stream, void *buffer, uLong size)
@@ -727,9 +727,8 @@ static bool CompressZipWrite(const char *path, const ECSValue *files, int level,
 {
     *retError = nullptr;
 
-    if (level < 0 || level > 9)
+    if (!ECS_Check(COMPRESS.plugin, level >= 0 && level <= 9, "a zip archive's levels are 1 to 9, and 0 for its default"))
     {
-        *retError = CompressFail("a zip archive's levels are 1 to 9, and 0 for its default");
         return false;
     }
 
@@ -759,18 +758,239 @@ static bool CompressZipWrite(const char *path, const ECSValue *files, int level,
 
 #pragma endregion Files
 
-/// @brief Frees what the plugin keeps; the Destroy function of the plugin.
-static void CompressFree(void *data)
+#pragma region tar
+
+/// @brief A tar archive is made of blocks of 512 bytes: a header for each entry, then its bytes; two empty blocks end it.
+#define COMPRESS_TAR_BLOCK ((usz)512)
+
+/// @brief The largest size that a ustar header writes: eleven octal digits.
+#define COMPRESS_TAR_LARGEST 077777777777ull
+
+/// @brief Writes a number into a header's field in octal, with a zero at its end, as ustar has it.
+static void CompressTarOctal(u8 *field, usz width, u64 value)
 {
-    (void)data;
-    SDL_free(COMPRESS.error);
-    SDL_zero(COMPRESS);
+    char text[24];
+    SDL_snprintf(text, sizeof(text), "%0*llo", (int)(width - 1), (unsigned long long)value);
+    SDL_memcpy(field, text, width - 1);
 }
+
+/// @brief Reads a header's octal field; a field may end with a zero or a space.
+static u64 CompressTarReadOctal(const u8 *field, usz width)
+{
+    u64 value = 0;
+
+    for (usz i = 0; i < width && field[i] >= '0' && field[i] <= '7'; i++)
+    {
+        value = value * 8 + (u64)(field[i] - '0');
+    }
+
+    return value;
+}
+
+/// @brief Adds an entry's header to an archive. A name longer than 100 bytes is split at a slash, into ustar's prefix of up to
+/// 155 bytes and its name.
+static bool CompressTarHeader(u8 **archive, const char *name, u64 size, bool folder, bool executable, const char **retError)
+{
+    usz length = SDL_strlen(name);
+    usz split = 0;
+    bool splits = false;
+
+    if (length > 100)
+    {
+        for (usz i = length - 101; i < length && i <= 155 && !splits; i++)
+        {
+            splits = name[i] == '/';
+            split = i;
+        }
+
+        if (!splits)
+        {
+            *retError = CompressFail("the name is too long for a tar archive: '%s'", name);
+            return false;
+        }
+    }
+
+    if (size > COMPRESS_TAR_LARGEST)
+    {
+        *retError = CompressFail("'%s' is too large for a tar archive", name);
+        return false;
+    }
+
+    usz offset = arrlenu(*archive);
+    arrsetlen(*archive, offset + COMPRESS_TAR_BLOCK);
+    u8 *header = *archive + offset;
+    SDL_memset(header, 0, COMPRESS_TAR_BLOCK);
+
+    if (splits)
+    {
+        SDL_memcpy(header + 345, name, split);
+        SDL_memcpy(header, name + split + 1, length - split - 1);
+    }
+    else
+    {
+        SDL_memcpy(header, name, length);
+    }
+
+    CompressTarOctal(header + 100, 8, folder || executable ? 0755 : 0644);
+    CompressTarOctal(header + 108, 8, 0);
+    CompressTarOctal(header + 116, 8, 0);
+    CompressTarOctal(header + 124, 12, size);
+    SDL_Time now = 0;
+    SDL_GetCurrentTime(&now);
+    CompressTarOctal(header + 136, 12, (u64)SDL_max(now / SDL_NS_PER_SECOND, 0));
+    header[156] = folder ? '5' : '0';
+    SDL_memcpy(header + 257, "ustar", 6);
+    SDL_memcpy(header + 263, "00", 2);
+
+    // the checksum is the sum of the header's bytes, with its own field as spaces
+    SDL_memset(header + 148, ' ', 8);
+    u64 sum = 0;
+
+    for (usz i = 0; i < COMPRESS_TAR_BLOCK; i++)
+    {
+        sum += header[i];
+    }
+
+    // six digits, a zero and a space, as tar writes it
+    CompressTarOctal(header + 148, 7, sum);
+    header[154] = '\0';
+    return true;
+}
+
+static void CompressTarPack(const ECSValue *files, ECSValue *retArchive, const char **retError)
+{
+    *retError = nullptr;
+    ECSValue_SetNil(retArchive);
+    u8 *archive = nullptr;
+    bool packed = true;
+
+    for (usz i = 0; i < ECSValue_GetListCount(files) && packed; i++)
+    {
+        const ECSValue *file = ECSValue_GetListItem(files, i);
+        const char *name = ECSValue_GetString(ECSValue_GetTableField(file, "name"), nullptr);
+        SHUSlice data = ECSValue_GetBuffer(ECSValue_GetTableField(file, "data"), cs(nullptr, 0));
+        bool executable = ECSValue_GetBool(ECSValue_GetTableField(file, "executable"), false);
+
+        if (name == nullptr || name[0] == '\0')
+        {
+            *retError = CompressFail("the file %zu has no name", i + 1);
+            packed = false;
+            break;
+        }
+
+        bool folder = name[SDL_strlen(name) - 1] == '/';
+        packed = CompressTarHeader(&archive, name, folder ? 0 : data.size, folder, executable, retError);
+
+        if (packed && !folder && data.size > 0)
+        {
+            // the bytes, then zeros to the end of their last block
+            usz offset = arrlenu(archive);
+            arrsetlen(archive, offset + (data.size + COMPRESS_TAR_BLOCK - 1) / COMPRESS_TAR_BLOCK * COMPRESS_TAR_BLOCK);
+            SDL_memcpy(archive + offset, data.data, data.size);
+            SDL_memset(archive + offset + data.size, 0, arrlenu(archive) - offset - data.size);
+        }
+    }
+
+    if (packed)
+    {
+        usz offset = arrlenu(archive);
+        arrsetlen(archive, offset + COMPRESS_TAR_BLOCK * 2);
+        SDL_memset(archive + offset, 0, COMPRESS_TAR_BLOCK * 2);
+        CompressSetBytes(retArchive, archive, retError);
+    }
+
+    arrfree(archive);
+}
+
+/// @brief Adds a file of an archive to the list that tar.unpack gives.
+static bool CompressTarAddFile(ECSValue *files, const char *name, SHUSliceView data, bool executable)
+{
+    ECSValue *file = nullptr;
+    ECSValue *field = nullptr;
+
+    if (ECSValue_AddListItem(files, &file) != SHUResult_Ok)
+    {
+        return false;
+    }
+
+    ECSValue_SetTable(file);
+    bool added = ECSValue_SetTableField(file, "name", &field) == SHUResult_Ok && ECSValue_SetString(field, name) == SHUResult_Ok;
+    added = added && ECSValue_SetTableField(file, "data", &field) == SHUResult_Ok;
+    added = added && (data.size == 0 ? ECSValue_SetString(field, "") : ECSValue_SetBuffer(field, data)) == SHUResult_Ok;
+    added = added && ECSValue_SetTableField(file, "executable", &field) == SHUResult_Ok;
+
+    if (added)
+    {
+        ECSValue_SetBool(field, executable);
+    }
+
+    return added;
+}
+
+static void CompressTarUnpack(SHUSlice data, ECSValue *retFiles, const char **retError)
+{
+    *retError = nullptr;
+    ECSValue_SetTable(retFiles);
+    const u8 *bytes = data.data;
+    usz offset = 0;
+
+    // an empty block ends the archive; without one, so does its end
+    while (offset + COMPRESS_TAR_BLOCK <= data.size && bytes[offset] != '\0')
+    {
+        const u8 *header = bytes + offset;
+        u64 sum = 0;
+
+        for (usz i = 0; i < COMPRESS_TAR_BLOCK; i++)
+        {
+            sum += i >= 148 && i < 156 ? ' ' : header[i];
+        }
+
+        u64 size = CompressTarReadOctal(header + 124, 12);
+        usz blocks = (usz)((size + COMPRESS_TAR_BLOCK - 1) / COMPRESS_TAR_BLOCK);
+
+        if (sum != CompressTarReadOctal(header + 148, 8) || size > data.size - offset - COMPRESS_TAR_BLOCK || blocks * COMPRESS_TAR_BLOCK > data.size - offset - COMPRESS_TAR_BLOCK)
+        {
+            *retError = CompressFail("the tar archive is damaged at byte %zu", offset);
+            ECSValue_SetNil(retFiles);
+            return;
+        }
+
+        // the name is the prefix, a slash and the name, each ending at its first zero or at its field's end
+        char name[257];
+        usz prefixLength = SDL_strnlen((const char *)header + 345, 155);
+        usz nameLength = SDL_strnlen((const char *)header, 100);
+        usz length = 0;
+
+        if (prefixLength > 0)
+        {
+            SDL_memcpy(name, header + 345, prefixLength);
+            name[prefixLength] = '/';
+            length = prefixLength + 1;
+        }
+
+        SDL_memcpy(name + length, header, nameLength);
+        name[length + nameLength] = '\0';
+
+        // files and folders are kept; links and other kinds are left out
+        char kind = (char)header[156];
+        bool kept = kind == '0' || kind == '\0' || kind == '5';
+
+        if (kept && !CompressTarAddFile(retFiles, name, (SHUSliceView){bytes + offset + COMPRESS_TAR_BLOCK, kind == '5' ? 0 : (usz)size}, kind != '5' && (CompressTarReadOctal(header + 100, 8) & 0100u) != 0))
+        {
+            *retError = CompressFail("out of memory");
+            ECSValue_SetNil(retFiles);
+            return;
+        }
+
+        offset += COMPRESS_TAR_BLOCK + blocks * COMPRESS_TAR_BLOCK;
+    }
+}
+
+#pragma endregion tar
 
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
-    const ECSPluginDesc desc = {.Destroy = CompressFree};
-    SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
+    COMPRESS.plugin = plugin;
 
     const struct
     {
@@ -828,6 +1048,16 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param data The packed data; deflate's has no header, so deflate.unpack unpacks it\n"
          "@param unpacked The unpacked data; nothing if it cannot be unpacked\n"
          "@param error Why the data cannot be unpacked, such as an unknown format; nothing if it can"},
+        {"tar.pack", (ECSFunction)CompressTarPack, "void(value<compress.TarFile[]> files, out value<string?> archive, out string error)",
+         "Make a tar archive of files, in the ustar format, with the current time; gzip.pack packs it into a .tar.gz\n"
+         "@param files Each file's name in the archive, what it holds, and whether it is executable; a name that ends with / is a folder\n"
+         "@param archive The archive's bytes; nothing if it cannot be made\n"
+         "@param error Why the archive cannot be made, such as a name too long for ustar; nothing if it can"},
+        {"tar.unpack", (ECSFunction)CompressTarUnpack, "void(buffer data, out value<compress.TarFile[]?> files, out string error)",
+         "Read the files and folders of a tar archive, in the archive's order; links and other kinds of entry are left out\n"
+         "@param data The archive's bytes; gzip.unpack unpacks a .tar.gz first\n"
+         "@param files Each file's name, what it holds, and whether it is executable; nothing if the archive cannot be read\n"
+         "@param error Why the archive cannot be read, such as when it is damaged; nothing if it can"},
         {"zip.list", (ECSFunction)CompressZipList, "void(string path, out value<compress.ZipEntry[]?> entries, out string error)",
          "List the files and folders of a zip archive, in the archive's order\n"
          "@param path The archive's path; a relative path starts at the executable's folder\n"

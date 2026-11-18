@@ -1,0 +1,28 @@
+---@meta
+-- The types of markdown's tables, for editors. markdown never runs this file: OpenECS --definitions adds it to markdown's definitions (OpenECS DESIGN 10.10).
+
+---A node of a Markdown document. Blocks: document, heading, paragraph, quote, list, item, codeBlock, html, rule, table, row and cell.
+---Parts of a line: text, emphasis, strong, strike, code, link, image and break.
+---@class markdown.Node
+---@field type string
+---@field children? markdown.Node[] The nodes inside it, in order; a node without children has none.
+---@field text? string A text's, a code's, a code block's or an HTML block's text.
+---@field level? integer A heading's level, 1 to 6.
+---@field ordered? boolean A list's items are numbered.
+---@field start? integer An ordered list's first number.
+---@field tight? boolean A list's items are not separated by blank lines.
+---@field checked? boolean A task item's mark: [x] or [ ].
+---@field language? string A fenced code block's language.
+---@field head? boolean A row of a table's head.
+---@field align? "default"|"left"|"center"|"right" A cell's alignment.
+---@field url? string A link's or an image's address.
+---@field title? string A link's or an image's title.
+
+---A description of ui's elements, which ui.showDescription shows (OpenECS-std DESIGN 5).
+---@class markdown.Description
+---@field type string
+---@field props table
+---@field value? any
+---@field children? markdown.Description[]
+---@field columns? table[]
+---@field rows? table[]

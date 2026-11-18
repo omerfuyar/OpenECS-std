@@ -37,7 +37,7 @@ static struct
 typedef struct Library
 {
     const char *name;
-    const char *sources[20];        // its C files and the folders of them, in dependencies/, ending with NULL
+    const char *sources[32];        // its C files and the folders of them, in dependencies/, ending with NULL
     const char *includes[3];        // the folders of dependencies/ that only its own files include, ending with NULL
     const char *headers[3];         // the folders of dependencies/ of its interface, which shuild gives the modules that link it, ending with NULL
     const char *flags;              // the definitions it is configured with
@@ -66,6 +66,7 @@ typedef struct PluginNeeds
     const char *windowsLinks[4];  // the Windows libraries it uses, ending with NULL
     bool analyze;                 // its C files hold only its own code and headers, so the static analyzer can afford them
     const CMakeLibrary *cmake[3]; // the C++ libraries it takes, ending with NULL
+    const char *copies[7];        // files of dependencies/, each before the folder of the plugin's that it is copied into, ending with NULL
 } PluginNeeds;
 
 // mbedTLS's default configuration, with the changes that web needs; curl and web include its headers too, so all three see the same configuration
@@ -103,7 +104,23 @@ static const Library YYJSON = {"yyjson", {"yyjson/src/yyjson.c", NULL}, {NULL}, 
 static const Library TOMLC17 = {"tomlc17", {"tomlc17/src/tomlc17.c", NULL}, {NULL}, {"tomlc17/src", NULL}, "", {NULL}, {NULL}};
 
 // SQLite's amalgamation, one C file, without loading extensions from libraries, with full-text search and the math functions
-static const Library SQLITE = {"sqlite", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
+// it is named sqlite3, as SQLite names it, since shuild keeps each module's cache in a folder of its name, and the plugin is sqlite
+static const Library SQLITE = {"sqlite3", {"sqlite/sqlite3.c", NULL}, {NULL}, {"sqlite", NULL}, "-DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_MATH_FUNCTIONS", {NULL}, {NULL}};
+
+// PCRE2's library for 8-bit text, without its JIT, its tests and its tools; glue files in dependencies/other/pcre2 stand for what its configure script writes
+static const Library PCRE2 = {"pcre2",
+                              {"pcre2/src/pcre2_auto_possess.c", "pcre2/src/pcre2_chkdint.c", "pcre2/src/pcre2_compile.c", "pcre2/src/pcre2_compile_cgroup.c", "pcre2/src/pcre2_compile_class.c", "pcre2/src/pcre2_config.c", "pcre2/src/pcre2_context.c", "pcre2/src/pcre2_convert.c", "pcre2/src/pcre2_dfa_match.c", "pcre2/src/pcre2_error.c", "pcre2/src/pcre2_extuni.c", "pcre2/src/pcre2_find_bracket.c", "pcre2/src/pcre2_maketables.c", "pcre2/src/pcre2_match.c", "pcre2/src/pcre2_match_data.c", "pcre2/src/pcre2_match_next.c", "pcre2/src/pcre2_newline.c", "pcre2/src/pcre2_ord2utf.c", "pcre2/src/pcre2_pattern_info.c", "pcre2/src/pcre2_script_run.c", "pcre2/src/pcre2_serialize.c", "pcre2/src/pcre2_string_utils.c", "pcre2/src/pcre2_study.c", "pcre2/src/pcre2_substitute.c", "pcre2/src/pcre2_substring.c", "pcre2/src/pcre2_tables.c", "pcre2/src/pcre2_ucd.c", "pcre2/src/pcre2_valid_utf.c", "pcre2/src/pcre2_xclass.c", "other/pcre2/pcre2_chartables.c", NULL},
+                              {"other/pcre2", "pcre2/src", NULL},
+                              {"other/pcre2", "pcre2/src", NULL},
+                              "-DHAVE_CONFIG_H -DPCRE2_CODE_UNIT_WIDTH=8 -DPCRE2_STATIC",
+                              {NULL},
+                              {NULL}};
+
+// tree-sitter's library, one C file of all its own, without its WebAssembly; and the grammars of C, Lua and JSON, which syntax highlights
+static const Library TREE_SITTER = {"tree-sitter", {"tree-sitter/lib/src/lib.c", NULL}, {"tree-sitter/lib/src", "tree-sitter/lib/include", NULL}, {"tree-sitter/lib/include", NULL}, "-D_DEFAULT_SOURCE", {NULL}, {NULL}};
+static const Library TREE_SITTER_C = {"tree-sitter-c", {"tree-sitter-c/src/parser.c", NULL}, {"tree-sitter-c/src", NULL}, {NULL}, "", {NULL}, {NULL}};
+static const Library TREE_SITTER_LUA = {"tree-sitter-lua", {"tree-sitter-lua/src/parser.c", "tree-sitter-lua/src/scanner.c", NULL}, {"tree-sitter-lua/src", NULL}, {NULL}, "", {NULL}, {NULL}};
+static const Library TREE_SITTER_JSON = {"tree-sitter-json", {"tree-sitter-json/src/parser.c", NULL}, {"tree-sitter-json/src", NULL}, {NULL}, "", {NULL}, {NULL}};
 
 // glslang compiles GLSL to SPIR-V, without its optimizer, its HLSL and its tools; SPIRV-Cross turns SPIR-V into HLSL, for Direct3D 12 (DESIGN 15)
 static const CMakeLibrary GLSLANG = {"glslang",
@@ -133,6 +150,17 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
     {"compress", {NULL}, NULL, {&MINIZIP, &ZLIB, &ZSTD, NULL}, {NULL}, true},
     {"hash", {"xxHash", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, &ZLIB, NULL}, {NULL}, false},
     {"sqlite", {NULL}, NULL, {&SQLITE, NULL}, {NULL}, true},
+    {"regex", {NULL}, NULL, {&PCRE2, NULL}, {NULL}, true},
+    {"markdown", {"md4c/src", NULL}, NULL, {NULL}, {NULL}, false},
+    {"video", {"pl_mpeg", NULL}, NULL, {NULL}, {NULL}, false},
+    {"syntax",
+     {NULL},
+     NULL,
+     {&TREE_SITTER, &TREE_SITTER_C, &TREE_SITTER_LUA, &TREE_SITTER_JSON, NULL},
+     {NULL},
+     true,
+     {NULL},
+     {"tree-sitter-c/queries/highlights.scm", "queries/c/", "tree-sitter-lua/queries/highlights.scm", "queries/lua/", "tree-sitter-json/queries/highlights.scm", "queries/json/", NULL}},
 };
 
 #pragma endregion Setup
@@ -169,15 +197,17 @@ int main(int argc, char **argv)
 
 static void PrintUsage(void)
 {
-    printf("Usage: ./shuild.ignore -o FOLDER -d FOLDER [FLAG...]\n\n"
-           "OpenECS's shuild.c runs this build; see OpenECS's README.md.\n\n"
-           "Flags:\n"
-           "  -o, --output FOLDER  OpenECS's build folder, named from this folder, such as ../build/Debug/\n"
-           "  -d, --dependencies FOLDER\n"
-           "                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n"
-           "  -b, --build TYPE     Build type: debug (the default), release, relwithdebinfo or minsizerel\n"
-           "  -c, --compiler CC    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n"
-           "  -h, --help           Show this help\n");
+    printf(SHUM_COLOR_BOLD("Usage:") " ./shuild.ignore " SHUM_COLOR_GREEN("-o") " " SHUM_COLOR_CYAN("FOLDER") " " SHUM_COLOR_GREEN("-d") " " SHUM_COLOR_CYAN("FOLDER") " [" SHUM_COLOR_GREEN("FLAG") "...]\n");
+    printf("\n");
+    printf("OpenECS's shuild.c runs this build; see OpenECS's README.md.\n");
+    printf("\n");
+    printf(SHUM_COLOR_BOLD("Flags:") "\n");
+    printf("  " SHUM_COLOR_GREEN("-o") ", " SHUM_COLOR_GREEN("--output") " " SHUM_COLOR_CYAN("FOLDER") "  OpenECS's build folder, named from this folder, such as ../build/Debug/\n");
+    printf("  " SHUM_COLOR_GREEN("-d") ", " SHUM_COLOR_GREEN("--dependencies") " " SHUM_COLOR_CYAN("FOLDER") "\n");
+    printf("                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n");
+    printf("  " SHUM_COLOR_GREEN("-b") ", " SHUM_COLOR_GREEN("--build") " " SHUM_COLOR_CYAN("TYPE") "     Build type: debug (the default), release, relwithdebinfo or minsizerel\n");
+    printf("  " SHUM_COLOR_GREEN("-c") ", " SHUM_COLOR_GREEN("--compiler") " " SHUM_COLOR_CYAN("CC") "    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n");
+    printf("  " SHUM_COLOR_GREEN("-h") ", " SHUM_COLOR_GREEN("--help") "           Show this help\n");
 }
 
 /// @brief Stops the build with the usage, what is wrong and the argument.
@@ -662,5 +692,14 @@ static void BuildPlugin(const char *path, const char *name)
     char *root = SHU_UtilFormat("%s%s/", path, name);
     char *output = SHU_UtilFormat("%sbin/plugins/%s/", CONFIG.output, name);
     SHU_UtilListDirectory(root, false, CopyPluginFile, (void *)output);
+
+    // the files a plugin reads from its libraries, such as syntax's highlight queries
+    const PluginNeeds *needs = FindNeeds(name);
+
+    for (usz i = 0; needs != NULL && needs->copies[i] != NULL && needs->copies[i + 1] != NULL; i += 2)
+    {
+        SHU_UtilCopyFile(SHU_UtilFormat("dependencies/%s", needs->copies[i]), SHU_UtilFormat("%s%s", output, needs->copies[i + 1]));
+    }
+
     BuildNative(name, root, output);
 }

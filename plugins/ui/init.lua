@@ -15,13 +15,15 @@ local SIZES = {
   { "scrollbarWidth", 8,  "Width of a scroll bar" },
   { "thumbMin",       24, "Shortest length of a scroll bar's thumb" },
   { "wheelStep",      48, "Distance a wheel step scrolls" },
-  { "margin",         24, "Room around a view of a first-party plugin, such as the launcher" },
-  { "rowPadding",     8,  "Room around a row of a list" },
-  { "titleSize",      22, "Font size of a view's title" },
-  { "noteSize",       13, "Font size of notes and headings" },
 }
 
 local size = {}
+
+-- how far, in layout units, a press on a number moves before it drags the number, so a click that shakes is still a click
+local NUMBER_DRAG_START = 3
+
+-- a graph's height, in layout units, when it gives none
+local GRAPH_HEIGHT = 80
 
 local function readSizes()
   for _, entry in ipairs(SIZES) do
@@ -30,10 +32,26 @@ local function readSizes()
 end
 
 for _, entry in ipairs(SIZES) do
-  assert(ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] }))
+  ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] })
 end
 
 readSizes()
+
+-- the props of an element's look, which a style gives (DESIGN 5)
+local LOOK = {}
+
+for name in ("width height grow stretch padding gap align background hoverBackground border color size font"):gmatch("%S+") do
+  LOOK[name] = true
+end
+
+-- ui's own styles, which its views and the first-party views use so they look alike; ui.styles gives copies of them
+local styles = {
+  view = { padding = 24, gap = 12, background = "background" },
+  item = { padding = 8, gap = 12 },
+  title = { size = 22 },
+  heading = { size = 13, color = "accent" },
+  note = { size = 13, color = "textDim" },
+}
 
 -- the colour of a field whose text is not valid
 local INVALID_COLOR = "#E0505A"
@@ -43,7 +61,7 @@ local INVALID_COLOR = "#E0505A"
 local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
 
 -- the elements that take the pointer
-local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true }
+local INTERACTIVE = { button = true, toggle = true, selector = true, dropdown = true, slider = true, field = true, key = true, color = true }
 
 -- the elements that take typing while they have the keys
 local TAKES_TYPING = { field = true, key = true }
@@ -62,33 +80,294 @@ local function panelState(panel)
   return state
 end
 
-local function fontSize()
-  return ecs.setting.get("ecs.fontSize") or 14
-end
-
--- the fonts of the current show, by name; draw keeps the fonts themselves
+-- what ui keeps until a setting changes: the font size, the fonts by name, and what texts measure; draw keeps the fonts themselves
+local textSizeSetting
 local fonts = {}
+local measured, measuredCount = {}, 0
+local MEASURED_MOST = 8192
+local settingsChanged = true
+
+local function fontSize()
+  textSizeSetting = textSizeSetting or ecs.setting.get("ecs.fontSize") or 14
+  return textSizeSetting
+end
 
 local function fontOf(node)
   local name = node.font or "ui"
   local font = fonts[name]
 
   if font == nil then
-    font = draw.font(name) or draw.font("ui")
+    font = draw.font(name)
+
+    -- a name that no font has yet is asked again, since a plugin may add the font later
+    if font == nil then
+      return fontOf({ font = name ~= "ui" and "ui" or nil })
+    end
+
     fonts[name] = font
   end
 
   return font
 end
 
+-- the scale of the surface that the panel being shown or handled draws into: text is measured at the size it is drawn at
+local textScale = 1
+
 -- the width of a text alone; draw.measure gives the line height too, which a call such as math.max(...) would take as well
+-- a text's width and line height at a font, size and scale, kept, since each show measures the same texts again
+local function measureKept(font, text, textSize)
+  local bySize = measured[font]
+
+  if bySize == nil then
+    bySize = {}
+    measured[font] = bySize
+  end
+
+  local key = textSize * 1024 + textScale
+  local byText = bySize[key]
+
+  if byText == nil then
+    byText = {}
+    bySize[key] = byText
+  end
+
+  local kept = byText[text]
+
+  if kept == nil then
+    -- texts that change all the time, such as a clock's, would fill the memory
+    if measuredCount >= MEASURED_MOST then
+      measured, measuredCount = {}, 0
+      return measureKept(font, text, textSize)
+    end
+
+    kept = { draw.measure(font, text, textSize, textScale) }
+    byText[text] = kept
+    measuredCount = measuredCount + 1
+  end
+
+  return kept[1], kept[2]
+end
+
 local function measureText(font, text, textSize)
-  local width = draw.measure(font, text, textSize)
+  local width = measureKept(font, text, textSize)
   return width
 end
 
+-- whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text.
+-- A view that searches several texts of an item joins them with new lines, so that no word matches across two of them
+local function matchesQuery(query, text)
+  text = tostring(text or ""):lower()
+
+  for word in tostring(query or ""):lower():gmatch("%S+") do
+    if not text:find(word, 1, true) then
+      return false
+    end
+  end
+
+  return true
+end
+
+-- partial drawing ---------------------------------------------------------------------------------------------------------------------
+
+-- A show records its draw calls, each with the rectangle it may change, and compares them with the last show's. While the surface keeps
+-- its pixels, only the rectangle around the calls that changed is drawn again, and the core shows only it: a hover changes a few elements,
+-- and drawing every pixel of a large panel for it would be slow.
+
+local drawn = draw -- the draw plugin's functions; draw below records calls while a show records them
+local recording -- the calls of the show that records them, or nil
+local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
+
+-- room around a call's rectangle, in layout units, for smooth edges and slanted letters
+local CALL_EDGE = 2
+
+local function record(name, key, left, top, right, bottom, ...)
+  local clip = recordClip
+
+  if clip then
+    left, top, right, bottom = math.max(left, clip[1]), math.max(top, clip[2]), math.min(right, clip[3]), math.min(bottom, clip[4])
+    key = key .. "|" .. clip.key
+  end
+
+  recording[#recording + 1] = {
+    name = name,
+    key = name .. key,
+    left = left - CALL_EDGE,
+    top = top - CALL_EDGE,
+    right = right + CALL_EDGE,
+    bottom = bottom + CALL_EDGE,
+    clip = clip,
+    args = table.pack(...),
+  }
+end
+
+draw = setmetatable({}, { __index = drawn })
+
+function draw.fill(surface, x, y, width, height, color)
+  if not recording then
+    return drawn.fill(surface, x, y, width, height, color)
+  end
+
+  record("fill", string.format("%g,%g,%g,%g,%s", x, y, width, height, color), x, y, x + width, y + height, surface, x, y, width, height, color)
+end
+
+function draw.outline(surface, x, y, width, height, thickness, color)
+  if not recording then
+    return drawn.outline(surface, x, y, width, height, thickness, color)
+  end
+
+  record("outline", string.format("%g,%g,%g,%g,%g,%s", x, y, width, height, thickness, color), x, y, x + width, y + height,
+    surface, x, y, width, height, thickness, color)
+end
+
+function draw.circle(surface, x, y, radius, thickness, color)
+  if not recording then
+    return drawn.circle(surface, x, y, radius, thickness, color)
+  end
+
+  record("circle", string.format("%g,%g,%g,%g,%s", x, y, radius, thickness, color), x - radius, y - radius, x + radius, y + radius,
+    surface, x, y, radius, thickness, color)
+end
+
+function draw.image(surface, picture, x, y, width, height)
+  if not recording then
+    return drawn.image(surface, picture, x, y, width, height)
+  end
+
+  record("image", string.format("%s,%g,%g,%g,%g", tostring(picture), x, y, width, height), x, y, x + width, y + height, surface, picture, x, y, width, height)
+end
+
+function draw.text(surface, font, text, x, y, textSize, color)
+  if not recording then
+    return drawn.text(surface, font, text, x, y, textSize, color)
+  end
+
+  local width, line = measureKept(font, text, textSize)
+  record("text", string.format("%s,%q,%g,%g,%g,%s", tostring(font), text, x, y, textSize, color), x, y, x + width, y + line,
+    surface, font, text, x, y, textSize, color)
+  return width
+end
+
+function draw.triangles(surface, points, indices, color)
+  if not recording then
+    return drawn.triangles(surface, points, indices, color)
+  end
+
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+
+  for i = 1, #points // 8 do
+    local x, y = string.unpack("ff", points, (i - 1) * 8 + 1)
+    left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
+  end
+
+  record("triangles", points .. indices .. tostring(color), left, top, right, bottom, surface, points, indices, color)
+end
+
+function draw.clip(surface, x, y, width, height, body)
+  if not recording then
+    return drawn.clip(surface, x, y, width, height, body)
+  end
+
+  local outer = recordClip
+  local clip = { x, y, x + width, y + height, key = string.format("%g,%g,%g,%g", x, y, width, height) }
+
+  if outer then
+    clip[1], clip[2], clip[3], clip[4] = math.max(clip[1], outer[1]), math.max(clip[2], outer[2]), math.min(clip[3], outer[3]), math.min(clip[4], outer[4])
+    clip.key = outer.key .. ";" .. clip.key
+  end
+
+  recordClip = clip
+  local ok, message = pcall(body)
+  recordClip = outer
+
+  if not ok then
+    error(message, 0)
+  end
+end
+
+-- the rectangle around the calls that differ between two shows, { left, top, right, bottom }; nil when none differs, and false when
+-- some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that changed
+-- covers every pixel it changed, old or new, so the pixels outside the rectangle are drawn by the same calls in the same order
+local function changedArea(old, new)
+  local first, most = 1, math.min(#old, #new)
+
+  while first <= most and old[first].key == new[first].key do
+    first = first + 1
+  end
+
+  if first > #old and first > #new then
+    return nil
+  end
+
+  local lastOld, lastNew = #old, #new
+
+  while lastOld >= first and lastNew >= first and old[lastOld].key == new[lastNew].key do
+    lastOld, lastNew = lastOld - 1, lastNew - 1
+  end
+
+  ---@type number[]|false
+  local area = false
+
+  local function add(call)
+    if call.right > call.left and call.bottom > call.top then
+      area = area and { math.min(area[1], call.left), math.min(area[2], call.top), math.max(area[3], call.right), math.max(area[4], call.bottom) }
+        or { call.left, call.top, call.right, call.bottom }
+    end
+  end
+
+  for i = first, lastOld do
+    add(old[i])
+  end
+
+  for i = first, lastNew do
+    add(new[i])
+  end
+
+  return area
+end
+
+-- makes the recorded calls that reach an area, or all of them, each inside its clip
+local function replay(surface, calls, area)
+  local function run()
+    local i = 1
+
+    while i <= #calls do
+      local clip, last = calls[i].clip, i
+
+      while last < #calls and calls[last + 1].clip == clip do
+        last = last + 1
+      end
+
+      local from, to = i, last
+
+      local function group()
+        for k = from, to do
+          local call = calls[k]
+
+          if not area or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2]) then
+            drawn[call.name](table.unpack(call.args, 1, call.args.n))
+          end
+        end
+      end
+
+      if clip then
+        drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], group)
+      else
+        group()
+      end
+
+      i = last + 1
+    end
+  end
+
+  if area then
+    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], run)
+  else
+    run()
+  end
+end
+
 local function lineHeight(font, textSize)
-  local _, line = draw.measure(font, "Ag", textSize)
+  local _, line = measureKept(font, "Ag", textSize)
   return line
 end
 
@@ -215,7 +494,41 @@ local function ellipsize(font, text, textSize, width)
   return prefix(text, low) .. "…"
 end
 
--- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width gets a line of its own,
+-- the parts of a word that may each start a line: a word wider than the width breaks after its slashes, so a path breaks between its folders,
+-- and a part still wider breaks between characters
+local function wordParts(font, word, textSize, width)
+  if measureText(font, word, textSize) <= width then
+    return { word }
+  end
+
+  local parts = {}
+
+  for part in word:gmatch("[^/\\]*[/\\]?") do
+    local rest = part
+
+    while rest ~= "" do
+      local low, high = 1, utf8.len(rest) or #rest
+
+      while low < high do
+        local middle = (low + high + 1) // 2
+
+        if measureText(font, prefix(rest, middle), textSize) <= width then
+          low = middle
+        else
+          high = middle - 1
+        end
+      end
+
+      local fits = prefix(rest, low)
+      parts[#parts + 1] = fits
+      rest = rest:sub(#fits + 1)
+    end
+  end
+
+  return parts
+end
+
+-- the lines of a text that wraps at a width: it breaks at spaces, and at its own new lines; a word wider than the width breaks into parts (wordParts),
 -- and a line keeps the blanks it starts with, so indented text stays indented
 local function wrap(font, text, textSize, width)
   local lines = {}
@@ -224,13 +537,16 @@ local function wrap(font, text, textSize, width)
     local current = paragraph:match("^%s+")
 
     for word in paragraph:gmatch("%S+") do
-      local joined = current and (current:find("%S") and current .. " " or current) .. word or word
+      for i, part in ipairs(wordParts(font, word, textSize, width)) do
+        local words = current and current:find("%S")
+        local joined = current and (words and i == 1 and current .. " " or current) .. part or part
 
-      if current and current:find("%S") and measureText(font, joined, textSize) > width then
-        lines[#lines + 1] = current
-        current = word
-      else
-        current = joined
+        if words and measureText(font, joined, textSize) > width then
+          lines[#lines + 1] = current
+          current = part
+        else
+          current = joined
+        end
       end
     end
 
@@ -240,28 +556,126 @@ local function wrap(font, text, textSize, width)
   return lines
 end
 
+-- a span's font: mono for code, else the text's; draw makes bold, italic, underline and struck text from the font itself, and a link is underlined
+local function spanFont(node, span)
+  local name = span.mono and "mono" or node.font or "ui"
+  local style = {}
+
+  for _, word in ipairs({ "bold", "italic", "underline", "strike" }) do
+    if span[word] or (word == "underline" and span.link) then
+      style[#style + 1] = word
+    end
+  end
+
+  local key = name .. "\0" .. table.concat(style, " ")
+  local font = fonts[key]
+
+  if font == nil then
+    font = #style == 0 and fontOf({ font = name }) or draw.styledFont(name, table.concat(style, " ")) or fontOf(node)
+    fonts[key] = font
+  end
+
+  return font
+end
+
+-- the lines of a text of spans: each line is runs of one span, at x from the line's start; with a width, it breaks between words as wrap does,
+-- and a line after a break leaves out the blanks it would start with
+local function layoutSpans(node, textSize, width)
+  local lines, x, wrapped = { { runs = {}, width = 0 } }, 0, false
+
+  local function add(text, span, blank)
+    local font = spanFont(node, span)
+    local runWidth = measureText(font, text, textSize)
+    local line = lines[#lines]
+
+    if not blank and width and x > 0 and x + runWidth > width then
+      lines[#lines + 1] = { runs = {}, width = 0 }
+      line, x, wrapped = lines[#lines], 0, true
+    end
+
+    if blank and x == 0 and wrapped then
+      return
+    end
+
+    local last = line.runs[#line.runs]
+
+    -- runs of one span in a row are one run, so it is drawn with one call
+    if last and last.span == span then
+      last.text = last.text .. text
+      last.width = last.width + runWidth
+    else
+      line.runs[#line.runs + 1] = { x = x, text = text, span = span, width = runWidth }
+    end
+
+    x = x + runWidth
+
+    if not blank then
+      line.width = x
+    end
+  end
+
+  for _, span in ipairs(node.spans) do
+    local first = true
+
+    for part in (span.text .. "\n"):gmatch("(.-)\n") do
+      if not first then
+        lines[#lines + 1] = { runs = {}, width = 0 }
+        x, wrapped = 0, false
+      end
+
+      first = false
+
+      for blanks, word in part:gmatch("(%s*)(%S*)") do
+        if blanks ~= "" then
+          add(blanks, span, true)
+        end
+
+        -- a word wider than the width breaks into parts, as in wrap
+        if word ~= "" then
+          for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width) or { word }) do
+            add(wordPart, span, false)
+          end
+        end
+      end
+    end
+  end
+
+  return lines
+end
+
 -- images read once for each path and scale, so that they are drawn sharp.
--- The cache starts again when it is full, so that images no longer shown are collected; a shown image stays in its node's layout.
+-- When the cache is full, it drops the images that no show used since the show before the last, so a panel that shows many keeps them all.
+-- A file that could not be read is tried again after a while, so an image that is saved later shows.
 local IMAGES_KEPT = 64
+local IMAGE_RETRY_SECONDS = 2
 local images = {}
 local imageCount = 0
+local showCount = 0 -- grows with each show, of any panel
 
 local function loadImageCached(path, scale)
   local key = path .. "@" .. scale
   local found = images[key]
 
-  if found == nil then
+  if found and not found.picture and os.time() - found.triedAt >= IMAGE_RETRY_SECONDS then
+    images[key], found, imageCount = nil, nil, imageCount - 1
+  end
+
+  if not found then
     if imageCount >= IMAGES_KEPT then
-      images = {}
-      imageCount = 0
+      for kept, entry in pairs(images) do
+        if entry.usedAt < showCount - 1 then
+          images[kept], imageCount = nil, imageCount - 1
+        end
+      end
     end
 
-    found = image.load(path, scale) or false
+    found = { picture = image.load(path, scale), triedAt = os.time() }
     images[key] = found
     imageCount = imageCount + 1
   end
 
-  return found or nil
+  found.usedAt = showCount
+  return found.picture
 end
 
 -- numbers ----------------------------------------------------------------------
@@ -278,10 +692,59 @@ end
 
 -- element constructors -------------------------------------------------------
 
+-- every prop an element may have; one that is not here is a mistake, such as onchange for onChange
+local PROPS = {}
+
+for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines "
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
+  PROPS[name] = true
+end
+
 local function element(elementType, props, children)
   local node = shallowCopy(props)
+
+  for name in pairs(node) do
+    ecs.check(PROPS[name], ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
+  end
+
+  -- the element takes each prop of its style that it does not give itself; a style's own style comes after it, so the nearer one wins
+  local style, depth = node.style, 0
+  node.style = nil
+
+  while style ~= nil do
+    ecs.check(type(style) == "table" and depth < 16, "A style is a table of look props, and styles build on fewer than 16 others.")
+
+    for name, value in pairs(style) do
+      if name ~= "style" then
+        ecs.check(LOOK[name], ("A style gives only an element's look, not '%s'."):format(tostring(name)))
+
+        if node[name] == nil then
+          node[name] = value
+        end
+      end
+    end
+
+    style, depth = style.style, depth + 1
+  end
+
   node.type = elementType
-  node.children = children
+
+  -- a child that is false is left out, so a list of children may hold `shown and ui.text(...)`; each child keeps its place in the list for its id,
+  -- so the children after one that is left out keep theirs
+  if children then
+    node.children = {}
+
+    for place = 1, #children do
+      local child = children[place]
+
+      if child then
+        child.place = place
+        node.children[#node.children + 1] = child
+      end
+    end
+  end
+
   return node
 end
 
@@ -297,7 +760,7 @@ end
 
 function elements.scroll(props, children)
   local node = element("scroll", props, children or {})
-  assert(node.id, "a scroll element needs an id, which keeps its offset")
+  ecs.check(node.id, "A scroll element needs an id, which keeps its offset.")
 
   if node.grow == nil then
     node.grow = 1
@@ -306,10 +769,38 @@ function elements.scroll(props, children)
   return node
 end
 
--- a scroll element whose children are items to choose; children with selectable = false, such as headings, are not items
+-- a scroll element whose children are items to choose; children with selectable = false, such as headings, are not items;
+-- a section's heading is not an item, and the children of an open section are items of the list, so Up and Down go through every section
 function elements.list(props, children)
-  local node = elements.scroll(props, children)
+  local flat = {}
+
+  for place = 1, #(children or {}) do
+    local child = children[place]
+
+    if child and child.section then
+      for _, sectionChild in ipairs(child.children) do
+        flat[#flat + 1] = sectionChild
+      end
+    else
+      flat[#flat + 1] = child
+    end
+  end
+
+  local node = elements.scroll(props, flat)
   node.items = {}
+
+  -- selected is the chosen item's number, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first
+  local chosen = {}
+
+  if type(node.selected) == "table" then
+    for _, index in ipairs(node.selected) do
+      chosen[index] = true
+    end
+
+    node.selected = node.selected[1]
+  elseif node.selected then
+    chosen[node.selected] = true
+  end
 
   for _, child in ipairs(node.children) do
     if child.selectable ~= false then
@@ -322,7 +813,9 @@ function elements.list(props, children)
         child.stretch = true
       end
 
-      if index == node.selected and child.background == nil then
+      child.chosen = chosen[index]
+
+      if chosen[index] and child.background == nil then
         child.background = "selected"
       end
 
@@ -340,10 +833,11 @@ end
 
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
--- open names the open nodes by id, selected is the chosen node's id, onSelect and onActivate get a node's id, and onToggle(id, open) its new state
-function elements.tree(props, nodes)
+-- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
+-- and onToggle(id, open) its new state
+function elements.tree(nodes, props)
   props = props or {}
-  assert(props.id, "a tree needs an id, which keeps its offset")
+  ecs.check(props.id, "A tree needs an id, which keeps its offset.")
   local open, rows = props.open or {}, {}
   local ids, parents, folders = {}, {}, {}
 
@@ -383,22 +877,52 @@ function elements.tree(props, nodes)
   local listProps = shallowCopy(props)
   listProps.open, listProps.onToggle, listProps.selected = nil, nil, nil
 
+  local indexOf, selected = {}, {}
+
   for index, id in ipairs(ids) do
-    if id == props.selected then
-      listProps.selected = index
-    end
+    indexOf[id] = index
   end
 
-  listProps.onSelect = props.onSelect and function(index)
-    props.onSelect(ids[index])
+  for _, id in ipairs(type(props.selected) == "table" and props.selected or { props.selected }) do
+    selected[#selected + 1] = indexOf[id]
+  end
+
+  listProps.selected = #selected > 0 and selected or nil
+
+  listProps.onSelect = props.onSelect and function(index, how, between)
+    local betweenIds = nil
+
+    if between then
+      betweenIds = {}
+
+      for i, other in ipairs(between) do
+        betweenIds[i] = ids[other]
+      end
+    end
+
+    props.onSelect(ids[index], how, betweenIds)
   end
 
   listProps.onActivate = props.onActivate and function(index)
     props.onActivate(ids[index])
   end
 
+  listProps.onMenu = props.onMenu and function(index, x, y)
+    props.onMenu(index and ids[index], x, y)
+  end
+
+  listProps.onDrag = props.onDrag and function(index)
+    return props.onDrag(ids[index])
+  end
+
+  listProps.onDrop = props.onDrop and function(index, where, dataType, value)
+    props.onDrop(index and ids[index], where, dataType, value)
+  end
+
   local node = elements.list(listProps, rows)
   node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  -- data dropped on the middle of a node goes into it
+  node.dropInto = true
   return node
 end
 
@@ -406,9 +930,9 @@ end
 -- a column is { id, title, width }, and a row is a table of the cells' values by column id; a column is as wide as its widest cell unless it gives a width;
 -- selected is the chosen row's number, onSelect and onActivate get a row's number, and a click on a title gives the column's id to onSort;
 -- sort names the column the rows are sorted by, which shows an arrow, up with ascending = true; a title's id is the table's id, ":title:" and the column's id
-function elements.table(props, columns, rows)
+function elements.table(columns, rows, props)
   props = props or {}
-  assert(props.id, "a table needs an id, which keeps its offset")
+  ecs.check(props.id, "A table needs an id, which keeps its offset.")
   columns, rows = columns or {}, rows or {}
   local font, textSize = fontOf(props), props.size or fontSize()
   local widths = {}
@@ -456,20 +980,61 @@ function elements.table(props, columns, rows)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
+end
+
+-- a heading with an arrow, which a click opens and closes, over its children while it is open; the plugin keeps open, true if missing,
+-- and onToggle(open) gets the new state, as a tree's nodes do; in a list, the heading is not an item, and the children are the list's items
+function elements.section(title, props, children)
+  props = props or {}
+  local open = props.open ~= false
+  local onToggle = props.onToggle
+  local columnProps = shallowCopy(props)
+  columnProps.open, columnProps.onToggle = nil, nil
+  local node = element("column", columnProps, {})
+  node.section = true
+
+  node.children[1] = elements.row({ id = node.id and node.id .. ":heading" or nil, gap = 4, selectable = false, stretch = true, onClick = function()
+    if onToggle then
+      onToggle(not open)
+    end
+  end }, {
+    element("disclosure", { open = open }),
+    elements.text(tostring(title or ""), { style = styles.heading }),
+  })
+  node.children[1].place = 1
+
+  for place = 1, open and #(children or {}) or 0 do
+    local child = children[place]
+
+    if child then
+      child.place = place + 1
+      node.children[#node.children + 1] = child
+    end
+  end
+
+  return node
+end
+
+-- a colour, "#RRGGBB" or "#RRGGBBAA": a swatch, which a click opens in a picker; onChange(color) gets the colour that a press
+-- in the picker ends on, with its alpha only when alpha = true
+function elements.color(value, props)
+  local node = element("color", props)
+  node.value = tostring(value or "#000000")
+  return node
 end
 
 -- a column with a frame and a title
 function elements.group(props, children)
   local node = element("column", props, {})
-  node.padding = node.padding or size.rowPadding
-  node.gap = node.gap or size.rowPadding / 2
+  node.padding = node.padding or styles.item.padding
+  node.gap = node.gap or styles.item.padding / 2
   node.border = node.border or "tabShown"
 
   if node.title then
-    node.children[1] = elements.text(node.title, { size = size.noteSize, color = "textDim" })
+    node.children[1] = elements.text(node.title, { style = styles.note })
   end
 
   for _, child in ipairs(children or {}) do
@@ -483,9 +1048,36 @@ function elements.separator(props)
   return element("separator", props)
 end
 
+-- bars of numbers from the left; a value that is a list stacks its parts, each in its colour
+function elements.graph(values, props)
+  ecs.check(type(values) == "table", "A graph takes a list of values: numbers, or lists of numbers that stack.")
+  local node = element("graph", props)
+  node.values = values
+  node.colors = node.colors or { "accent" }
+  node.lines = node.lines or {}
+  ecs.check(type(node.colors) == "table" and #node.colors > 0, "A graph's colors is a list of colours, one for each part of a bar.")
+  return node
+end
+
+-- a text, or a list of spans: each a text, or a table of its text and its style; text keeps the plain text either way
 function elements.text(text, props)
   local node = element("text", props)
-  node.text = tostring(text)
+
+  if type(text) == "table" then
+    local plain = {}
+    node.spans = {}
+
+    for i, span in ipairs(text) do
+      span = type(span) == "table" and span or { text = span }
+      node.spans[i] = setmetatable({ text = tostring(span.text or "") }, { __index = span })
+      plain[i] = node.spans[i].text
+    end
+
+    node.text = table.concat(plain)
+  else
+    node.text = tostring(text)
+  end
+
   return node
 end
 
@@ -503,6 +1095,7 @@ function elements.toggle(on, props)
 end
 
 -- a number between min and max, 0 and 1 if missing, which a drag changes; step rounds it
+-- onChange gets each value of a drag, and onSubmit the one that its release ends on; Left and Right give theirs to both
 function elements.slider(value, props)
   local node = element("slider", props)
   node.min, node.max = node.min or 0, node.max or 1
@@ -511,64 +1104,183 @@ function elements.slider(value, props)
 end
 
 -- one of a few choices, side by side, or of a list of them in a popup
-local function choiceElement(elementType, value, choices, props)
+-- selected is the chosen one's number, from 1, and onSelect gets the number of the one the user chooses
+local function choiceElement(elementType, selected, choices, props)
   local node = element(elementType, props)
-  node.value, node.choices = value, choices or {}
-  return node
-end
+  local onSelect = node.onSelect
+  node.choices = choices or {}
+  node.value, node.selected, node.onSelect = node.choices[selected], nil, nil
 
-function elements.selector(value, choices, props)
-  return choiceElement("selector", value, choices, props)
-end
-
--- tabs: a selector whose choices are headers of their natural widths from the left, with a line under the chosen one;
--- the panel shows below them what the chosen tab holds
-function elements.tabs(value, choices, props)
-  local node = elements.selector(value, choices, props)
-  node.look = "tabs"
-  return node
-end
-
--- one of a list of choices, which a click opens in a popup
-function elements.dropdown(value, choices, props)
-  return choiceElement("dropdown", value, choices, props)
-end
-
-function elements.field(text, props)
-  local node = element("field", props)
-  node.text = tostring(text or "")
-  assert(node.id, "a field needs an id, which keeps what is typed")
-  return node
-end
-
--- a field for a number, kept from min to max if they are given and rounded to step if it is given;
--- Return gives the typed number to onNumber, the props' onChange, and Up and Down change it by step, or by 1
-function elements.number(value, props)
-  local node = elements.field("", props)
-  node.isNumber = true
-  node.onNumber = node.onChange or function(_) end
-  node.onChange = nil
-  node.value = snapNumber(node, tonumber(value) or 0)
-  node.text = formatNumber(node.value)
-
-  -- a text that is not a number keeps the field typing
-  node.onSubmit = function(text)
-    local number = tonumber(text)
-
-    if number == nil then
-      return false
+  node.onChange = onSelect and function(choice)
+    for i, each in ipairs(node.choices) do
+      if each == choice then
+        onSelect(i)
+        return
+      end
     end
-
-    node.onNumber(snapNumber(node, number))
   end
 
   return node
 end
 
+function elements.selector(selected, choices, props)
+  return choiceElement("selector", selected, choices, props)
+end
+
+-- tabs: a selector whose choices are headers of their natural widths from the left, with a line under the chosen one;
+-- the panel shows below them what the chosen tab holds
+function elements.tabs(selected, choices, props)
+  local node = elements.selector(selected, choices, props)
+  node.look = "tabs"
+  return node
+end
+
+-- one of a list of choices, which a click opens in a popup
+function elements.dropdown(selected, choices, props)
+  return choiceElement("dropdown", selected, choices, props)
+end
+
+function elements.field(text, props)
+  local node = element("field", props)
+  node.text = tostring(text or "")
+  ecs.check(node.id, "A field needs an id, which keeps what is typed.")
+  return node
+end
+
+-- the number that a number field's text gives: a number, or a sum of numbers such as 32*4 or (10+2)/3, which Lua works out with
+-- nothing else in reach; nil for any other text
+local function readNumber(text)
+  local number = tonumber(text)
+
+  if number == nil and text:find("^[%d%.%s%+%-%*/%%%^%(%)eE]+$") then
+    local chunk = load("return " .. text, "=number", "t", {})
+    local ok, result = false, nil
+
+    if chunk then
+      ok, result = pcall(chunk)
+    end
+
+    if ok and type(result) == "number" and result == result and result ~= math.huge and result ~= -math.huge then
+      number = result
+    end
+  end
+
+  return number
+end
+
+-- a field for a number, kept from min to max if they are given and rounded to step if it is given; onChange gets the number at each edit
+-- that is a number or a sum, and onSubmit at Return; Up and Down change it by step, or by 1, and give it to both
+function elements.number(value, props)
+  local node = elements.field("", props)
+  local onChange, onSubmit = node.onChange, node.onSubmit
+  node.isNumber = true
+  node.value = snapNumber(node, tonumber(value) or 0)
+  node.text = formatNumber(node.value)
+
+  node.onChange = function(text)
+    local number = readNumber(text)
+
+    if number ~= nil and onChange then
+      onChange(snapNumber(node, number))
+    end
+  end
+
+  -- a text that is not a number keeps the field typing
+  node.onSubmit = function(text)
+    local number = readNumber(text)
+
+    if number == nil then
+      return false
+    end
+
+    if onSubmit then
+      onSubmit(snapNumber(node, number))
+    end
+  end
+
+  return node
+end
+
+-- a field for the path of a file, with a button that opens the system's file dialog; dialog is "openFile", "saveFile" or "openFolder", and pattern
+-- the extensions the dialog shows, such as "ttf;otf"; the chosen path goes to onChange and onSubmit, as if it were typed and Return pressed
+function elements.path(text, props)
+  props = props or {}
+  ecs.check(props.id, "A path needs an id, which keeps what is typed.")
+  local rowProps, fieldProps = { id = props.id .. ":path", gap = 4 }, { grow = 1 }
+
+  -- the row takes the place the path has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "dialog" and name ~= "pattern" then
+      fieldProps[name] = value
+    end
+  end
+
+  local browse = elements.button("…", { id = props.id .. ":browse", tooltip = "Choose with the file dialog", onClick = function()
+    local filters = props.pattern and { { name = props.pattern, pattern = props.pattern } } or nil
+    local location = text ~= nil and text ~= "" and text or nil
+    local ok, message = ecs.dialog.show({ type = props.dialog or "openFile", filters = filters, location = location }, function(files)
+      if files and files[1] and props.onChange then
+        props.onChange(files[1])
+      end
+
+      if files and files[1] and props.onSubmit then
+        props.onSubmit(files[1])
+      end
+    end)
+
+    if not ok then
+      ecs.log.warn(message or "Cannot show the file dialog.")
+    end
+  end })
+
+  return elements.row(rowProps, { elements.field(text, fieldProps), browse })
+end
+
+-- a field that narrows what a view shows, with a button that clears it while it holds a text; onChange gets the query at each edit, and
+-- ui.matches tells the view which texts match it. Ctrl+F in the panel gives it the keys, and Escape clears it before taking them away.
+-- results names the list that shows what matches, which Up and Down choose in while the search has the keys
+function elements.search(query, props)
+  props = props or {}
+  local id = props.id or "search"
+  query = tostring(query or "")
+  local rowProps = { id = id .. ":search", gap = 4 }
+  local fieldProps = { id = id, grow = 1, placeholder = "Search", tooltip = "Shows only what holds each word typed; Ctrl+F types here" }
+
+  -- the row takes the place the search has in its parent, and the field the rest of its props
+  for name, value in pairs(props) do
+    if name == "width" or name == "grow" or name == "stretch" then
+      rowProps[name] = value
+    elseif name ~= "id" then
+      fieldProps[name] = value
+    end
+  end
+
+  fieldProps.placeholder = fieldProps.placeholder .. " (Ctrl+F)"
+  local field = elements.field(query, fieldProps)
+  field.isSearch = true
+  local children = { field }
+
+  if query ~= "" then
+    children[2] = elements.button("\u{00D7}", { id = id .. ":clear", tooltip = "Clear the search", onClick = function()
+      if props.onChange then
+        props.onChange("")
+      end
+
+      if props.onSubmit then
+        props.onSubmit("")
+      end
+    end })
+  end
+
+  return elements.row(rowProps, children)
+end
+
 function elements.key(combination, props)
   local node = element("key", props)
   node.text = tostring(combination or "")
-  assert(node.id, "a key element needs an id")
+  ecs.check(node.id, "A key element needs an id.")
   return node
 end
 
@@ -595,7 +1307,7 @@ end
 local CONTAINERS = { column = true, row = true, scroll = true }
 
 -- elements that take the whole width of a column when nothing says otherwise
-local WIDE = { field = true, key = true, dropdown = true, selector = true, slider = true, separator = true }
+local WIDE = { field = true, key = true, dropdown = true, selector = true, slider = true, separator = true, graph = true }
 
 -- the axis of a container: true for a row
 local function horizontal(node)
@@ -629,9 +1341,44 @@ end
 
 local measure
 
+-- the lines of a row with wrap = true: each line takes the children that fit its width after the ones before, and a child wider than the width
+-- has a line of its own; each line is { first, last, height }, and the row is as wide as its widest line
+local function measureWrapped(node, state, rowRoom)
+  local gap = node.gap or 0
+  local lines, widest, height = {}, 0, 0
+  local line = nil
+
+  for i, child in ipairs(node.children) do
+    local childWidth, childHeight = measure(child, state, nil)
+
+    if line and line.width + gap + childWidth > rowRoom then
+      line = nil
+    end
+
+    if not line then
+      line = { first = i, width = -gap, height = 0 }
+      lines[#lines + 1] = line
+    end
+
+    line.last, line.width, line.height = i, line.width + gap + childWidth, math.max(line.height, childHeight)
+  end
+
+  for i, each in ipairs(lines) do
+    widest, height = math.max(widest, each.width), height + each.height + (i > 1 and gap or 0)
+  end
+
+  node.layout.lines = lines
+  return widest, height
+end
+
 -- the size of a container's children, along and across its direction
 local function measureChildren(node, state, room)
   local along, across = 0, 0
+
+  -- a row with wrap = true in a column breaks its children into lines at the column's width
+  if horizontal(node) and node.wrap and (node.width or room) then
+    return measureWrapped(node, state, (node.width or room) - 2 * paddingOf(node))
+  end
 
   -- a column's children may take its width less its padding, and a scroll element's less its scroll bar too; a row's take what they need
   local inner = nil
@@ -650,7 +1397,33 @@ local function measureChildren(node, state, room)
     end
   end
 
-  return along + math.max(0, #node.children - 1) * (node.gap or 0), across
+  local gaps = math.max(0, #node.children - 1) * (node.gap or 0)
+  local rowRoom = horizontal(node) and (node.width or room) and (node.width or room) - 2 * paddingOf(node) - gaps
+
+  -- a row whose children need more than its width shares what the others leave among the children that can be narrower:
+  -- wrapped text, and columns, whose wrapped text breaks then
+  if rowRoom and along > rowRoom then
+    local narrowed, fixed = {}, along
+
+    for _, child in ipairs(node.children) do
+      if not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
+        narrowed[#narrowed + 1] = child
+        fixed = fixed - child.layout.naturalWidth
+      end
+    end
+
+    along, across = fixed, 0
+
+    for _, child in ipairs(narrowed) do
+      along = along + measure(child, state, math.max((rowRoom - fixed) / #narrowed, 1))
+    end
+
+    for _, child in ipairs(node.children) do
+      across = math.max(across, child.layout.naturalHeight)
+    end
+  end
+
+  return along + gaps, across
 end
 
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
@@ -664,7 +1437,14 @@ function measure(node, state, room)
   local width, height
   node.layout = layout
 
-  if node.type == "text" and node.wrap and (node.width or room) then
+  if node.type == "text" and node.spans then
+    layout.spanLines = layoutSpans(node, textSize, node.wrap and (node.width or room) or nil)
+    width, height = 0, #layout.spanLines * line
+
+    for _, spanLine in ipairs(layout.spanLines) do
+      width = math.max(width, spanLine.width)
+    end
+  elseif node.type == "text" and node.wrap and (node.width or room) then
     layout.lines = wrap(font, node.text, textSize, node.width or room)
     width, height = 0, #layout.lines * line
 
@@ -686,6 +1466,8 @@ function measure(node, state, room)
     width, height = measureText(font, node.text, textSize), line
   elseif node.type == "button" then
     width, height = measureText(font, node.label, textSize) + 2 * size.paddingX, boxed
+  elseif node.type == "color" then
+    width, height = 2 * boxed, boxed
   elseif node.type == "dropdown" then
     local widest = 0
 
@@ -721,6 +1503,8 @@ function measure(node, state, room)
     end
   elseif node.type == "separator" then
     width, height = 1, 1
+  elseif node.type == "graph" then
+    width, height = 0, GRAPH_HEIGHT
   elseif node.type == "space" then
     width, height = 0, 0
   elseif node.type == "disclosure" then
@@ -745,6 +1529,8 @@ function measure(node, state, room)
   layout.naturalHeight = node.height or height
   return layout.naturalWidth, layout.naturalHeight
 end
+
+local arrangeLine
 
 -- places an element and its children in a rectangle; measure ran first
 -- a scroll element's content moves up by its offset, which is kept from 0 to as far as the content goes
@@ -772,6 +1558,18 @@ local function arrange(node, x, y, width, height, state)
 
     innerY = innerY - layout.offset
     innerHeight = math.max(layout.contentHeight - 2 * padding, innerHeight)
+  end
+
+  -- a wrapped row places each of its lines as a row of its own, below the line before
+  if node.layout.lines then
+    local lineY = innerY
+
+    for _, line in ipairs(node.layout.lines) do
+      arrangeLine(node, line, innerX, lineY, innerWidth, state)
+      lineY = lineY + line.height + gap
+    end
+
+    return
   end
 
   -- the main axis: the natural sizes, then the room that is left, shared by the growing children
@@ -819,6 +1617,37 @@ local function arrange(node, x, y, width, height, state)
     end
 
     along = along + childSize + gap
+  end
+end
+
+-- places the children of one line of a wrapped row, from its left: the room the line leaves is shared by its growing children, and each child
+-- is aligned in the line's height by the row's align
+function arrangeLine(node, line, x, y, width, state)
+  local gap, grows = node.gap or 0, 0
+
+  for i = line.first, line.last do
+    local grow = node.children[i].grow
+    grows = grows + (grow == true and 1 or grow or 0)
+  end
+
+  local room, along = width - line.width, x
+
+  for i = line.first, line.last do
+    local child = node.children[i]
+    local grow = child.grow == true and 1 or child.grow or 0
+    local childWidth = child.layout.naturalWidth + (grows > 0 and room > 0 and room * grow / grows or 0)
+    local cross, crossAt = child.layout.naturalHeight, y
+
+    if stretches(child, true) and not child.height then
+      cross = line.height
+    else
+      local align = node.align or "center"
+      crossAt = y + (align == "center" and (line.height - cross) / 2 or align == "end" and line.height - cross or 0)
+    end
+
+    child.layout.vertical = child.vertical == nil or child.vertical
+    arrange(child, along, crossAt, childWidth, cross, state)
+    along = along + childWidth + gap
   end
 end
 
@@ -995,16 +1824,79 @@ local function paintTyped(node, surface, state)
     elseif editing then
       draw.text(surface, font, "Press a key", box.x + size.paddingX, textY, textSize, "textDim")
     else
-      draw.text(surface, font, ellipsize(font, node.text, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      -- a dragged number shows the number the drag gives, before the panel has taken it
+      local drag = state.numberDrag
+      local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
+      -- an empty field shows its placeholder, dimmed, until it is typed in
+      if shown == "" and node.placeholder then
+        draw.text(surface, font, ellipsize(font, tostring(node.placeholder), textSize, room), box.x + size.paddingX, textY, textSize, "textDim")
+      else
+        draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+      end
     end
   end)
 
   -- a number field marks a typed text that is not a number
-  local valid = node.valid ~= false and not (editing and node.isNumber and tonumber(state.typed) == nil)
+  local valid = node.valid ~= false and not (editing and node.isNumber and readNumber(state.typed) == nil)
   draw.outline(surface, box.x, box.y, box.width, box.height, 1, not valid and INVALID_COLOR or editing and "accent" or "tabShown")
 end
 
 -- down when open, right when closed, and up with up
+-- the sum of a graph's value: a number, or the parts of a stacked bar
+local function graphTotal(value)
+  if type(value) == "number" then
+    return value
+  end
+
+  local total = 0
+
+  for _, part in ipairs(value) do
+    total = total + part
+  end
+
+  return total
+end
+
+-- a graph's bars fill its width, the oldest value on the left, each part stacked on the one before it in its colour; a line across it marks each
+-- of its lines' values; what goes above the top of its scale is cut there
+local function paintGraph(node, surface)
+  local box, values = node.layout, node.values
+  local top = node.max
+
+  if not top then
+    top = 0
+
+    for _, value in ipairs(values) do
+      top = math.max(top, graphTotal(value))
+    end
+  end
+
+  if top <= 0 or #values == 0 then
+    return
+  end
+
+  local bar, bottom = box.width / #values, box.y + box.height
+
+  for i, value in ipairs(values) do
+    local x, height = box.x + (i - 1) * bar, 0
+
+    for j, part in ipairs(type(value) == "number" and { value } or value) do
+      local partHeight = math.min(part / top * box.height, box.height - height)
+
+      if partHeight > 0 then
+        draw.fill(surface, x, bottom - height - partHeight, bar, partHeight, node.colors[(j - 1) % #node.colors + 1])
+        height = height + partHeight
+      end
+    end
+  end
+
+  for _, line in ipairs(node.lines) do
+    if line.value >= 0 and line.value <= top then
+      draw.fill(surface, box.x, bottom - line.value / top * box.height, box.width, 1, line.color or "textDim")
+    end
+  end
+end
+
 local function paintDisclosure(node, surface)
   local box = node.layout
   local half, x, y = size.checkSize / 4, box.x + box.width / 2, box.y + box.height / 2
@@ -1040,6 +1932,22 @@ local function paintScroll(node, surface, state)
   end
 end
 
+-- the spans of a text that have a link, in their order; Tab stops at each
+local function linkSpans(node)
+  local spans, seen = {}, {}
+
+  for _, spanLine in ipairs(node.layout.spanLines or {}) do
+    for _, run in ipairs(spanLine.runs) do
+      if run.span.link and not seen[run.span] then
+        seen[run.span] = true
+        spans[#spans + 1] = run.span
+      end
+    end
+  end
+
+  return spans
+end
+
 -- draws an element and its children; it reads the interaction state, and changes none of it
 function paint(node, surface, state)
   local box = node.layout
@@ -1058,12 +1966,35 @@ function paint(node, surface, state)
     draw.outline(surface, box.x, box.y, box.width, box.height, 1, node.border)
   end
 
-  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline
-  if state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] then
+  -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline; a list shows it on its chosen item
+  if state.showRing and state.keyTarget == node.id and node.type == "text" and box.spanLines then
+    -- a text shows it on the link that Tab stopped at
+    local span = linkSpans(node)[state.keyLink or 1]
+
+    for i, spanLine in ipairs(box.spanLines) do
+      for _, run in ipairs(spanLine.runs) do
+        if run.span == span then
+          draw.outline(surface, box.x + run.x - 1, box.y + (i - 1) * line - 1, run.width + 2, line + 2, 1, "accent")
+        end
+      end
+    end
+  elseif state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
     draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
+  elseif state.showRing and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
+    draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
   end
 
-  if node.type == "text" and box.lines then
+  if node.type == "text" and box.spanLines then
+    -- runs past the box are cut at its edge
+    draw.clip(surface, box.x, box.y, box.width, box.height, function()
+      for i, spanLine in ipairs(box.spanLines) do
+        for _, run in ipairs(spanLine.runs) do
+          local color = run.span.color or (run.span.link and "accent") or node.color or "text"
+          draw.text(surface, spanFont(node, run.span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
+        end
+      end
+    end)
+  elseif node.type == "text" and box.lines then
     for i, text in ipairs(box.lines) do
       draw.text(surface, font, ellipsize(font, text, textSize, box.width), box.x, box.y + (i - 1) * line, textSize, node.color or "text")
     end
@@ -1074,6 +2005,15 @@ function paint(node, surface, state)
     local shown = ellipsize(font, node.label, textSize, box.width - 2 * size.paddingX)
     local width = measureText(font, shown, textSize)
     draw.text(surface, font, shown, box.x + (box.width - width) / 2, textY, textSize, node.color or "text")
+  elseif node.type == "color" then
+    -- the swatch shows a colour with alpha over a light and a dark half, so its alpha shows
+    draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "tabShown" or "tab")
+    local inset = size.paddingY
+    local width, height = box.width - 2 * inset, box.height - 2 * inset
+    draw.fill(surface, box.x + inset, box.y + inset, width / 2, height, "#FFFFFF")
+    draw.fill(surface, box.x + inset + width / 2, box.y + inset, width / 2, height, "#000000")
+    draw.fill(surface, box.x + inset, box.y + inset, width, height, node.value)
+    draw.outline(surface, box.x + inset, box.y + inset, width, height, 1, "textDim")
   elseif node.type == "dropdown" then
     draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "tabShown" or "tab")
     local room = box.width - 3 * size.paddingX - line / 2
@@ -1089,16 +2029,28 @@ function paint(node, surface, state)
     local radius = size.checkSize / 2
     local centerY = box.y + box.height / 2
     local span = node.max - node.min
-    local knobX = box.x + radius + (span > 0 and (node.value - node.min) / span or 0) * (box.width - 2 * radius)
+    local value = state.sliding == node.id and state.slid or node.value
+    local knobX = box.x + radius + (span > 0 and (value - node.min) / span or 0) * (box.width - 2 * radius)
     draw.fill(surface, box.x + radius, centerY - 2, box.width - 2 * radius, 4, "tabRow")
     draw.fill(surface, box.x + radius, centerY - 2, knobX - box.x - radius, 4, "accent")
     draw.circle(surface, knobX, centerY, radius, 0, (hover or state.sliding == node.id) and "accent" or "text")
   elseif TAKES_TYPING[node.type] then
     paintTyped(node, surface, state)
   elseif node.type == "image" and box.picture then
-    draw.image(surface, box.picture, box.x, box.y, box.width, box.height)
+    -- an image with a width or a height fits inside its box, keeping its shape, in the middle of it
+    local width, height = box.width, box.height
+
+    if node.width or node.height then
+      local imageWidth, imageHeight = draw.imageSize(box.picture)
+      local fit = math.min(box.width / imageWidth, box.height / imageHeight)
+      width, height = imageWidth * fit, imageHeight * fit
+    end
+
+    draw.image(surface, box.picture, box.x + (box.width - width) / 2, box.y + (box.height - height) / 2, width, height)
   elseif node.type == "disclosure" then
     paintDisclosure(node, surface)
+  elseif node.type == "graph" then
+    paintGraph(node, surface)
   elseif node.type == "separator" and box.vertical then
     draw.fill(surface, box.x + box.width / 2 - 0.5, box.y, 1, box.height, node.color or "tabShown")
   elseif node.type == "separator" then
@@ -1110,6 +2062,21 @@ function paint(node, surface, state)
 
   for _, child in ipairs(node.children or {}) do
     paint(child, surface, state)
+  end
+end
+
+-- the first element, in the order they are shown, that passes a test
+local function firstWhere(node, test)
+  if test(node) then
+    return node
+  end
+
+  for _, child in ipairs(node.children or {}) do
+    local found = firstWhere(child, test)
+
+    if found then
+      return found
+    end
   end
 end
 
@@ -1132,7 +2099,24 @@ end
 
 -- the elements that take the pointer: buttons, fields and the like, and containers with onClick
 local function interactive(node)
-  return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil)
+  return INTERACTIVE[node.type] == true or (CONTAINERS[node.type] == true and node.onClick ~= nil) or (node.type == "text" and node.onLink ~= nil)
+end
+
+-- the link of a text's span at a place, or of its first link without one
+local function linkAt(node, x, y)
+  local box = node.layout
+  local lines = box.spanLines or {}
+  local line = #lines > 0 and box.height / #lines or 0
+
+  for i, spanLine in ipairs(lines) do
+    for _, run in ipairs(spanLine.runs) do
+      local inside = x and y and x >= box.x + run.x and x < box.x + run.x + run.width and y >= box.y + (i - 1) * line and y < box.y + i * line
+
+      if run.span.link and (inside or not x) then
+        return run.span.link
+      end
+    end
+  end
 end
 
 local function scrollable(node)
@@ -1154,21 +2138,6 @@ local function findById(node, id)
 
   for _, child in ipairs(node.children or {}) do
     local found = findById(child, id)
-
-    if found then
-      return found
-    end
-  end
-end
-
--- the first element of the tree that passes a test, or nil
-local function findFirst(node, test)
-  if test(node) then
-    return node
-  end
-
-  for _, child in ipairs(node.children or {}) do
-    local found = findFirst(child, test)
 
     if found then
       return found
@@ -1225,11 +2194,21 @@ end
 
 local MODIFIER_KEYS = { ["Left Ctrl"] = true, ["Right Ctrl"] = true, ["Left Shift"] = true, ["Right Shift"] = true, ["Left Alt"] = true, ["Right Alt"] = true, ["Left GUI"] = true, ["Right GUI"] = true }
 
--- opens a dropdown's choices in a popup below it; a click or Return chooses one
-local function openDropdown(panel, state, node)
-  local choices = node.choices
+-- the text that a key adds to a dropdown's search: a key of one character, or Space; Shift gives - as _
+local function searchCharacter(event)
+  if event.key == "Space" then
+    return " "
+  elseif #event.key == 1 and not event.ctrl and not event.alt and not event.super then
+    return event.shift and event.key == "-" and "_" or event.key:lower()
+  end
+end
 
-  if #choices == 0 then
+-- opens a dropdown's choices in a popup below it; a click or Return chooses one. Typing searches: the popup shows what is typed
+-- in its first row, and below it only the choices that hold it, whatever their case; Backspace takes a character off
+local function openDropdown(panel, state, node)
+  local all = node.choices
+
+  if #all == 0 then
     return
   end
 
@@ -1237,15 +2216,40 @@ local function openDropdown(panel, state, node)
   local textSize = node.size or fontSize()
   local font = fontOf(node)
   local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
-  local width, height = box.width, rowHeight * #choices
+  local width = box.width
   local scale = state.scale
   local hover = 1
+  local typed = ""
+  local choices = all
   local popup
 
-  for i, choice in ipairs(choices) do
+  for i, choice in ipairs(all) do
     if choice == node.value then
       hover = i
     end
+  end
+
+  -- the rows above the choices: one for what is typed, while something is
+  local function top()
+    return typed ~= "" and 1 or 0
+  end
+
+  local function height()
+    return rowHeight * math.max(1, #choices + top())
+  end
+
+  local function search()
+    choices = {}
+
+    for _, choice in ipairs(all) do
+      if matchesQuery(typed, choice) then
+        choices[#choices + 1] = choice
+      end
+    end
+
+    hover = 1
+    popup:setSize(width, height())
+    popup:redraw()
   end
 
   local function choose(index)
@@ -1255,7 +2259,7 @@ local function openDropdown(panel, state, node)
   end
 
   local function choiceAt(y)
-    local index = math.floor(y / scale / rowHeight) + 1
+    local index = math.floor(y / scale / rowHeight) + 1 - top()
     return choices[index] ~= nil and index or nil
   end
 
@@ -1263,13 +2267,18 @@ local function openDropdown(panel, state, node)
   popup, message = panel:openPopup({
     anchor = { x = box.x * state.scale, y = box.y * state.scale, width = box.width * state.scale, height = box.height * state.scale },
     width = width,
-    height = height,
+    height = height(),
     draw = function(surface)
       scale = surface.scale
-      draw.fill(surface, 0, 0, width, height, "tabRow")
+      local h = height()
+      draw.fill(surface, 0, 0, width, h, "tabRow")
+
+      if typed ~= "" then
+        draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
+      end
 
       for i, choice in ipairs(choices) do
-        local y = (i - 1) * rowHeight
+        local y = (i - 1 + top()) * rowHeight
 
         if i == hover then
           draw.fill(surface, 0, y, width, rowHeight, "tabShown")
@@ -1279,7 +2288,7 @@ local function openDropdown(panel, state, node)
           choice == node.value and "accent" or "text")
       end
 
-      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+      draw.outline(surface, 0, 0, width, h, 1, "tabShown")
     end,
     event = function(event)
       if event.type == "pointerMove" then
@@ -1292,16 +2301,343 @@ local function openDropdown(panel, state, node)
       elseif event.type == "pointerUp" and event.button == 1 and choiceAt(event.y) then
         choose(choiceAt(event.y))
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
-        hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #choices)
-        popup:redraw()
+        if #choices > 0 then
+          hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #choices)
+          popup:redraw()
+        end
       elseif event.type == "keyDown" and isEnter(event) then
-        choose(hover)
+        if choices[hover] ~= nil then
+          choose(hover)
+        end
+      elseif event.type == "keyDown" and event.key == "Backspace" and typed ~= "" then
+        typed = typed:sub(1, -2)
+        search()
+      elseif event.type == "keyDown" and searchCharacter(event) then
+        typed = typed .. searchCharacter(event)
+        search()
       end
     end,
   })
 
   if not popup then
     ecs.log.warn(message or "Cannot open the choices.")
+  end
+end
+
+-- opens a menu of entries in a popup at a point of a panel, in layout units, such as where a right click was; an entry is
+-- { label, keys, enabled, onClick }, or { line = true } for a line between entries; a click or Return runs an entry, and closes the menu
+local function openMenu(panel, x, y, entries)
+  local state = panelState(panel)
+  local font = fontOf({})
+  local textSize = fontSize()
+  local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
+  local lineGap = size.paddingY * 2 + 1
+  local tops, width, height = {}, 0, 0
+  local popup
+
+  for i, entry in ipairs(entries) do
+    tops[i] = height
+
+    if entry.line then
+      height = height + lineGap
+    else
+      local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
+      width = math.max(width, measureText(font, entry.label or "", textSize) + keys + 2 * size.paddingX)
+      height = height + rowHeight
+    end
+  end
+
+  if height == 0 then
+    return nil
+  end
+
+  local function usable(index)
+    local entry = entries[index]
+    return entry ~= nil and not entry.line and entry.enabled ~= false
+  end
+
+  local function entryAt(at)
+    for i = #entries, 1, -1 do
+      if at >= tops[i] then
+        return usable(i) and i or nil
+      end
+    end
+  end
+
+  -- the next usable entry from one, a step at a time, round from the last to the first and back, or nil when none is usable
+  local function step(from, by)
+    local index = from
+
+    for _ = 1, #entries do
+      index = (index + by - 1) % #entries + 1
+
+      if usable(index) then
+        return index
+      end
+    end
+
+    return nil
+  end
+
+  local hover = step(0, 1)
+  local scale = state.scale
+
+  local function run(index)
+    popup:close()
+    call(entries[index].onClick)
+    panel:redraw()
+  end
+
+  local message
+  popup, message = panel:openPopup({
+    type = "menu",
+    anchor = { x = x * state.scale, y = y * state.scale, width = 0, height = 0 },
+    width = width,
+    height = height,
+    draw = function(surface)
+      scale = surface.scale
+      draw.fill(surface, 0, 0, width, height, "tabRow")
+
+      for i, entry in ipairs(entries) do
+        if entry.line then
+          draw.fill(surface, size.paddingX, tops[i] + size.paddingY, width - 2 * size.paddingX, 1, "tabShown")
+        else
+          if i == hover then
+            draw.fill(surface, 0, tops[i], width, rowHeight, "tabShown")
+          end
+
+          local color = entry.enabled == false and "textDim" or "text"
+          draw.text(surface, font, entry.label or "", size.paddingX, tops[i] + size.paddingY, textSize, color)
+
+          if entry.keys then
+            local keysWidth = measureText(font, entry.keys, textSize)
+            draw.text(surface, font, entry.keys, width - size.paddingX - keysWidth, tops[i] + size.paddingY, textSize, "textDim")
+          end
+        end
+      end
+
+      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+    end,
+    event = function(event)
+      if event.type == "pointerMove" then
+        local index = entryAt(event.y / scale)
+
+        if index ~= hover then
+          hover = index
+          popup:redraw()
+        end
+      elseif event.type == "pointerUp" and event.button == 1 and entryAt(event.y / scale) then
+        run(entryAt(event.y / scale))
+      elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
+        hover = step(hover or 0, event.key == "Up" and -1 or 1) or hover
+        popup:redraw()
+      elseif event.type == "keyDown" and isEnter(event) and hover then
+        run(hover)
+      end
+    end,
+  })
+
+  if not popup then
+    ecs.log.warn(message or "Cannot open the menu.")
+  end
+
+  return popup
+end
+
+-- a colour's text read as red, green, blue and alpha from 0 to 255, or nil for a text that is not "#RRGGBB" or "#RRGGBBAA"
+local function readColor(text)
+  local hex = type(text) == "string" and (text:match("^#(%x%x%x%x%x%x%x%x)$") or text:match("^#(%x%x%x%x%x%x)$"))
+
+  if not hex then
+    return nil
+  end
+
+  return tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16), #hex == 8 and tonumber(hex:sub(7, 8), 16) or 255
+end
+
+-- red, green and blue from 0 to 1 of a hue, a saturation and a value, each from 0 to 1
+local function hsvToRgb(hue, saturation, value)
+  local sector = (hue % 1) * 6
+  local whole = math.floor(sector)
+  local low, falling, rising = value * (1 - saturation), value * (1 - saturation * (sector - whole)), value * (1 - saturation * (1 - sector + whole))
+  local channels = ({
+    { value, rising, low }, { falling, value, low }, { low, value, rising }, { low, falling, value }, { rising, low, value }, { value, low, falling },
+  })[whole % 6 + 1]
+  return channels[1], channels[2], channels[3]
+end
+
+-- a hue, a saturation and a value, each from 0 to 1, of red, green and blue from 0 to 1
+local function rgbToHsv(red, green, blue)
+  local high, low = math.max(red, green, blue), math.min(red, green, blue)
+  local range = high - low
+  local hue = 0
+
+  if range > 0 and high == red then
+    hue = ((green - blue) / range) % 6
+  elseif range > 0 and high == green then
+    hue = (blue - red) / range + 2
+  elseif range > 0 then
+    hue = (red - green) / range + 4
+  end
+
+  return hue / 6, high > 0 and range / high or 0, high
+end
+
+-- a picker's sizes, in layout units: the square of saturation and value, the bars of hue and alpha beside and below it, and the pixels of the
+-- square's image, which draw stretches
+local PICKER = { square = 160, bar = 16, gap = 8, pixels = 64 }
+
+-- the image of a picker's square at a hue: saturation grows to the right and value upwards
+local function squareImage(hue)
+  local pixels = {}
+
+  for y = 0, PICKER.pixels - 1 do
+    for x = 0, PICKER.pixels - 1 do
+      local red, green, blue = hsvToRgb(hue, x / (PICKER.pixels - 1), 1 - y / (PICKER.pixels - 1))
+      pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+    end
+  end
+
+  return draw.newImage(PICKER.pixels, PICKER.pixels, table.concat(pixels))
+end
+
+-- the image of the hue bar, from red at the top round to red at the bottom
+local function hueImage()
+  local pixels = {}
+
+  for y = 0, PICKER.pixels - 1 do
+    local red, green, blue = hsvToRgb(y / PICKER.pixels, 1, 1)
+    pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+  end
+
+  return draw.newImage(1, PICKER.pixels, table.concat(pixels))
+end
+
+-- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
+-- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange; Return closes it
+local function openColorPicker(panel, state, node)
+  local red, green, blue, alpha = readColor(node.value)
+  red, green, blue, alpha = red or 0, green or 0, blue or 0, alpha or 255
+  local hue, saturation, value = rgbToHsv(red / 255, green / 255, blue / 255)
+  alpha = node.alpha and alpha or 255
+  local width = PICKER.square + PICKER.gap + PICKER.bar + 2 * PICKER.gap
+  local textSize = node.size or fontSize()
+  local font = fontOf(node)
+  local line = lineHeight(font, textSize)
+  local height = PICKER.square + 3 * PICKER.gap + line + (node.alpha and PICKER.bar + PICKER.gap or 0)
+  local box, scale = node.layout, state.scale
+  local square, hues, squareHue, dragging = nil, hueImage(), nil, nil
+  local popup
+
+  local function text()
+    local r, g, b = hsvToRgb(hue, saturation, value)
+    local color = ("#%02X%02X%02X"):format(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+    return node.alpha and color .. ("%02X"):format(alpha) or color
+  end
+
+  -- a press chooses the part it is on: the square, the hue bar or the alpha bar; the press and a drag after it change that part
+  local function pick(pixelX, pixelY)
+    local x, y = pixelX / scale - PICKER.gap, pixelY / scale - PICKER.gap
+    local barX = PICKER.square + PICKER.gap
+
+    if not dragging and x >= 0 and x < PICKER.square and y >= 0 and y < PICKER.square then
+      dragging = "square"
+    elseif not dragging and x >= barX and y >= 0 and y < PICKER.square then
+      dragging = "hue"
+    elseif not dragging and node.alpha and y >= barX then
+      dragging = "alpha"
+    end
+
+    if dragging == "square" then
+      saturation, value = clamp(x / PICKER.square, 0, 1), clamp(1 - y / PICKER.square, 0, 1)
+    elseif dragging == "hue" then
+      hue = clamp(y / PICKER.square, 0, 0.9999)
+    elseif dragging == "alpha" then
+      alpha = math.floor(clamp(x / (barX + PICKER.bar), 0, 1) * 255 + 0.5)
+    end
+  end
+
+  local message
+  popup, message = panel:openPopup({
+    anchor = { x = box.x * scale, y = box.y * scale, width = box.width * scale, height = box.height * scale },
+    width = width,
+    height = height,
+    draw = function(surface)
+      scale = surface.scale
+      draw.fill(surface, 0, 0, width, height, "tabRow")
+
+      -- the square's image is made again when the hue changes
+      if squareHue ~= hue then
+        if square then
+          draw.freeImage(square)
+        end
+
+        square, squareHue = squareImage(hue), hue
+      end
+
+      local barX = PICKER.gap + PICKER.square + PICKER.gap
+
+      if square then
+        draw.image(surface, square, PICKER.gap, PICKER.gap, PICKER.square, PICKER.square)
+      end
+
+      if hues then
+        draw.image(surface, hues, barX, PICKER.gap, PICKER.bar, PICKER.square)
+      end
+
+      -- rings mark the chosen saturation and value, and lines the hue and the alpha
+      draw.circle(surface, PICKER.gap + saturation * PICKER.square, PICKER.gap + (1 - value) * PICKER.square, 5, 2, value > 0.5 and "#000000" or "#FFFFFF")
+      draw.fill(surface, barX - 2, PICKER.gap + hue * PICKER.square - 1, PICKER.bar + 4, 2, "text")
+
+      if node.alpha then
+        local barY, barWidth = PICKER.gap + PICKER.square + PICKER.gap, PICKER.square + PICKER.gap + PICKER.bar
+        draw.fill(surface, PICKER.gap, barY, barWidth / 2, PICKER.bar, "#FFFFFF")
+        draw.fill(surface, PICKER.gap + barWidth / 2, barY, barWidth / 2, PICKER.bar, "#000000")
+
+        -- the bar fades the colour from transparent on its left to opaque on its right, in steps
+        local r, g, b = hsvToRgb(hue, saturation, value)
+
+        for step = 0, 31 do
+          local color = ("#%02X%02X%02X%02X"):format(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5), math.floor(step / 31 * 255 + 0.5))
+          draw.fill(surface, PICKER.gap + step * barWidth / 32, barY, barWidth / 32 + 0.5, PICKER.bar, color)
+        end
+
+        draw.fill(surface, PICKER.gap + alpha / 255 * barWidth - 1, barY - 2, 2, PICKER.bar + 4, "text")
+      end
+
+      -- the colour's text, as onChange will get it
+      draw.text(surface, font, text(), PICKER.gap, height - PICKER.gap - line, textSize, "text")
+      draw.outline(surface, 0, 0, width, height, 1, "tabShown")
+    end,
+    event = function(event)
+      if event.type == "pointerDown" and event.button == 1 then
+        dragging = nil
+        pick(event.x, event.y)
+        popup:redraw()
+      elseif event.type == "pointerMove" and dragging then
+        pick(event.x, event.y)
+        popup:redraw()
+      elseif event.type == "pointerUp" and event.button == 1 and dragging then
+        dragging = nil
+        call(node.onChange, text())
+        panel:redraw()
+      elseif event.type == "keyDown" and isEnter(event) then
+        popup:close()
+      end
+    end,
+    closed = function()
+      if square then
+        draw.freeImage(square)
+      end
+
+      if hues then
+        draw.freeImage(hues)
+      end
+    end,
+  })
+
+  if not popup then
+    ecs.log.warn(message or "Cannot open the colour picker.")
   end
 end
 
@@ -1314,9 +2650,17 @@ local function startEditing(panel, state, node)
   end
 end
 
--- does what a click on an element does; x is where across it, for a selector
-local function activate(panel, state, node, x)
-  if node.type == "button" or CONTAINERS[node.type] then
+-- does what a click on an element does; x and y are where, for a selector and a text's links, and nil for a key
+local function activate(panel, state, node, x, y)
+  if node.type == "text" then
+    -- a key gives the link that Tab stopped at
+    local span = not x and linkSpans(node)[state.keyLink or 1]
+    local link = span and span.link or linkAt(node, x, y)
+
+    if link then
+      call(node.onLink, link)
+    end
+  elseif node.type == "button" or CONTAINERS[node.type] then
     call(node.onClick)
   elseif node.type == "toggle" then
     call(node.onChange, not node.on)
@@ -1328,6 +2672,8 @@ local function activate(panel, state, node, x)
     end
   elseif node.type == "dropdown" then
     openDropdown(panel, state, node)
+  elseif node.type == "color" then
+    openColorPicker(panel, state, node)
   elseif TAKES_TYPING[node.type] then
     startEditing(panel, state, node)
   end
@@ -1385,10 +2731,11 @@ end
 
 -- Up and Down change an edited number field's number by its step, or by 1, from what is typed, or from its value if that is not a number, and give it at once
 local function stepNumber(node, state, up)
-  local number = snapNumber(node, (tonumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
+  local number = snapNumber(node, (readNumber(state.typed) or node.value) + (up and 1 or -1) * ((node.step and node.step > 0) and node.step or 1))
   state.typed = formatNumber(number)
   state.cursorPosition, state.anchor = #state.typed + 1, nil
-  node.onNumber(number)
+  node.onChange(state.typed)
+  node.onSubmit(state.typed)
 end
 
 -- the cursor's place after a move key in an edited field: Home and End go to the ends, Ctrl moves by words, and the arrows by characters
@@ -1411,6 +2758,8 @@ end
 local MOVE_KEYS = { Left = true, Right = true, Home = true, End = true }
 
 -- handles a key or text event while a field is edited
+local moveSelection -- chooses another item of a list; defined with the list's keys
+
 local function editField(panel, state, node, event)
   -- the cursor is a byte position before which text goes; a character may take several bytes
   -- the selection lies between the anchor and the cursor, and what is typed replaces it
@@ -1461,6 +2810,15 @@ local function editField(panel, state, node, event)
     if not (node.onSubmit and node.onSubmit(state.typed) == false) then
       stopEditing(panel, state)
     end
+  elseif node.isSearch and node.results and (key == "Up" or key == "Down") then
+    local results = findById(state.root, node.results)
+
+    if results then
+      moveSelection(state, results, key == "Up" and -1 or 1)
+    end
+  elseif key == "Escape" and node.isSearch and state.typed ~= "" then
+    state.typed, state.cursorPosition, state.anchor = "", 1, nil
+    edited = true
   elseif key == "Escape" then
     stopEditing(panel, state)
   elseif node.isNumber and (key == "Up" or key == "Down") then
@@ -1493,9 +2851,10 @@ local function handleTyping(panel, state, event)
   return editField(panel, state, node, event)
 end
 
--- the interactive elements in the order of the tree, which Tab goes through
+-- the elements that Tab goes through, in the order of the tree: the interactive ones, each list once, in place of its items, and each scroll
+-- element with more than it shows, which the keys scroll
 local function tabOrder(node, list)
-  if interactive(node) then
+  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node)) then
     list[#list + 1] = node
   end
 
@@ -1527,6 +2886,16 @@ local function moveKeyTarget(panel, state, back)
     index = node.id == state.keyTarget and i or index
   end
 
+  -- a text's links are stops of their own: Tab goes through them before it leaves the text
+  local links = list[index] and list[index].type == "text" and #linkSpans(list[index]) or 0
+  local link = (state.keyLink or 1) + (back and -1 or 1)
+
+  if state.showRing and link >= 1 and link <= links then
+    state.keyLink = link
+    panel:redraw()
+    return true
+  end
+
   if back then
     index = index <= 1 and #list or index - 1
   else
@@ -1536,6 +2905,7 @@ local function moveKeyTarget(panel, state, back)
   local node = list[index]
   stopEditing(panel, state)
   state.keyTarget, state.showRing = node.id, true
+  state.keyLink = (back and node.type == "text") and math.max(#linkSpans(node), 1) or 1
 
   if TAKES_TYPING[node.type] then
     startEditing(panel, state, node)
@@ -1575,11 +2945,12 @@ local function nudgeSlider(node, forward)
 
   if value ~= node.value then
     call(node.onChange, value)
+    call(node.onSubmit, value)
   end
 end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
-local function moveSelection(state, list, step)
+function moveSelection(state, list, step)
   if #list.items == 0 then
     return
   end
@@ -1608,7 +2979,7 @@ local function expandTreeNode(state, list, open)
   end
 end
 
--- the list that Up, Down and Return act on: the one that has the keys or holds the element that has them, or else the panel's first list
+-- the list that Up, Down and Return act on: the one that has the keys or holds the element that has them
 local function keyList(state)
   local target = state.keyTarget and findById(state.root, state.keyTarget)
 
@@ -1616,12 +2987,50 @@ local function keyList(state)
     return target
   end
 
-  return target and findAround(state.root, target.id, isList, nil) or findFirst(state.root, isList)
+  return target and findAround(state.root, target.id, isList, nil)
+end
+
+-- what Return does on a list's chosen item: the list's onActivate, or else the item's onClick
+local function activateItem(list)
+  local item = list.selected and list.items[list.selected]
+
+  if item and list.onActivate then
+    list.onActivate(list.selected)
+  elseif item and item.onClick then
+    item.onClick()
+  end
+
+  return item ~= nil and (list.onActivate ~= nil or item.onClick ~= nil)
+end
+
+-- scrolls the scroll element that has the keys, or holds the element that has them: the arrows by a line, Page Up and Page Down by a page less a line,
+-- and Home and End to its ends; a list's arrows choose its items instead
+local function scrollWithKey(state, node, key)
+  local function isScroll(candidate)
+    return candidate.type == "scroll"
+  end
+
+  local scroll = node and (isScroll(node) and node or findAround(state.root, node.id, isScroll, nil))
+
+  if not scroll or not overflows(scroll) then
+    return false
+  end
+
+  local line = lineHeight(fontOf(scroll), fontSize())
+  local page = math.max(scroll.layout.height - line, line)
+  local steps = { Up = -line, Down = line, PageUp = -page, PageDown = page, Home = -math.huge, End = math.huge }
+
+  if not steps[key] then
+    return false
+  end
+
+  local farthest = scroll.layout.contentHeight - scroll.layout.height
+  state.scroll[scroll.id] = clamp((state.scroll[scroll.id] or 0) + steps[key], 0, farthest)
+  return true
 end
 
 -- handles a key press when no field is edited: Tab moves the keys, Return or Space activates the element that has them, Left and Right change a
--- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it if the list has onActivate,
--- and Escape takes the keys away
+-- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it, and Escape takes the keys away
 local function handleKeyDown(panel, state, event)
   if event.key == "Tab" then
     return moveKeyTarget(panel, state, event.shift)
@@ -1638,15 +3047,13 @@ local function handleKeyDown(panel, state, event)
     nudgeSelector(node, event.key == "Right")
   elseif node and node.type == "slider" and leftOrRight then
     nudgeSlider(node, event.key == "Right")
-  elseif node and enter and node.type ~= "selector" and node.type ~= "slider" and not isList(node) then
-    activate(panel, state, node, node.layout.x)
+  elseif node and enter and node.type ~= "selector" and node.type ~= "slider" and node.type ~= "scroll" then
+    activate(panel, state, node, node.type ~= "text" and node.layout.x or nil)
   elseif list and (event.key == "Up" or event.key == "Down") then
     moveSelection(state, list, event.key == "Up" and -1 or 1)
   elseif list and list.tree and leftOrRight then
     expandTreeNode(state, list, event.key == "Right")
-  elseif list and isEnter(event) and list.onActivate and list.selected and list.items[list.selected] then
-    list.onActivate(list.selected)
-  else
+  elseif not (list and isEnter(event) and activateItem(list)) and not scrollWithKey(state, node, event.key) then
     return false
   end
 
@@ -1654,12 +3061,13 @@ local function handleKeyDown(panel, state, event)
   return true
 end
 
--- sets a slider from the pointer, and calls onChange if its value changes
-local function slide(node, x)
+-- sets a slider from the pointer, and calls onChange if its value changes; the drag keeps the value, which the slider shows until the
+-- release, also when the panel takes it only at onSubmit
+local function slide(state, node, x)
   local value = sliderValue(node, x)
 
-  if value ~= node.value then
-    node.value = value
+  if value ~= (state.slid or node.value) then
+    state.slid, node.value = value, value
     call(node.onChange, value)
   end
 end
@@ -1712,7 +3120,7 @@ local function paintTooltip(surface, state, width, height)
     return
   end
 
-  local font, textSize = draw.font("ui"), size.noteSize
+  local font, textSize = draw.font("ui"), styles.note.size
   local line = lineHeight(font, textSize)
   local lines = wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX))
   local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
@@ -1738,13 +3146,115 @@ local function paintTooltip(surface, state, width, height)
   end
 end
 
+-- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
+local inspecting = false
+
+-- the element under the pointer, the innermost one; a scroll element's children outside it are not under the pointer
+local function inspected(state)
+  if not (state.root and state.pointerX) then
+    return nil
+  end
+
+  return find(state.root, state.pointerX, state.pointerY, function()
+    return true
+  end)
+end
+
+-- outlines an element and its children; those of a scroll element only inside it, as they are drawn
+local function paintOutlines(node, surface)
+  local box = node.layout
+  draw.outline(surface, box.x, box.y, box.width, box.height, 1, "tabShown")
+
+  if node.type == "scroll" then
+    draw.clip(surface, box.x, box.y, box.width, box.height, function()
+      for _, child in ipairs(node.children) do
+        if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
+          paintOutlines(child, surface)
+        end
+      end
+    end)
+  else
+    for _, child in ipairs(node.children or {}) do
+      paintOutlines(child, surface)
+    end
+  end
+end
+
+-- a number as the inspector shows it: whole, or with one decimal
+local function inspectNumber(number)
+  return number == math.floor(number) and ("%d"):format(number) or ("%.1f"):format(number)
+end
+
+-- draws the inspector over a panel's elements: every element's outline, and the type, id, place and size of the one under the pointer, in layout units
+local function paintInspector(surface, state, width, height)
+  paintOutlines(state.root, surface)
+  local node = inspected(state)
+
+  if not node then
+    return
+  end
+
+  local box = node.layout
+  draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
+
+  local lines = {
+    ("%s  id = %q"):format(node.type, node.id),
+    ("at %s, %s  size %s x %s"):format(inspectNumber(box.x), inspectNumber(box.y), inspectNumber(box.width), inspectNumber(box.height)),
+  }
+
+  local set = {}
+
+  for _, name in ipairs({ "width", "height", "grow", "stretch", "padding", "gap", "align" }) do
+    if node[name] ~= nil then
+      set[#set + 1] = name .. " = " .. tostring(node[name])
+    end
+  end
+
+  if #set > 0 then
+    lines[#lines + 1] = table.concat(set, ", ")
+  end
+
+  local font, textSize = draw.font("ui"), styles.note.size
+  local line = lineHeight(font, textSize)
+  local boxWidth, boxHeight = 0, #lines * line + 2 * size.paddingY
+
+  for _, text in ipairs(lines) do
+    boxWidth = math.max(boxWidth, measureText(font, text, textSize))
+  end
+
+  boxWidth = boxWidth + 2 * size.paddingX
+  local x = clamp(state.pointerX + 12, 0, math.max(0, width - boxWidth))
+  local y = state.pointerY + 18
+
+  -- a label that does not fit below the pointer goes above it
+  if y + boxHeight > height then
+    y = math.max(0, state.pointerY - 6 - boxHeight)
+  end
+
+  draw.fill(surface, x, y, boxWidth, boxHeight, "tabRow")
+  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "accent")
+
+  for i, text in ipairs(lines) do
+    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")
+  end
+end
+
 -- a move of the pointer: a drag of a scroll bar, of a field's selection or of a slider goes on; otherwise the element under it is hovered
-local function handlePointerMove(panel, state, x, y)
+local function handlePointerMove(panel, state, x, y, shift)
   local root = state.root
   state.pointerX, state.pointerY = x, y
 
-  if state.dragging then
-    local node = findById(root, state.dragging)
+  -- the inspector names the element under the pointer, which may be another now
+  if inspecting then
+    panel:redraw()
+  end
+
+  -- the dragged scroll element may be gone since the press, when the view changed; the drag ends then
+  local dragged = state.dragging and findById(root, state.dragging)
+  state.dragging = dragged and state.dragging or nil
+
+  if dragged then
+    local node = dragged
     local _, length = thumb(node)
     local travel = node.layout.height - length
 
@@ -1753,6 +3263,28 @@ local function handlePointerMove(panel, state, x, y)
     end
 
     panel:redraw()
+    return true
+  end
+
+  local drag = state.numberDrag
+
+  if drag then
+    local node = findById(root, drag.id)
+    local moved = x - drag.x
+
+    -- a drag of a few units, so a click that shakes is still a click; then each unit is a step, or a tenth of one with Shift
+    if node and (drag.moved or math.abs(moved) > NUMBER_DRAG_START) then
+      drag.moved = true
+      local step = (node.step and node.step > 0) and node.step or 1
+      local number = snapNumber(node, drag.value + moved * step * (shift and 0.1 or 1))
+
+      if number ~= drag.shown then
+        drag.shown = number
+        node.onChange(formatNumber(number))
+        panel:redraw()
+      end
+    end
+
     return true
   end
 
@@ -1771,11 +3303,29 @@ local function handlePointerMove(panel, state, x, y)
     local node = findById(root, state.sliding)
 
     if node then
-      slide(node, x)
+      slide(state, node, x)
     end
 
     panel:redraw()
     return true
+  end
+
+  -- a press on an item of a list with onDrag, and a move of the drag threshold, drag what onDrag gives as the core's data
+  local itemDrag = state.itemDrag
+
+  if itemDrag and math.abs(x - itemDrag.x) + math.abs(y - itemDrag.y) > (tonumber(ecs.setting.get("ecs.dragThreshold")) or 8) then
+    local list = findById(root, itemDrag.list)
+    state.itemDrag = nil
+
+    if list and list.onDrag then
+      local dataType, value = list.onDrag(itemDrag.index)
+
+      if dataType then
+        state.pressed = nil
+        panel:startDrag(dataType, value)
+        return true
+      end
+    end
   end
 
   local hover = find(root, x, y, interactive)
@@ -1804,6 +3354,23 @@ local function grabScrollbar(panel, state, scroll, y)
   return true
 end
 
+-- gives a list's onSelect an item that a press chose, and how: "toggle" with Ctrl, to add it to the chosen ones or take it out,
+-- and "range" with Shift, with the items from the first chosen one to it, in the order shown
+local function selectItem(list, index, how)
+  local between = nil
+
+  if how == "range" then
+    local from = list.selected or index
+    between = {}
+
+    for other = from, index, from <= index and 1 or -1 do
+      between[#between + 1] = other
+    end
+  end
+
+  call(list.onSelect, index, how, between)
+end
+
 -- a press of the first button: a list's item under it is chosen and its list gets the keys, and the element under it is pressed and gets them
 local function handlePointerDown(panel, state, event, x, y)
   local root = state.root
@@ -1816,9 +3383,13 @@ local function handlePointerDown(panel, state, event, x, y)
   -- a press on a list's item chooses it; the element under the pointer still gets the press
   local item = find(root, x, y, isListItem)
 
-  if item and item.itemIndex ~= item.list.selected then
-    call(item.list.onSelect, item.itemIndex)
+  local how = event.shift and "range" or event.ctrl and "toggle" or nil
+
+  if item and (how or item.itemIndex ~= item.list.selected) then
+    selectItem(item.list, item.itemIndex, how)
   end
+
+  state.itemDrag = item and item.list.onDrag and { list = item.list.id, index = item.itemIndex, x = x, y = y } or nil
 
   local node = find(root, x, y, interactive)
 
@@ -1826,11 +3397,16 @@ local function handlePointerDown(panel, state, event, x, y)
     stopEditing(panel, state)
   end
 
-  -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item that takes no press gives the keys to its list
+  -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item gives the keys to its list
+  local target = (node and not isListItem(node)) and node or item and item.list or node or scroll
   state.pressed = node
-  state.keyTarget, state.showRing = node and node.id or item and item.list.id, false
+  state.keyTarget, state.showRing = target and target.id, false
 
-  if node and node.type == "field" then
+  if node and node.isNumber and state.editing ~= node.id then
+    -- a press on a number that is not typed in waits: a drag sideways changes the number, and a release without one types in it
+    stopEditing(panel, state)
+    state.numberDrag = { id = node.id, x = x, value = node.value, moved = false }
+  elseif node and node.type == "field" then
     -- the press puts the cursor where it is, with Shift it selects up to there, and a drag selects
     local edited = state.editing == node.id
     local textX = textStart(node, state)
@@ -1841,8 +3417,8 @@ local function handlePointerDown(panel, state, event, x, y)
   elseif node and node.type == "key" then
     startEditing(panel, state, node)
   elseif node and node.type == "slider" then
-    state.sliding = node.id
-    slide(node, x)
+    state.sliding, state.slid = node.id, nil
+    slide(state, node, x)
   end
 
   if node or item then
@@ -1855,15 +3431,99 @@ end
 -- a release of the first button: a click is a press and a release on the same element
 local function handlePointerUp(panel, state, x, y)
   local pressed = state.pressed
-  state.pressed, state.dragging, state.sliding, state.selecting = nil, nil, nil, nil
+  local drag = state.numberDrag
+  local slid = state.sliding and findById(state.root, state.sliding)
+  state.pressed, state.dragging, state.sliding, state.selecting, state.numberDrag, state.itemDrag = nil, nil, nil, nil, nil, nil
   local node = find(state.root, x, y, interactive)
 
+  -- a drag gives its last number to onSubmit; a press that did not drag types in the number, with the cursor where it was pressed
+  local dragged = drag and findById(state.root, drag.id)
+
+  -- a slider gives the value that its press ended on to onSubmit
+  if slid and slid.type == "slider" then
+    call(slid.onSubmit, state.slid or slid.value)
+  end
+
+  state.slid = nil
+
+  if dragged and drag.moved then
+    dragged.onSubmit(formatNumber(drag.shown or drag.value))
+  elseif dragged then
+    startEditing(panel, state, dragged)
+    state.cursorPosition = positionAt(dragged, state.typed, textStart(dragged, state), drag.x)
+  end
+
   if pressed and node and node.id == pressed.id and node.type == pressed.type and not TAKES_TYPING[node.type] and node.type ~= "slider" then
-    activate(panel, state, node, x)
+    activate(panel, state, node, x, y)
   end
 
   panel:redraw()
   return pressed ~= nil
+end
+
+-- a press of the right button on a list's item that is not chosen chooses it alone, so the menu that the release opens is about it
+local function handleMenuDown(panel, state, x, y)
+  local item = find(state.root, x, y, isListItem)
+
+  if item and not item.chosen then
+    selectItem(item.list, item.itemIndex, nil)
+    panel:redraw()
+  end
+
+  return item ~= nil
+end
+
+-- a release of the right button gives the place to the innermost element under it with onMenu, such as to open a menu there; a list
+-- gives its item under the place first, or nil beside its items
+local function handleMenuUp(state, x, y)
+  local node = find(state.root, x, y, function(node)
+    return node.onMenu ~= nil or (isListItem(node) and node.list.onMenu ~= nil)
+  end)
+
+  if not node then
+    return false
+  end
+
+  if node.onMenu == nil then
+    node.list.onMenu(node.itemIndex, x, y)
+  elseif isList(node) then
+    node.onMenu(nil, x, y)
+  else
+    node.onMenu(x, y)
+  end
+
+  return true
+end
+
+-- data dropped on the panel goes to the innermost element under it with onDrop; a list gives its item under the place, or nil beside its
+-- items, and where on the item it landed: before it in its upper half and after it in its lower half, or for a tree before it in its upper
+-- quarter, after it in its lower quarter and into it between
+local function handleDrop(state, x, y, dataType, value)
+  local node = find(state.root, x, y, function(node)
+    return node.onDrop ~= nil or (isListItem(node) and node.list.onDrop ~= nil)
+  end)
+
+  if not node then
+    return false
+  end
+
+  if node.onDrop == nil then
+    local box, list = node.layout, node.list
+    local part = box.height > 0 and (y - box.y) / box.height or 0.5
+    local where = part < 0.5 and "before" or "after"
+
+    if list.dropInto then
+      where = part < 0.25 and "before" or part >= 0.75 and "after" or "into"
+    end
+
+    list.onDrop(node.itemIndex, where, dataType, value)
+  elseif isList(node) then
+    node.onDrop(nil, nil, dataType, value)
+  else
+    node.onDrop(dataType, value, x, y)
+  end
+
+  return true
 end
 
 -- handles a panel's event: calls the callbacks of the elements it reaches
@@ -1874,11 +3534,28 @@ local function handleEvent(panel, event)
     return false
   end
 
+  textScale = state.scale
+
   -- a tooltip goes when anything but a move happens, and follows the pointer onto other elements
   if event.type == "pointerMove" then
     followTooltip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
   else
     hideTooltip(panel, state)
+  end
+
+  -- Ctrl+F gives the keys to the panel's search field, the first if it has several
+  if event.type == "keyDown" and event.key == "F" and event.ctrl and not event.alt and not event.shift and not event.super then
+    local search = firstWhere(state.root, function(node)
+      return node.isSearch == true
+    end)
+
+    if search then
+      stopEditing(panel, state)
+      state.keyTarget, state.showRing = search.id, false
+      startEditing(panel, state, search)
+      panel:redraw()
+      return true
+    end
   end
 
   -- Tab leaves a field too
@@ -1894,11 +3571,17 @@ local function handleEvent(panel, event)
   local x, y = (event.x or 0) / state.scale, (event.y or 0) / state.scale
 
   if event.type == "pointerMove" then
-    return handlePointerMove(panel, state, x, y)
+    return handlePointerMove(panel, state, x, y, event.shift)
   elseif event.type == "pointerDown" and event.button == 1 then
     return handlePointerDown(panel, state, event, x, y)
   elseif event.type == "pointerUp" and event.button == 1 then
     return handlePointerUp(panel, state, x, y)
+  elseif event.type == "pointerDown" and event.button == 3 then
+    return handleMenuDown(panel, state, x, y)
+  elseif event.type == "pointerUp" and event.button == 3 then
+    return handleMenuUp(state, x, y)
+  elseif event.type == "drop" then
+    return handleDrop(state, x, y, event.dataType, event.value)
   elseif event.type == "wheel" then
     local scroll = find(state.root, x, y, scrollable)
 
@@ -1919,11 +3602,16 @@ end
 local services = {}
 
 -- ids that elements leave out come from their places, so they stay the same from one draw to the next
-local function assignIds(node, path)
+
+-- gives each element without an id one from its place in the tree. An id that two elements have is a misuse: clicks and keys would reach only the first.
+local function assignIds(node, path, seen)
   node.id = node.id or path
+  ecs.check(not seen[node.id], "Two elements of a panel have the id '" .. tostring(node.id) .. "'. Give each its own id.")
+
+  seen[node.id] = true
 
   for i, child in ipairs(node.children or {}) do
-    assignIds(child, path .. "." .. i)
+    assignIds(child, path .. "." .. (child.place or i), seen)
   end
 end
 
@@ -1943,9 +3631,17 @@ function services.show(panel, surface, root)
   local state = panelState(panel)
   local width, height = surface.width / surface.scale, surface.height / surface.scale
   state.scale = surface.scale
-  fonts = {}
-  readSizes()
-  assignIds(root, "root")
+  textScale = surface.scale
+
+  if settingsChanged then
+    settingsChanged = false
+    fonts, measured, measuredCount = {}, {}, 0
+    textSizeSetting = nil
+    readSizes()
+  end
+
+  showCount = showCount + 1
+  assignIds(root, "root", {})
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
   keepScrollOffsets(root, state)
@@ -1955,9 +3651,50 @@ function services.show(panel, surface, root)
   state.pressed = state.pressed and findById(root, state.pressed.id) or nil
   state.root = root
 
-  draw.fill(surface, 0, 0, width, height, "background")
-  paint(root, surface, state)
-  paintTooltip(surface, state, width, height)
+  -- an element that ui.edit named before it was shown gets the keys now, or never
+  if state.editAtShow then
+    local id = state.editAtShow
+    services.edit(panel, id)
+    state.editAtShow = nil
+  end
+
+  -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
+  local last = state.calls
+  state.calls, recording, recordClip = nil, {}, nil
+
+  local ok, message = pcall(function()
+    draw.fill(surface, 0, 0, width, height, "background")
+    paint(root, surface, state)
+
+    if inspecting then
+      paintInspector(surface, state, width, height)
+    else
+      paintTooltip(surface, state, width, height)
+    end
+  end)
+
+  local calls = recording
+  recording, recordClip = nil, nil
+
+  if not ok then
+    error(message, 0)
+  end
+
+  local area = surface.kept and last and changedArea(last, calls)
+
+  if not surface.kept or not last then
+    replay(surface, calls, nil)
+  elseif area then
+    replay(surface, calls, area)
+    local scale = surface.scale
+    local left, top = math.max(0, math.floor(area[1] * scale)), math.max(0, math.floor(area[2] * scale))
+    local right, bottom = math.min(surface.width, math.ceil(area[3] * scale)), math.min(surface.height, math.ceil(area[4] * scale))
+    surface:changed(left, top, math.max(0, right - left), math.max(0, bottom - top))
+  else
+    surface:changed(0, 0, 0, 0)
+  end
+
+  state.calls = calls
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
@@ -1966,6 +3703,44 @@ function services.show(panel, surface, root)
     local rect, scale = cursorRect(edited, state), surface.scale
     panel:setTextInput(true, rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale)
   end
+end
+
+-- a setting may change a size or a font, so the next show reads them again
+ecs.event.subscribe("ecs.settingChanged", function()
+  settingsChanged = true
+end)
+
+-- turns the inspector on or off, for every panel that ui shows
+-- gives copies of ui's own styles, so a plugin that changes one changes only its own
+function services.styles()
+  local copies = {}
+
+  for name, style in pairs(styles) do
+    copies[name] = shallowCopy(style)
+  end
+
+  return copies
+end
+
+function services.inspect()
+  inspecting = not inspecting
+
+  -- a panel whose plugin did not call ui.forget may be gone
+  for panel in pairs(panels) do
+    pcall(panel.redraw, panel)
+  end
+end
+
+-- the element under the pointer in a panel, as the inspector names it, or nil
+function services.inspected(panel)
+  local node = inspected(panelState(panel))
+
+  if not node then
+    return nil
+  end
+
+  local box = node.layout
+  return { type = node.type, id = node.id, x = box.x, y = box.y, width = box.width, height = box.height }
 end
 
 -- forgets a panel's state; call it from the panel's destroy
@@ -2001,15 +3776,21 @@ function services.tooltip(panel)
   return state.tooltipShown and state.tooltip or nil
 end
 
--- starts editing a field or key element, as a click on it does
+-- gives a field, a key element or a list the keys, as a click on it does; before the panel's first show, the element gets them at that show
 function services.edit(panel, id)
   local state = panelState(panel)
   local node = state.root and findById(state.root, id)
+  state.editAtShow = not node and id or nil
 
   -- the keyboard's target follows, without its ring, as after a click
   if node and TAKES_TYPING[node.type] then
+    textScale = state.scale
     state.keyTarget, state.showRing = node.id, false
     startEditing(panel, state, node)
+    panel:redraw()
+  elseif node and isList(node) then
+    stopEditing(panel, state)
+    state.keyTarget, state.showRing = node.id, false
     panel:redraw()
   end
 end
@@ -2029,41 +3810,69 @@ end
 -- descriptions, for plugins in C -------------------------------------------
 
 -- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+-- those of ASKED are kept only by an element whose props have them as true, since they change how the element behaves
+local ASKED = { onActivate = true, onSort = true }
 local CALLBACKS = {
   button = { "onClick" },
   toggle = { "onChange" },
-  slider = { "onChange" },
-  selector = { "onChange" },
-  tabs = { "onChange" },
-  dropdown = { "onChange" },
-  number = { "onChange" },
+  slider = { "onChange", "onSubmit" },
+  selector = { "onSelect" },
+  tabs = { "onSelect" },
+  dropdown = { "onSelect" },
+  number = { "onChange", "onSubmit" },
   key = { "onChange" },
   field = { "onChange", "onSubmit" },
+  path = { "onChange", "onSubmit" },
+  search = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
   tree = { "onSelect", "onActivate", "onToggle" },
+  section = { "onToggle" },
+  color = { "onChange" },
 }
 
 -- what each type's element function takes besides its props: its children, a value, choices, columns and rows, or nodes; the others take a value
 local TAKES = {
   column = "children", row = "children", scroll = "children", list = "children", group = "children",
   selector = "choices", tabs = "choices", dropdown = "choices",
-  table = "table", tree = "tree", separator = "none", space = "none",
+  table = "table", tree = "tree", section = "section", separator = "none", space = "none",
 }
+
+-- the props a description may have: those of ui.Props and of each element's, without the callbacks, and what asks for one
+local DESCRIBED = {}
+
+for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results onActivate onSort"):gmatch("%S+") do
+  DESCRIBED[name] = true
+end
 
 -- an element from a description, built with the element functions, as Lua code builds it
 local function build(panel, description)
   local props = shallowCopy(description.props)
+
+  -- a prop ui does not know is a mistake of the code that describes, such as a name that ui.h and ui no longer share
+  for name in pairs(props) do
+    ecs.check(DESCRIBED[name], ("A described '%s' has the prop '%s', which ui does not know."):format(tostring(description.type), tostring(name)))
+  end
 
   -- a column or row with clickable = true is clicked like a button
   local elementType = description.type
   local callbacks = CALLBACKS[elementType] or (props.clickable and { "onClick" }) or {}
   props.clickable = nil
 
+  -- a field with valid = false refuses the submit, as a Lua onSubmit that returns false does
+  local refuses = (elementType == "field" or elementType == "path") and props.valid == false
+
   for _, callback in ipairs(callbacks) do
     local id = props.id
+    local asked = props[callback] == true
+    props[callback] = nil
 
-    if id then
+    if refuses and callback == "onSubmit" then
+      props.onSubmit = function()
+        return false
+      end
+    elseif id and (asked or not ASKED[callback]) then
       props[callback] = function(value, open)
         local taken = panelState(panel).taken
         taken[id .. "\0" .. callback] = { value = value, open = open }
@@ -2072,9 +3881,26 @@ local function build(panel, description)
     end
   end
 
+  -- a described text with a link keeps the link a click gave, under its id, or under "" without one, so a panel takes the links of every text,
+  -- such as markdown's; a text without a link takes no keys
+  if elementType == "text" and type(description.value) == "table" then
+    for _, span in ipairs(description.value) do
+      if type(span) == "table" and span.link then
+        local key = (props.id or "") .. "\0onLink"
+
+        props.onLink = function(value)
+          panelState(panel).taken[key] = { value = value }
+          panel:redraw()
+        end
+
+        break
+      end
+    end
+  end
+
   local takes = TAKES[elementType]
   local make = elements[elementType]
-  assert(make, ("no element of type '%s'"):format(tostring(elementType)))
+  ecs.check(make, ("There is no element of type '%s'."):format(tostring(elementType)))
 
   if takes == "children" then
     local children = {}
@@ -2085,12 +3911,21 @@ local function build(panel, description)
 
     return make(props, children)
   elseif takes == "choices" then
-    return make(description.value, description.choices, props)
+    return make(description.selected, description.choices, props)
   elseif takes == "table" then
-    return make(props, description.columns, description.rows)
+    return make(description.columns, description.rows, props)
   elseif takes == "tree" then
     props.open, props.selected = description.open, description.selected
-    return make(props, description.nodes)
+    return make(description.nodes, props)
+  elseif takes == "section" then
+    local children = {}
+
+    for i, child in ipairs(description.children or {}) do
+      children[i] = build(panel, child)
+    end
+
+    props.open = description.open
+    return make(description.value, props, children)
   elseif takes == "none" then
     return make(props)
   end
@@ -2108,13 +3943,13 @@ end
 -- takes what a callback of a described element got since the last draw, or nil if it did not run
 function services.take(panel, id, callback)
   local taken = panelState(panel).taken
-  local key = id .. "\0" .. callback
+  local key = (id or "") .. "\0" .. callback
   local got = taken[key]
   taken[key] = nil
   return got
 end
 
-assert(ecs.service.register({
+ecs.service.register({
   show = {
     sig = "void(handle<ecs.panel> panel, handle<ecs.surface> surface, value<ui.Element> root)",
     doc = "Lay out elements in a panel and draw them\n"
@@ -2130,6 +3965,17 @@ assert(ecs.service.register({
         .. "@param event The event, as the panel's event gets it\n"
         .. "@return True if ui handled the event, false if it reached no element or the panel was not shown yet",
     fn = handleEvent,
+  },
+  menu = {
+    sig = "void(handle<ecs.panel> panel, float x, float y, value<ui.MenuEntry[]> entries)",
+    doc = "Open a menu of entries in a popup at a point of a panel, such as where a right click was; a click or Return runs an entry and closes the menu\n"
+        .. "@param panel The panel\n"
+        .. "@param x The point's x in the panel, in layout units, as a pointer event's position divided by the surface's scale\n"
+        .. "@param y The point's y\n"
+        .. "@param entries The entries, in order: each a table of its label, the keys that run it too, whether it is enabled, and its onClick, or a line between entries",
+    fn = function(panel, x, y, entries)
+      openMenu(panel, x, y, entries)
+    end,
   },
   forget = {
     sig = "void(handle<ecs.panel> panel)",
@@ -2159,11 +4005,31 @@ assert(ecs.service.register({
         .. "@return The element's id, or nil if no tooltip shows",
     fn = services.tooltip,
   },
+  styles = {
+    sig = "value<ui.Styles>()",
+    doc = "Give ui's own styles, which its views and the first-party views use so they look alike\n"
+        .. "@return Copies of the styles view, item, title, heading and note, which an element's style prop takes",
+    fn = services.styles,
+  },
+  inspect = {
+    sig = "void()",
+    doc = "Turn the inspector on or off: it outlines every element of every panel that ui shows, and names the one under the pointer "
+        .. "with its type, id, place and size in layout units, and the layout props it has",
+    fn = services.inspect,
+  },
+  inspected = {
+    sig = "value<ui.Inspected?>(handle<ecs.panel> panel)",
+    doc = "Give the element under the pointer in a panel, the innermost one, as the inspector names it\n"
+        .. "@param panel The panel that shows the elements\n"
+        .. "@return The element's type, id, place and size in layout units, or nil if the pointer is over none",
+    fn = services.inspected,
+  },
   edit = {
     sig = "void(handle<ecs.panel> panel, string id)",
-    doc = "Give a field the focus\n"
-        .. "@param panel The panel that shows the field, often the focused panel that a key passes\n"
-        .. "@param id The id of a field or key element in the last layout; another id does nothing",
+    doc = "Give an element the keys\n"
+        .. "@param panel The panel that shows the element, often the focused panel that a key passes\n"
+        .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or else in the next one, such as an element"
+        .. " that shows from the next draw; another id does nothing",
     fn = services.edit,
   },
   reveal = {
@@ -2175,31 +4041,31 @@ assert(ecs.service.register({
     fn = services.reveal,
   },
   column = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other\n"
         .. "@param props The column's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
-        .. "@param children The elements, from the top; none if nil\n"
+        .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
         .. "@return The column",
     fn = elements.column,
   },
   row = {
-    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ContainerProps?> props, value<ui.Child[]?> children)",
     doc = "Elements beside each other\n"
         .. "@param props The row's properties (ui.ContainerProps); with onClick, it is clicked like a button\n"
-        .. "@param children The elements, from the left; none if nil\n"
+        .. "@param children The elements, from the left; one that is false is left out; none if nil\n"
         .. "@return The row",
     fn = elements.row,
   },
   scroll = {
-    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ScrollProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other, which scroll\n"
         .. "@param props The scroll element's properties (ui.ScrollProps), which must have an id; it grows unless grow says otherwise\n"
-        .. "@param children The elements, from the top; none if nil\n"
+        .. "@param children The elements, from the top; one that is false is left out; none if nil\n"
         .. "@return The scroll element",
     fn = elements.scroll,
   },
   list = {
-    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.ListProps?> props, value<ui.Child[]?> children)",
     doc = "Items below each other, which scroll; selected is the chosen one, a press chooses one for onSelect, and a click gives it to onActivate\n"
         .. "@param props The list's properties (ui.ListProps), which must have an id\n"
         .. "@param children The items, from the top; those with selectable = false, such as headings, are not items; none if nil\n"
@@ -2207,29 +4073,54 @@ assert(ecs.service.register({
     fn = elements.list,
   },
   group = {
-    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Element[]?> children)",
+    sig = "value<ui.Element>(value<ui.GroupProps?> props, value<ui.Child[]?> children)",
     doc = "Elements below each other in a frame, under a title\n"
         .. "@param props The group's properties (ui.GroupProps), with its title; padding, gap and border have defaults\n"
         .. "@param children The elements, from the top, below the title; none if nil\n"
         .. "@return The group",
     fn = elements.group,
   },
+  section = {
+    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Child[]?> children)",
+    doc = "A heading with an arrow over elements, which a click on the heading shows and hides; in a list, its elements are the list's items\n"
+        .. "@param title The heading's text\n"
+        .. "@param props The section's properties (ui.SectionProps); the plugin keeps open, and onToggle gets the new state\n"
+        .. "@param children The elements, from the top, below the heading while it is open; none if nil\n"
+        .. "@return The section",
+    fn = elements.section,
+  },
+  color = {
+    sig = "value<ui.Element>(string color, value<ui.ColorProps?> props)",
+    doc = "A colour, as a swatch, which a click opens in a picker\n"
+        .. "@param color The colour, \"#RRGGBB\" or \"#RRGGBBAA\"\n"
+        .. "@param props The element's properties (ui.ColorProps); onChange gets the colour a press in the picker ends on\n"
+        .. "@return The colour element",
+    fn = elements.color,
+  },
   table = {
-    sig = "value<ui.Element>(value<ui.TableProps?> props, value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows)",
+    sig = "value<ui.Element>(value<ui.TableColumn[]?> columns, value<ui.TableRow[]?> rows, value<ui.TableProps?> props)",
     doc = "Rows of cells below a header of the columns' titles, which scroll; selected is the chosen row, and a click on a title gives its column to onSort\n"
-        .. "@param props The table's properties (ui.TableProps), which must have an id\n"
         .. "@param columns The columns, from the left (ui.TableColumn); none if nil\n"
         .. "@param rows The rows, from the top, in the order given, each a table of its cells' values by column id; none if nil\n"
+        .. "@param props The table's properties (ui.TableProps), which must have an id\n"
         .. "@return The table",
     fn = elements.table,
   },
   tree = {
-    sig = "value<ui.Element>(value<ui.TreeProps?> props, value<ui.TreeNode[]?> nodes)",
+    sig = "value<ui.Element>(value<ui.TreeNode[]?> nodes, value<ui.TreeProps?> props)",
     doc = "A list of nodes, each below its parent and indented, which open and close; onSelect, onActivate and onToggle get a node's id\n"
-        .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
         .. "@param nodes The top nodes, each with its children (ui.TreeNode); none if nil\n"
+        .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
         .. "@return The tree",
     fn = elements.tree,
+  },
+  graph = {
+    sig = "value<ui.Element>(value<ui.GraphValue[]> values, value<ui.GraphProps?> props)",
+    doc = "Bars of numbers, such as times; Lua only\n"
+        .. "@param values The bars, the oldest on the left: each a number, or a list of numbers that stack, each in its colour\n"
+        .. "@param props The graph's properties (ui.GraphProps)\n"
+        .. "@return The graph",
+    fn = elements.graph,
   },
   separator = {
     sig = "value<ui.Element>(value<ui.SeparatorProps?> props)",
@@ -2239,9 +4130,9 @@ assert(ecs.service.register({
     fn = elements.separator,
   },
   text = {
-    sig = "value<ui.Element>(string text, value<ui.TextProps?> props)",
-    doc = "A line of text\n"
-        .. "@param text The text, cut with an ellipsis when it does not fit unless props has wrap = true\n"
+    sig = "value<ui.Element>(value<ui.Text> text, value<ui.TextProps?> props)",
+    doc = "A line of text, or of spans in their own styles\n"
+        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true\n"
         .. "@param props The text's properties (ui.TextProps)\n"
         .. "@return The text element",
     fn = elements.text,
@@ -2264,34 +4155,34 @@ assert(ecs.service.register({
   },
   slider = {
     sig = "value<ui.Element>(double value, value<ui.SliderProps?> props)",
-    doc = "A number from min to max, which a drag changes, rounded to step; onChange gets it\n"
+    doc = "A number from min to max, which a drag changes, rounded to step; onChange gets each value of a drag, and onSubmit the one its release ends on\n"
         .. "@param value The number it shows, kept from min to max\n"
         .. "@param props The slider's properties (ui.SliderProps); min and max are 0 and 1 if missing\n"
         .. "@return The slider",
     fn = elements.slider,
   },
   selector = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "One of a few choices, side by side; onChange gets the clicked one\n"
-        .. "@param value The chosen text\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a few choices, side by side; onSelect gets the number of the clicked one\n"
+        .. "@param selected The chosen one's number, from 1; 0 for none\n"
         .. "@param choices The texts to choose from, from the left; none if nil\n"
         .. "@param props The selector's properties (ui.ChoiceProps)\n"
         .. "@return The selector",
     fn = elements.selector,
   },
   tabs = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "Tabs: headers of the choices, with a line under the chosen one; onChange gets the clicked one\n"
-        .. "@param value The chosen tab's text\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "Tabs: headers of the choices, with a line under the chosen one; onSelect gets the number of the clicked one\n"
+        .. "@param selected The chosen tab's number, from 1\n"
         .. "@param choices The tabs' texts, from the left; none if nil\n"
         .. "@param props The tabs' properties (ui.ChoiceProps)\n"
         .. "@return The tabs",
     fn = elements.tabs,
   },
   dropdown = {
-    sig = "value<ui.Element>(string value, value<string[]?> choices, value<ui.ChoiceProps?> props)",
-    doc = "One of a list of choices, which a click opens; onChange gets the chosen one\n"
-        .. "@param value The chosen text, which the closed dropdown shows\n"
+    sig = "value<ui.Element>(int selected, value<string[]?> choices, value<ui.ChoiceProps?> props)",
+    doc = "One of a list of choices, which a click opens; onSelect gets the number of the chosen one\n"
+        .. "@param selected The chosen one's number, from 1, whose text the closed dropdown shows; 0 for none\n"
         .. "@param choices The texts to choose from, from the top; none if nil\n"
         .. "@param props The dropdown's properties (ui.ChoiceProps)\n"
         .. "@return The dropdown",
@@ -2307,11 +4198,35 @@ assert(ecs.service.register({
   },
   number = {
     sig = "value<ui.Element>(double value, value<ui.NumberProps?> props)",
-    doc = "A number that the user types, from min to max, rounded to step; Return or Up and Down give it to onChange\n"
+    doc = "A number that the user types, from min to max, rounded to step; onChange gets it at each edit, and onSubmit at Return; Up and Down give it to both\n"
         .. "@param value The number it shows, kept from min to max and rounded to step; 0 if it is not a number\n"
         .. "@param props The field's properties (ui.NumberProps), which must have an id\n"
         .. "@return The number field",
     fn = elements.number,
+  },
+  path = {
+    sig = "value<ui.Element>(string text, value<ui.PathProps?> props)",
+    doc = "A field for the path of a file, with a button that opens the system's file dialog; onChange and onSubmit get the chosen path as a typed one\n"
+        .. "@param text The path, which typing starts from; empty if nil\n"
+        .. "@param props The path's properties (ui.PathProps), which must have an id; dialog chooses the dialog, and pattern the extensions it shows\n"
+        .. "@return The path element",
+    fn = elements.path,
+  },
+  search = {
+    sig = "value<ui.Element>(string query, value<ui.SearchProps?> props)",
+    doc = "A field that narrows what a view shows, with a button that clears it; onChange gets the query at each edit, Ctrl+F types in it, Escape clears it\n"
+        .. "@param query The query it shows; empty if nil\n"
+        .. "@param props The search's properties (ui.SearchProps); its id is \"search\" if it has none\n"
+        .. "@return The search element",
+    fn = elements.search,
+  },
+  matches = {
+    sig = "bool(string query, string text)",
+    doc = "Tell whether a text matches a search: each word of the query, whatever its case, is somewhere in it; an empty query matches every text\n"
+        .. "@param query The search's query, as ui.search gives it\n"
+        .. "@param text The text to search; several texts of an item are joined with new lines, so that no word matches across two of them\n"
+        .. "@return True if every word is in the text",
+    fn = matchesQuery,
   },
   key = {
     sig = "value<ui.Element>(string combination, value<ui.KeyProps?> props)",
@@ -2348,9 +4263,9 @@ assert(ecs.service.register({
     sig = "value<ui.Taken?>(handle<ecs.panel> panel, string id, string callback)",
     doc = "Take what a callback of a described element got since the last draw, such as onClick or onChange, or nil if it did not run\n"
         .. "@param panel The panel that showed the description\n"
-        .. "@param id The described element's id\n"
+        .. "@param id The described element's id; \"\" for the link that a click gave in a described text without an id\n"
         .. "@param callback The callback's name, such as \"onClick\", \"onChange\" or \"onToggle\"\n"
         .. "@return What the callback got, as value and, for onToggle, open; nil if it did not run or was taken already",
     fn = services.take,
   },
-}))
+})

@@ -46,10 +46,10 @@ typedef struct TextGrid
 } TextGrid;
 
 /// @brief The functions of draw that textgrid draws with.
-typedef void *(*TextGridFontFunction)(const char *name);
+typedef void *(*TextGridFontFunction)(const char *name, const char **retError);
 typedef void (*TextGridFillFunction)(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, ECSColor color);
 typedef f32 (*TextGridTextFunction)(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color);
-typedef void (*TextGridMeasureFunction)(void *font, const char *text, f32 size, f32 *retWidth, f32 *retLineHeight);
+typedef void (*TextGridMeasureFunction)(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight);
 
 static struct
 {
@@ -374,12 +374,14 @@ static bool TextGridResizeCells(TextGrid *grid, i32 columns, i32 rows)
     return true;
 }
 
-static void *TextGridNew(i32 columns, i32 rows)
+static void *TextGridNew(i32 columns, i32 rows, const char **retError)
 {
+    *retError = nullptr;
     TextGrid *grid = SDL_calloc(1, sizeof(TextGrid));
 
     if (grid == nullptr)
     {
+        ECS_Fail(TEXTGRID.plugin, retError, "out of memory");
         return nullptr;
     }
 
@@ -391,6 +393,7 @@ static void *TextGridNew(i32 columns, i32 rows)
 
     if (!TextGridResizeCells(grid, columns, rows))
     {
+        ECS_Fail(TEXTGRID.plugin, retError, "out of memory");
         SDL_free(grid);
         return nullptr;
     }
@@ -398,12 +401,17 @@ static void *TextGridNew(i32 columns, i32 rows)
     return grid;
 }
 
-static void TextGridResize(void *grid, i32 columns, i32 rows)
+static bool TextGridResize(void *grid, i32 columns, i32 rows, const char **retError)
 {
+    *retError = nullptr;
+
     if (!TextGridResizeCells(grid, columns, rows))
     {
-        ECS_LogError(TEXTGRID.plugin, "Cannot resize a grid: out of memory.");
+        ECS_Fail(TEXTGRID.plugin, retError, "out of memory");
+        return false;
     }
+
+    return true;
 }
 
 static void TextGridGetSize(void *gridHandle, i32 *retColumns, i32 *retRows)
@@ -459,9 +467,9 @@ static void TextGridSetStyle(void *gridHandle, const char *style)
         {
             flags |= TEXTGRID_UNDERLINE;
         }
-        else if (length > 0)
+        else if (!ECS_Check(TEXTGRID.plugin, length == 0, "A grid's style is made of the words bold and underline, not '%.*s'.", (int)length, word))
         {
-            ECS_LogWarn(TEXTGRID.plugin, "A grid's style is made of the words bold and underline, not '%.*s'.", (int)length, word);
+            return;
         }
 
         word += length + (word[length] == ' ' ? 1 : 0);
@@ -596,17 +604,17 @@ static void TextGridPrint(void *gridHandle, const char *text)
     }
 }
 
-/// @brief Gives the size of a cell at a font size, in layout units: the width of a character of the monospace font, and its line height.
-static void TextGridCellSize(f32 size, f32 *retWidth, f32 *retHeight)
+/// @brief Gives the size of a cell at a font size and a surface's scale, in layout units: the width of a character of the monospace font, and its line height, as the grid draws them.
+static void TextGridCellSize(f32 size, f32 scale, f32 *retWidth, f32 *retHeight)
 {
-    TEXTGRID.Measure(TEXTGRID.font, "M", size, retWidth, retHeight);
+    TEXTGRID.Measure(TEXTGRID.font, "M", size, scale > 0.0f ? scale : 1.0f, retWidth, retHeight);
 }
 
-static void TextGridFit(f32 width, f32 height, f32 size, i32 *retColumns, i32 *retRows)
+static void TextGridFit(f32 width, f32 height, f32 size, f32 scale, i32 *retColumns, i32 *retRows)
 {
     f32 cellWidth = 0.0f;
     f32 cellHeight = 0.0f;
-    TextGridCellSize(size, &cellWidth, &cellHeight);
+    TextGridCellSize(size, scale, &cellWidth, &cellHeight);
     *retColumns = cellWidth <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(width / cellWidth));
     *retRows = cellHeight <= 0.0f ? 0 : (i32)SDL_max(0.0f, SDL_floorf(height / cellHeight));
 }
@@ -654,9 +662,7 @@ static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f3
     f32 scale = surface->scale > 0.0f ? surface->scale : 1.0f;
     f32 cellWidth = 0.0f;
     f32 cellHeight = 0.0f;
-    TextGridCellSize(size * scale, &cellWidth, &cellHeight);
-    cellWidth /= scale;
-    cellHeight /= scale;
+    TEXTGRID.Measure(TEXTGRID.font, "M", size, scale, &cellWidth, &cellHeight);
 
     // a run of a row's cells in one colour and style is drawn at once: its backgrounds in one fill, and its characters in one text
     char *text = SDL_malloc((usz)grid->columns * 4 + 1);
@@ -715,11 +721,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 
     // the grids are drawn with draw's functions and its monospace font
     TextGridFontFunction Font = nullptr;
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&Font, "draw.font", "handle<draw.font>(string name)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&Font, "draw.font", "handle<draw.font>(string name, out string error)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Fill, "draw.fill", "void(handle<ecs.surface> surface, float x, float y, float width, float height, color color)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Text, "draw.text", "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)"));
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Measure, "draw.measure", "void(handle<draw.font> font, string text, float size, out float width, out float lineHeight)"));
-    TEXTGRID.font = Font("mono");
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&TEXTGRID.Measure, "draw.measure", "void(handle<draw.font> font, string text, float size, float scale, out float width, out float lineHeight)"));
+    const char *error = nullptr;
+    TEXTGRID.font = Font("mono", &error);
 
     if (TEXTGRID.font == nullptr)
     {
@@ -735,19 +742,22 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"new", (ECSFunction)TextGridNew, "handle<textgrid.grid>(int columns, int rows)",
+        {"new", (ECSFunction)TextGridNew, "handle<textgrid.grid>(int columns, int rows, out string error)",
          "Make a grid of empty cells, in the theme's colours of text\n"
          "@param columns The number of columns; at least 1\n"
          "@param rows The number of rows; at least 1\n"
+         "@param error Why there is no grid, as memory ran out; nothing if there is\n"
          "@return The grid, or nothing if memory runs out"},
         {"free", (ECSFunction)TextGridFree, "void(handle<textgrid.grid> grid)",
          "Free a grid now, instead of when no one uses its handle\n"
          "@param grid The grid; its handle is not used again"},
-        {"resize", (ECSFunction)TextGridResize, "void(handle<textgrid.grid> grid, int columns, int rows)",
+        {"resize", (ECSFunction)TextGridResize, "bool(handle<textgrid.grid> grid, int columns, int rows, out string error)",
          "Change a grid's size; its lines wrap again at the new width, and the first rows go when they do not fit\n"
          "@param grid The grid; it stays as it was if memory runs out\n"
          "@param columns The new number of columns; at least 1\n"
-         "@param rows The new number of rows; at least 1"},
+         "@param rows The new number of rows; at least 1\n"
+         "@param error Why it is not resized, as memory ran out; nothing if it is\n"
+         "@return True if it is resized"},
         {"size", (ECSFunction)TextGridGetSize, "void(handle<textgrid.grid> grid, out int columns, out int rows)",
          "Give a grid's size\n"
          "@param grid The grid\n"
@@ -792,16 +802,18 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param grid The grid\n"
          "@param column Gets the cursor's column, from 0 at the left; it is the number of columns after print fills a row\n"
          "@param row Gets the cursor's row, from 0 at the top"},
-        {"cell", (ECSFunction)TextGridCellSize, "void(float size, out float width, out float height)",
-         "Give the size of a cell at a font size\n"
+        {"cell", (ECSFunction)TextGridCellSize, "void(float size, float scale, out float width, out float height)",
+         "Give the size of a cell at a font size, as the grid draws it\n"
          "@param size The font size, in layout units\n"
+         "@param scale The scale of the surface the grid is drawn into, as the cell is measured at the size it is drawn at; 1 without a surface\n"
          "@param width Gets a cell's width, in layout units: a character's width in draw's \"mono\" font\n"
          "@param height Gets a cell's height, in layout units: the font's line height"},
-        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, out int columns, out int rows)",
+        {"fit", (ECSFunction)TextGridFit, "void(float width, float height, float size, float scale, out int columns, out int rows)",
          "Give how many cells fit a rectangle at a font size\n"
          "@param width The rectangle's width, in layout units\n"
          "@param height The rectangle's height, in layout units\n"
          "@param size The font size, in layout units\n"
+         "@param scale The scale of the surface the grid is drawn into, as with cell\n"
          "@param columns Gets the number of whole columns that fit, or 0 if the font cannot be opened\n"
          "@param rows Gets the number of whole rows that fit, or 0 if the font cannot be opened"},
         {"draw", (ECSFunction)TextGridDraw, "void(handle<ecs.surface> surface, handle<textgrid.grid> grid, float x, float y, float size, bool cursor)",

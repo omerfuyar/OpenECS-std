@@ -25,21 +25,14 @@ static struct
 {
     ECSPlugin plugin;
     bool sdlStarted;
-    char *error; // why the last call failed, kept until the next one
 } GAMEPAD = {0};
 
-/// @brief Keeps why a call failed, with SDL's error, and gives it.
+/// @brief Fails a call, as ECS_Fail does, with SDL's error, and gives why.
 static const char *GamepadFail(const char *what)
 {
-    SDL_free(GAMEPAD.error);
-    GAMEPAD.error = nullptr;
-
-    if (SDL_asprintf(&GAMEPAD.error, "%s: %s", what, SDL_GetError()) < 0)
-    {
-        GAMEPAD.error = nullptr;
-    }
-
-    return GAMEPAD.error == nullptr ? "out of memory" : GAMEPAD.error;
+    const char *error = nullptr;
+    ECS_Fail(GAMEPAD.plugin, &error, "%s: %s", what, SDL_GetError());
+    return error;
 }
 
 /// @brief An axis's value from -1 to 1, or 0 to 1 for a trigger.
@@ -228,14 +221,30 @@ static bool GamepadConnected(GamepadHandle *handle)
     return SDL_GamepadConnected(handle->gamepad);
 }
 
+/// @brief Gives a button by SDL's name of it; a name that is not a button is a misuse.
+static SDL_GamepadButton GamepadFindButton(const char *button)
+{
+    SDL_GamepadButton index = SDL_GetGamepadButtonFromString(button);
+    (void)ECS_Check(GAMEPAD.plugin, index != SDL_GAMEPAD_BUTTON_INVALID, "'%s' is not a gamepad's button.", button);
+    return index;
+}
+
+/// @brief Gives an axis by SDL's name of it; a name that is not an axis is a misuse.
+static SDL_GamepadAxis GamepadFindAxis(const char *axis)
+{
+    SDL_GamepadAxis index = SDL_GetGamepadAxisFromString(axis);
+    (void)ECS_Check(GAMEPAD.plugin, index != SDL_GAMEPAD_AXIS_INVALID, "'%s' is not a gamepad's axis.", axis);
+    return index;
+}
+
 static bool GamepadButton(GamepadHandle *handle, const char *button)
 {
-    return SDL_GetGamepadButton(handle->gamepad, SDL_GetGamepadButtonFromString(button));
+    return SDL_GetGamepadButton(handle->gamepad, GamepadFindButton(button));
 }
 
 static f32 GamepadAxis(GamepadHandle *handle, const char *axis)
 {
-    return GamepadAxisValue(SDL_GetGamepadAxis(handle->gamepad, SDL_GetGamepadAxisFromString(axis)));
+    return GamepadAxisValue(SDL_GetGamepadAxis(handle->gamepad, GamepadFindAxis(axis)));
 }
 
 /// @brief A strength from 0 to 1 as SDL's rumble takes it.
@@ -244,9 +253,17 @@ static u16 GamepadStrength(f32 strength)
     return (u16)(SDL_clamp(strength, 0.0F, 1.0F) * (f32)0xFFFF);
 }
 
-static bool GamepadRumble(GamepadHandle *handle, f32 low, f32 high, f32 seconds)
+static bool GamepadRumble(GamepadHandle *handle, f32 low, f32 high, f32 seconds, const char **retError)
 {
-    return SDL_RumbleGamepad(handle->gamepad, GamepadStrength(low), GamepadStrength(high), (u32)(SDL_max(seconds, 0.0F) * 1000.0F));
+    *retError = nullptr;
+
+    if (!SDL_RumbleGamepad(handle->gamepad, GamepadStrength(low), GamepadStrength(high), (u32)(SDL_max(seconds, 0.0F) * 1000.0F)))
+    {
+        *retError = GamepadFail("the gamepad cannot rumble");
+        return false;
+    }
+
+    return true;
 }
 
 static GamepadVirtual *GamepadAttachVirtual(const char *name, const char **retError)
@@ -286,20 +303,44 @@ static i32 GamepadVirtualId(GamepadVirtual *handle)
 
 // a virtual gamepad's buttons and axes are in SDL's gamepad order, as it is a gamepad. SDL reads a virtual gamepad once in each pass of the main loop,
 // so a press and a release in one pass would give no event; it reads it at once instead, and each change gives its event
-static bool GamepadVirtualPress(GamepadVirtual *handle, const char *button, bool down)
+static bool GamepadVirtualPress(GamepadVirtual *handle, const char *button, bool down, const char **retError)
 {
-    SDL_GamepadButton index = SDL_GetGamepadButtonFromString(button);
-    bool set = index != SDL_GAMEPAD_BUTTON_INVALID && SDL_SetJoystickVirtualButton(handle->joystick, index, down);
+    *retError = nullptr;
+    SDL_GamepadButton index = GamepadFindButton(button);
+
+    if (index == SDL_GAMEPAD_BUTTON_INVALID)
+    {
+        return false;
+    }
+
+    if (!SDL_SetJoystickVirtualButton(handle->joystick, index, down))
+    {
+        *retError = GamepadFail("the button cannot be set");
+        return false;
+    }
+
     SDL_UpdateJoysticks();
-    return set;
+    return true;
 }
 
-static bool GamepadVirtualMove(GamepadVirtual *handle, const char *axis, f32 value)
+static bool GamepadVirtualMove(GamepadVirtual *handle, const char *axis, f32 value, const char **retError)
 {
-    SDL_GamepadAxis index = SDL_GetGamepadAxisFromString(axis);
-    bool set = index != SDL_GAMEPAD_AXIS_INVALID && SDL_SetJoystickVirtualAxis(handle->joystick, index, (i16)(SDL_clamp(value, -1.0F, 1.0F) * (f32)SDL_JOYSTICK_AXIS_MAX));
+    *retError = nullptr;
+    SDL_GamepadAxis index = GamepadFindAxis(axis);
+
+    if (index == SDL_GAMEPAD_AXIS_INVALID)
+    {
+        return false;
+    }
+
+    if (!SDL_SetJoystickVirtualAxis(handle->joystick, index, (i16)(SDL_clamp(value, -1.0F, 1.0F) * (f32)SDL_JOYSTICK_AXIS_MAX)))
+    {
+        *retError = GamepadFail("the axis cannot be set");
+        return false;
+    }
+
     SDL_UpdateJoysticks();
-    return set;
+    return true;
 }
 
 // SDL ignores gamepads while none of the tool's windows has the keyboard's focus, as games want, unless this setting says otherwise
@@ -321,7 +362,6 @@ static void GamepadFree(void *data)
         SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
     }
 
-    SDL_free(GAMEPAD.error);
     SDL_zero(GAMEPAD);
 }
 
@@ -359,19 +399,20 @@ static SHUResult GamepadRegister(ECSPlugin plugin)
          "Tell whether a button is down\n"
          "@param gamepad The gamepad\n"
          "@param button SDL's name of it: a, b, x, y, back, guide, start, leftstick, rightstick, leftshoulder, rightshoulder, dpup, dpdown, dpleft, dpright, misc1\n"
-         "@return true while it is down; false for a name that is not a button"},
+         "@return true while it is down"},
         {"axis", (ECSFunction)GamepadAxis, "float(handle<gamepad.gamepad> gamepad, string axis)",
          "Give where a stick or a trigger is\n"
          "@param gamepad The gamepad\n"
          "@param axis SDL's name of it: leftx, lefty, rightx, righty, lefttrigger, righttrigger\n"
-         "@return -1 to 1 for a stick, with y growing down, and 0 to 1 for a trigger; 0 for a name that is not an axis"},
-        {"rumble", (ECSFunction)GamepadRumble, "bool(handle<gamepad.gamepad> gamepad, float low, float high, float seconds)",
+         "@return -1 to 1 for a stick, with y growing down, and 0 to 1 for a trigger"},
+        {"rumble", (ECSFunction)GamepadRumble, "bool(handle<gamepad.gamepad> gamepad, float low, float high, float seconds, out string error)",
          "Rumble the gamepad; a new rumble replaces the last one, and a strength of 0 for both stops it\n"
          "@param gamepad The gamepad\n"
          "@param low The strength of the low-frequency motor, 0 to 1\n"
          "@param high The strength of the high-frequency motor, 0 to 1\n"
          "@param seconds How long it rumbles\n"
-         "@return false if the gamepad cannot rumble"},
+         "@param error Why it cannot rumble, as when it has no motors; nothing if it rumbles\n"
+         "@return True if it rumbles"},
         {"attachVirtual", (ECSFunction)GamepadAttachVirtual, "handle<gamepad.virtual>(string name, out string error)",
          "Plug in a virtual gamepad, whose buttons and axes the plugin sets; it shows as any gamepad does, for tests and for tools that turn other input into a gamepad's\n"
          "@param name Its name\n"
@@ -381,18 +422,20 @@ static SHUResult GamepadRegister(ECSPlugin plugin)
          "Give the virtual gamepad's id, to open it as a gamepad\n"
          "@param pad The virtual gamepad\n"
          "@return Its id"},
-        {"virtualPress", (ECSFunction)GamepadVirtualPress, "bool(handle<gamepad.virtual> pad, string button, bool down)",
+        {"virtualPress", (ECSFunction)GamepadVirtualPress, "bool(handle<gamepad.virtual> pad, string button, bool down, out string error)",
          "Press or release a button of the virtual gamepad\n"
          "@param pad The virtual gamepad\n"
          "@param button The button's name, as button takes it\n"
          "@param down true to press it, false to release it\n"
-         "@return false for a name that is not a button"},
-        {"virtualMove", (ECSFunction)GamepadVirtualMove, "bool(handle<gamepad.virtual> pad, string axis, float value)",
+         "@param error Why it cannot be set; nothing if it is\n"
+         "@return True if it is set"},
+        {"virtualMove", (ECSFunction)GamepadVirtualMove, "bool(handle<gamepad.virtual> pad, string axis, float value, out string error)",
          "Move a stick or a trigger of the virtual gamepad\n"
          "@param pad The virtual gamepad\n"
          "@param axis The axis's name, as axis takes it\n"
          "@param value Where it goes, -1 to 1\n"
-         "@return false for a name that is not an axis"},
+         "@param error Why it cannot be set; nothing if it is\n"
+         "@return True if it is set"},
     };
 
     for (usz i = 0; i < SDL_arraysize(functions); i++)

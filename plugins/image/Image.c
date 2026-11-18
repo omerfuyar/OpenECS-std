@@ -32,7 +32,7 @@
 #define IMAGE_JPG_QUALITY 90
 
 /// @brief draw.newImage, which makes an image of the draw plugin from pixels.
-typedef void *(*ImageNewFunction)(i32 width, i32 height, SHUSlice pixels);
+typedef void *(*ImageNewFunction)(i32 width, i32 height, SHUSlice pixels, const char **retError);
 
 /// @brief draw.imageSize, which gives an image's size in pixels.
 typedef void (*ImageSizeFunction)(void *image, i32 *retWidth, i32 *retHeight);
@@ -139,16 +139,21 @@ static SDL_Surface *ImageReadBytes(SHUSlice bytes, f32 scale)
 }
 
 /// @brief Makes an image of draw from a surface's pixels, and destroys the surface.
-static void *ImageMake(SDL_Surface *surface)
+/// @return The image, or nullptr and why in retError.
+static void *ImageMake(SDL_Surface *surface, const char **retError)
 {
-    if (surface == nullptr)
-    {
-        return nullptr;
-    }
-
     // draw takes the pixels row after row, without the surface's padding
     SDL_Surface *packed = surface->pitch == surface->w * 4 ? surface : SDL_DuplicateSurface(surface);
-    void *image = packed == nullptr ? nullptr : IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4));
+    void *image = nullptr;
+
+    if (packed == nullptr)
+    {
+        ECS_Fail(IMAGE.plugin, retError, "out of memory");
+    }
+    else
+    {
+        image = IMAGE.NewImage(surface->w, surface->h, cs(packed->pixels, (usz)surface->w * (usz)surface->h * 4), retError);
+    }
 
     if (packed != surface)
     {
@@ -166,8 +171,8 @@ static const char *ImageFailure(void)
 }
 
 /// @brief Reads a whole file, from a path whose relative form starts at the executable's folder. Free it with SDL_free.
-/// @return The bytes, or empty if the file cannot be read, or is too large for stb_image; the reason is logged.
-static SHUSlice ImageReadFile(const char *path)
+/// @return The bytes, or empty and why in retError if the file cannot be read, or is too large for stb_image.
+static SHUSlice ImageReadFile(const char *path, const char **retError)
 {
     char *fullPath = nullptr;
     usz size = 0;
@@ -175,7 +180,7 @@ static SHUSlice ImageReadFile(const char *path)
 
     if (file == nullptr || size > (usz)SDL_MAX_SINT32)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", fullPath != nullptr ? fullPath : path, file == nullptr ? SDL_GetError() : "the file is too large");
+        ECS_Fail(IMAGE.plugin, retError, "Cannot read the image '%s': %s", fullPath != nullptr ? fullPath : path, file == nullptr ? SDL_GetError() : "the file is too large");
         SDL_free(file);
         ECSPath_Free(fullPath);
         return cs(nullptr, 0);
@@ -185,23 +190,16 @@ static SHUSlice ImageReadFile(const char *path)
     return cs(file, size);
 }
 
-/// @brief Checks that an image is read at a scale above 0; the reason it is not is logged.
+/// @brief Checks that an image is read at a scale above 0.
 static bool ImageCheckScale(f32 scale)
 {
-    if (scale <= 0.0f)
-    {
-        ECS_LogWarn(IMAGE.plugin, "An image is read at a scale above 0, not %g.", (double)scale);
-        return false;
-    }
-
-    return true;
+    return ECS_Check(IMAGE.plugin, scale > 0.0f, "An image is read at a scale above 0, not %g.", (double)scale);
 }
 
-/// @brief Reads an image file into a new image of the draw plugin.
-/// @return The image, or nullptr if the file cannot be read; the reason is logged.
-static void *ImageLoad(const char *path, f32 scale)
+static void *ImageLoad(const char *path, f32 scale, const char **retError)
 {
-    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path) : cs(nullptr, 0);
+    *retError = nullptr;
+    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path, retError) : cs(nullptr, 0);
 
     if (file.data == nullptr)
     {
@@ -213,19 +211,19 @@ static void *ImageLoad(const char *path, f32 scale)
 
     if (surface == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", path, ImageFailure());
+        ECS_Fail(IMAGE.plugin, retError, "Cannot read the image '%s': %s", path, ImageFailure());
+        return nullptr;
     }
 
-    return ImageMake(surface);
+    return ImageMake(surface, retError);
 }
 
-/// @brief Reads an image from bytes in memory, such as a PNG file's, into a new image of the draw plugin; bytes that start with < are read as SVG.
-/// @return The image, or nullptr if the bytes are not an image; the reason is logged.
-static void *ImageDecode(SHUSlice bytes, f32 scale)
+static void *ImageDecode(SHUSlice bytes, f32 scale, const char **retError)
 {
-    if (scale <= 0.0f || bytes.size == 0 || bytes.size > (usz)SDL_MAX_SINT32)
+    *retError = nullptr;
+
+    if (!ImageCheckScale(scale) || !ECS_Check(IMAGE.plugin, bytes.size > 0 && bytes.size <= (usz)SDL_MAX_SINT32, "An image is read from bytes that are there, not %llu of them.", (unsigned long long)bytes.size))
     {
-        ECS_LogWarn(IMAGE.plugin, "An image is read from bytes that are there, at a scale above 0.");
         return nullptr;
     }
 
@@ -233,10 +231,11 @@ static void *ImageDecode(SHUSlice bytes, f32 scale)
 
     if (surface == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read an image from bytes: %s", ImageFailure());
+        ECS_Fail(IMAGE.plugin, retError, "Cannot read an image from bytes: %s", ImageFailure());
+        return nullptr;
     }
 
-    return ImageMake(surface);
+    return ImageMake(surface, retError);
 }
 
 /// @brief Adds a frame to a list of frames: a table of its image and the seconds it shows for.
@@ -306,25 +305,33 @@ static void ImageGifAvoidPrevious(u8 *data, usz size)
 }
 
 /// @brief Reads the frames of an animated GIF file into new images of draw, each with the seconds it shows for; any other image file gives one frame of 0 seconds.
-/// The frames are a list; a file that cannot be read gives nil, and the reason is logged.
-static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
+/// The frames are a list; a file that cannot be read gives nil, and why in retError.
+static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames, const char **retError)
 {
     ECSValue_SetNil(retFrames);
+    *retError = nullptr;
 
     if (!ImageEndsWith(path, ".gif"))
     {
-        void *image = ImageLoad(path, scale);
+        void *image = ImageLoad(path, scale, retError);
+
+        if (image == nullptr)
+        {
+            return;
+        }
+
         ECSValue_SetTable(retFrames);
 
-        if (image == nullptr || ImageAddFrame(retFrames, image, 0.0) != SHUResult_Ok)
+        if (ImageAddFrame(retFrames, image, 0.0) != SHUResult_Ok)
         {
             ECSValue_SetNil(retFrames);
+            ECS_Fail(IMAGE.plugin, retError, "out of memory");
         }
 
         return;
     }
 
-    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path) : cs(nullptr, 0);
+    SHUSlice file = ImageCheckScale(scale) ? ImageReadFile(path, retError) : cs(nullptr, 0);
 
     if (file.data == nullptr)
     {
@@ -342,20 +349,22 @@ static void ImageLoadFrames(const char *path, f32 scale, ECSValue *retFrames)
 
     if (pixels == nullptr)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot read the image '%s': %s", path, ImageFailure());
+        ECS_Fail(IMAGE.plugin, retError, "Cannot read the image '%s': %s", path, ImageFailure());
         return;
     }
 
-    // the frames lie one after another, each with its delay in milliseconds
+    // the frames lie one after another, each with its delay in milliseconds; a frame that cannot be made fails them all
     ECSValue_SetTable(retFrames);
 
     for (int i = 0; i < count; i++)
     {
-        void *image = ImageMake(ImageFromRgbaPixels(pixels + (usz)i * (usz)width * (usz)height * 4, width, height, scale));
+        SDL_Surface *surface = ImageFromRgbaPixels(pixels + (usz)i * (usz)width * (usz)height * 4, width, height, scale);
+        void *image = surface == nullptr ? nullptr : ImageMake(surface, retError);
 
         if (image == nullptr || ImageAddFrame(retFrames, image, delays == nullptr ? 0.0 : (f64)delays[i] / 1000.0) != SHUResult_Ok)
         {
-            ECS_LogError(IMAGE.plugin, "Cannot make frame %d of the image '%s': out of memory", i + 1, path);
+            ECSValue_SetNil(retFrames);
+            ECS_Fail(IMAGE.plugin, retError, "Cannot make frame %d of the image '%s': %s", i + 1, path, *retError != nullptr ? *retError : "out of memory");
             break;
         }
     }
@@ -392,10 +401,10 @@ static bool ImageWrite(const char *fullPath, ImageFormat format, i32 width, i32 
     return false;
 }
 
-/// @brief Writes an image of draw to a file, in the format its extension names: .png, .jpg or .jpeg, .bmp or .tga.
-/// @return Whether the file was written; the reason it was not is logged.
-static bool ImageSave(void *image, const char *path)
+static bool ImageSave(void *image, const char *path, const char **retError)
 {
+    *retError = nullptr;
+
     const struct
     {
         const char *extension;
@@ -408,9 +417,8 @@ static bool ImageSave(void *image, const char *path)
         chosen++;
     }
 
-    if (chosen == SDL_arraysize(formats))
+    if (!ECS_Check(IMAGE.plugin, chosen < SDL_arraysize(formats), "An image is written to a .png, .jpg, .jpeg, .bmp or .tga file, not '%s'.", path))
     {
-        ECS_LogWarn(IMAGE.plugin, "An image is written to a .png, .jpg, .jpeg, .bmp or .tga file, not '%s'.", path);
         return false;
     }
 
@@ -428,7 +436,7 @@ static bool ImageSave(void *image, const char *path)
 
     if (!written)
     {
-        ECS_LogError(IMAGE.plugin, "Cannot write the image '%s'", fullPath != nullptr ? fullPath : path);
+        ECS_Fail(IMAGE.plugin, retError, "Cannot write the image '%s'", fullPath != nullptr ? fullPath : path);
     }
 
     ECSPath_Free(fullPath);
@@ -449,7 +457,7 @@ static void ImageFree(void *data)
 SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     IMAGE.plugin = plugin;
-    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels)"));
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.NewImage, "draw.newImage", "handle<draw.image>(int width, int height, buffer pixels, out string error)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImageSize, "draw.imageSize", "void(handle<draw.image> image, out int width, out int height)"));
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&IMAGE.ImagePixels, "draw.imagePixels", "buffer(handle<draw.image> image)"));
     IMAGE.rasterizer = nsvgCreateRasterizer();
@@ -463,27 +471,31 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = ImageFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), ImageFree(nullptr););
 
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale)",
-                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale. Nothing if it cannot be read\n"
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "load", (ECSFunction)ImageLoad, "handle<draw.image>(string path, float scale, out string error)",
+                                                 "Read an image file into an image of draw, at a scale of its own size; an SVG file is drawn sharp at that scale\n"
                                                  "@param path The file's path, PNG, JPG, GIF, BMP, TGA, PSD, HDR, PNM or SVG; a relative path starts at the executable's folder\n"
                                                  "@param scale The scale of the file's own size, above 0; 1 keeps its size, and an SVG file's size is its own at 96 dots per inch\n"
-                                                 "@return A new image, or nothing if the file cannot be read; the reason is logged"));
+                                                 "@param error Why the file cannot be read; nothing if it was\n"
+                                                 "@return A new image; nothing if the file cannot be read"));
 
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "decode", (ECSFunction)ImageDecode, "handle<draw.image>(buffer bytes, float scale)",
-                                                 "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does. Nothing if they are not an image\n"
-                                                 "@param bytes The whole file's bytes; bytes that start with < after any spaces are read as SVG\n"
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "decode", (ECSFunction)ImageDecode, "handle<draw.image>(buffer bytes, float scale, out string error)",
+                                                 "Read an image from the bytes of its file, such as a PNG file's, into an image of draw, at a scale as load does\n"
+                                                 "@param bytes The whole file's bytes, not empty; bytes that start with < after any spaces are read as SVG\n"
                                                  "@param scale The scale of the image's own size, above 0; 1 keeps its size\n"
-                                                 "@return A new image, or nothing if the bytes are not an image; the reason is logged"));
+                                                 "@param error Why the bytes cannot be read, such as when they are not an image; nothing if they were\n"
+                                                 "@return A new image; nothing if the bytes cannot be read"));
 
-    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value<image.Frame[]?> frames)",
+    SHU_ReturnResult(ECSService_RegisterFunction(plugin, "loadFrames", (ECSFunction)ImageLoadFrames, "void(string path, float scale, out value<image.Frame[]?> frames, out string error)",
                                                  "Read the frames of an animated GIF file into images of draw, each a table of its image and the seconds it shows for; another image file gives one frame\n"
                                                  "@param path The file's path, as load takes it\n"
                                                  "@param scale The scale of each frame's own size, above 0, as load takes it\n"
-                                                 "@param frames Set to the list of frames in order, each with its new image and the seconds it shows for, 0 for a file that is not a GIF; nothing if the file cannot be read"));
+                                                 "@param frames Set to the list of frames in order, each with its new image and the seconds it shows for, 0 for a file that is not a GIF; nothing if the file cannot be read\n"
+                                                 "@param error Why the file cannot be read; nothing if it was"));
 
-    return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path)",
+    return ECSService_RegisterFunction(plugin, "save", (ECSFunction)ImageSave, "bool(handle<draw.image> image, string path, out string error)",
                                        "Write an image of draw to a file, in the format its extension names: .png, .jpg, .jpeg, .bmp or .tga\n"
                                        "@param image The image to write, which is left as it is\n"
                                        "@param path The file's path, replaced if it is there; a relative path starts at the executable's folder, and a JPG file is written at a quality of 90 in 100\n"
-                                       "@return Whether the file was written; the reason it was not is logged");
+                                       "@param error Why the file cannot be written; nothing if it was\n"
+                                       "@return Whether the file was written");
 }

@@ -21,10 +21,17 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **hash:** checksums and hashes of data, whole or in parts: CRC-32, MD5, SHA-1, SHA-256, SHA-512 and xxHash's XXH64, XXH3 and XXH128.
 - **sqlite:** SQLite databases, in files or in memory: statements with parameters, whose rows are Lua tables.
 - **notify:** desktop notifications with buttons, and tray icons with menus, whose clicks come back as events.
+- **regex:** regular expressions in UTF-8 text with PCRE2: test, match, find every match, replace and split.
+- **markdown:** Markdown read into a tree, or into ui's elements for notes and help panels.
+- **syntax:** syntax highlighting of C, Lua and JSON with tree-sitter, as ranges or as ui's spans.
+- **video:** MPEG-1 video files with their MP2 sound, drawn with draw and played with mixer.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
 - **panels:** the panel list: every panel type of the tool, by plugin, to open one.
 - **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
+- **files:** a folder's files as a tree, to open, make, rename, move and delete them, which a tool tells how its files open.
+- **viewer:** shows a file as what it is: an image, a sound or a text.
+- **console:** a log that plugins add lines to, whose lines that name a file open it in a code editor.
 
 OpenECS ships them: this repository is a submodule of OpenECS, in its `std/` folder.
 
