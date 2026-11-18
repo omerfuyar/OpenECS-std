@@ -35,6 +35,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 29. The files panel
 30. The viewer
 31. The console
+32. The profiler
 
 ## 1. Rules
 
@@ -564,6 +565,16 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The command's words are split at spaces, and a word in double quotes keeps its spaces, such as `"C:\Program Files\Editor\editor.exe" {file}`. The console finds its program as a path or in the folders of `PATH`; on Windows it tries each ending of `PATHEXT` too, so `code` finds `code.cmd`, which Windows starts through cmd. It starts the command with process (20). When the program is not there, or does not start, the system opens the file with the program that it has for such files, and the console warns once.
 - The entries are a list. A click on an entry chooses it, and a second click on it within 0.4 seconds, a double click, goes to what it is about: the file and line that it names, or else its first link. A right click opens its menu, of Go to and Copy. Ctrl+C, bound to `console.copy`, copies the chosen entry's text, with its count when it stacked.
 - The panel follows its last entry as entries are added.
+
+## 32. The profiler
+
+- The first-party Lua plugin `profiler` shows where the main thread's time goes, as the core measures it while the setting `ecs.profile` is on (OpenECS DESIGN 3.5). Its panel type is `profiler.view`, titled "Profiler". It is built with ui (5).
+- The core's settings file loads it for every tool, and binds `profiler.open` to Alt+W, then `F` (OpenECS DESIGN 12.3). `profiler.open` opens the panel, or focuses it if it is open.
+- Its Measure switch turns `ecs.profile` on and off with `ecs.setting.set`. While it is off, the panel says how to turn it on.
+- The panel reads `ecs.profile.get()` every half second, not in each draw, so its own drawing stays small. Its Pause toggle keeps the numbers that show, to read or copy them.
+- A line sums up the last passes that drew a frame: how many, and their average and longest time without the wait.
+- Tabs choose a table: Plugins, each plugin's own time in the last second, as a share of the second and in milliseconds, its longest call and its calls; Panels, each panel's draw the same way, named by its title and type; Steps, each step's average and longest time over the last passes.
+- Copy report puts the whole profile on the clipboard as text, so a user can send where the time goes.
 
 ---
 
