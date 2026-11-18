@@ -22,6 +22,9 @@ local size = {}
 -- how far, in layout units, a press on a number moves before it drags the number, so a click that shakes is still a click
 local NUMBER_DRAG_START = 3
 
+-- a graph's height, in layout units, when it gives none
+local GRAPH_HEIGHT = 80
+
 local function readSizes()
   for _, entry in ipairs(SIZES) do
     size[entry[1]] = ecs.setting.get("ui." .. entry[1]) or entry[2]
@@ -693,7 +696,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1045,6 +1048,17 @@ function elements.separator(props)
   return element("separator", props)
 end
 
+-- bars of numbers from the left; a value that is a list stacks its parts, each in its colour
+function elements.graph(values, props)
+  ecs.check(type(values) == "table", "A graph takes a list of values: numbers, or lists of numbers that stack.")
+  local node = element("graph", props)
+  node.values = values
+  node.colors = node.colors or { "accent" }
+  node.lines = node.lines or {}
+  ecs.check(type(node.colors) == "table" and #node.colors > 0, "A graph's colors is a list of colours, one for each part of a bar.")
+  return node
+end
+
 -- a text, or a list of spans: each a text, or a table of its text and its style; text keeps the plain text either way
 function elements.text(text, props)
   local node = element("text", props)
@@ -1293,7 +1307,7 @@ end
 local CONTAINERS = { column = true, row = true, scroll = true }
 
 -- elements that take the whole width of a column when nothing says otherwise
-local WIDE = { field = true, key = true, dropdown = true, selector = true, slider = true, separator = true }
+local WIDE = { field = true, key = true, dropdown = true, selector = true, slider = true, separator = true, graph = true }
 
 -- the axis of a container: true for a row
 local function horizontal(node)
@@ -1489,6 +1503,8 @@ function measure(node, state, room)
     end
   elseif node.type == "separator" then
     width, height = 1, 1
+  elseif node.type == "graph" then
+    width, height = 0, GRAPH_HEIGHT
   elseif node.type == "space" then
     width, height = 0, 0
   elseif node.type == "disclosure" then
@@ -1826,6 +1842,61 @@ local function paintTyped(node, surface, state)
 end
 
 -- down when open, right when closed, and up with up
+-- the sum of a graph's value: a number, or the parts of a stacked bar
+local function graphTotal(value)
+  if type(value) == "number" then
+    return value
+  end
+
+  local total = 0
+
+  for _, part in ipairs(value) do
+    total = total + part
+  end
+
+  return total
+end
+
+-- a graph's bars fill its width, the oldest value on the left, each part stacked on the one before it in its colour; a line across it marks each
+-- of its lines' values; what goes above the top of its scale is cut there
+local function paintGraph(node, surface)
+  local box, values = node.layout, node.values
+  local top = node.max
+
+  if not top then
+    top = 0
+
+    for _, value in ipairs(values) do
+      top = math.max(top, graphTotal(value))
+    end
+  end
+
+  if top <= 0 or #values == 0 then
+    return
+  end
+
+  local bar, bottom = box.width / #values, box.y + box.height
+
+  for i, value in ipairs(values) do
+    local x, height = box.x + (i - 1) * bar, 0
+
+    for j, part in ipairs(type(value) == "number" and { value } or value) do
+      local partHeight = math.min(part / top * box.height, box.height - height)
+
+      if partHeight > 0 then
+        draw.fill(surface, x, bottom - height - partHeight, bar, partHeight, node.colors[(j - 1) % #node.colors + 1])
+        height = height + partHeight
+      end
+    end
+  end
+
+  for _, line in ipairs(node.lines) do
+    if line.value >= 0 and line.value <= top then
+      draw.fill(surface, box.x, bottom - line.value / top * box.height, box.width, 1, line.color or "textDim")
+    end
+  end
+end
+
 local function paintDisclosure(node, surface)
   local box = node.layout
   local half, x, y = size.checkSize / 4, box.x + box.width / 2, box.y + box.height / 2
@@ -1978,6 +2049,8 @@ function paint(node, surface, state)
     draw.image(surface, box.picture, box.x + (box.width - width) / 2, box.y + (box.height - height) / 2, width, height)
   elseif node.type == "disclosure" then
     paintDisclosure(node, surface)
+  elseif node.type == "graph" then
+    paintGraph(node, surface)
   elseif node.type == "separator" and box.vertical then
     draw.fill(surface, box.x + box.width / 2 - 0.5, box.y, 1, box.height, node.color or "tabShown")
   elseif node.type == "separator" then
@@ -4040,6 +4113,14 @@ ecs.service.register({
         .. "@param props The tree's properties (ui.TreeProps), which must have an id; open names the open nodes\n"
         .. "@return The tree",
     fn = elements.tree,
+  },
+  graph = {
+    sig = "value<ui.Element>(value<ui.GraphValue[]> values, value<ui.GraphProps?> props)",
+    doc = "Bars of numbers, such as times; Lua only\n"
+        .. "@param values The bars, the oldest on the left: each a number, or a list of numbers that stack, each in its colour\n"
+        .. "@param props The graph's properties (ui.GraphProps)\n"
+        .. "@return The graph",
+    fn = elements.graph,
   },
   separator = {
     sig = "value<ui.Element>(value<ui.SeparatorProps?> props)",

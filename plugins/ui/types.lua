@@ -131,6 +131,19 @@
 ---@field onDrop? fun(id: any, where: "before"|"into"|"after"|nil, dataType: string, value: any) Data dropped on a node gives its id, and where it landed: before it on its upper quarter, after it on its lower quarter, and into it between; nil and nil beside the nodes.
 ---@field onToggle? fun(id: any, open: boolean) A click on an arrow gives the node's id and its new state.
 
+---A graph's bar: a number, or a list of numbers that stack.
+---@alias ui.GraphValue number|number[]
+
+---A line across a graph at a value, such as a frame's budget.
+---@class ui.GraphLine
+---@field value number
+---@field color? ecs.Color "textDim" if missing.
+
+---@class ui.GraphProps: ui.Props
+---@field max? number The top of the scale; the highest bar's total if missing. A bar above it is cut.
+---@field colors? ecs.Color[] The colour of each part of a stacked bar, in order, again from the first when a bar has more parts; "accent" if missing.
+---@field lines? ui.GraphLine[] Lines across the graph at values.
+
 ---@class ui.SeparatorProps: ui.Props
 ---@field vertical? boolean A line up a row, rather than across a column.
 

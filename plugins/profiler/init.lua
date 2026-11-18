@@ -34,6 +34,16 @@ local STEP_COLUMNS = {
   { id = "longest", title = "Longest ms" },
 }
 
+-- the graph stacks each pass's steps in four groups, each in its colour; the wait is left out
+local GROUPS = {
+  { name = "input, timers and events", color = "#e5c07b", steps = { "input", "timers", "events" } },
+  { name = "layout", color = "#c678dd", steps = { "layout" } },
+  { name = "panels", color = "accent", steps = { "panels", "upload" } },
+  { name = "interface and present", color = "#98c379", steps = { "interface", "present" } },
+}
+
+local FRAME_BUDGET = 1000 / 60 -- milliseconds of a frame at 60 Hz, the graph's line
+
 local function milliseconds(seconds)
   return ("%.2f"):format(seconds * 1000)
 end
@@ -69,6 +79,53 @@ local function summarize(profile)
   end
 
   return frames, frames > 0 and total / frames or 0, longest
+end
+
+-- each pass's time without the wait, in milliseconds, in the graph's groups, and the groups' colours
+local function graphValues(profile)
+  local values, colors = {}, {}
+
+  for i, group in ipairs(GROUPS) do
+    colors[i] = group.color
+  end
+
+  for i, pass in ipairs(profile.passes) do
+    local parts = {}
+
+    for j, group in ipairs(GROUPS) do
+      parts[j] = 0
+
+      for _, step in ipairs(group.steps) do
+        parts[j] = parts[j] + pass[step] * 1000
+      end
+    end
+
+    values[i] = parts
+  end
+
+  return values, colors
+end
+
+-- the graph, and a line that names its groups in their colours
+local function graph(profile)
+  local values, colors = graphValues(profile)
+  local legend = {}
+
+  for _, group in ipairs(GROUPS) do
+    legend[#legend + 1] = { text = group.name .. "   ", color = group.color }
+  end
+
+  legend[#legend + 1] = { text = ("line: %.1f ms, a frame at 60 Hz"):format(FRAME_BUDGET), color = "textDim" }
+
+  return ui.column({ gap = 4 }, {
+    ui.graph(values, {
+      height = 90,
+      colors = colors,
+      lines = { { value = FRAME_BUDGET } },
+      tooltip = "Each pass of the main loop without its wait, the oldest on the left",
+    }),
+    ui.text(legend, { style = STYLES.note, wrap = true }),
+  })
 end
 
 local function stepRows(profile)
@@ -208,6 +265,7 @@ local function describe(view)
     children[#children + 1] = ui.text(hint, { color = "textDim", wrap = true, selectable = false })
   else
     children[#children + 1] = ui.text(summaryText(view.profile), { style = STYLES.note, wrap = true })
+    children[#children + 1] = graph(view.profile)
     children[#children + 1] = ui.tabs(view.tab, TABS, {
       id = "tab",
       onSelect = function(selected)
