@@ -545,6 +545,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `icon`       | Gives a file's icon in the grid: `{ image }`, an image by its path in the folder, or `{ label, color }`, a badge; nil for the panel's own. |
 
 - A file dragged out of the tree is a drag of type `file-list` with its path, as another application's files come (OpenECS DESIGN 7.9), so a panel that takes dropped files takes it too.
+- The panel takes drops of `file-list` (OpenECS DESIGN 7.9): files from another application, and those that a files panel drags. They go into the folder under the pointer: a folder of the tree when they land on its middle, or its tile in the grid; otherwise the folder of the entry they land on, or, beside the entries, the folder's top in the tree and the shown folder in the grid. A file of the folder moves there, through the tool's `rename` when it gives one, as Rename does, and a move into itself or to where it is does nothing. A file or a folder from elsewhere is copied there, with all in it, under its name, or with a number before its ending when the name is taken, `apple 2.png`. The last one is chosen, and the panel emits `files.changed`.
 - After a change that the panel makes, it emits `files.changed`.
 - A panel's saved state is the folders it has open in the tree, whether it shows the grid, and the grid's folder.
 

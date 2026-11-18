@@ -171,6 +171,99 @@ local function rename(state, to)
   ecs.event.emit("files.changed")
 end
 
+-- A free path for a file of this name in a folder of the panel's: the name, or with a number before its ending, "apple 2.png".
+local function freePath(dir, name)
+  local base, ending = name:match("^(.+)(%.[^.]*)$")
+  base, ending = base or name, base and ending or ""
+  local path, n = dir .. name, 1
+  while fs.info(folder .. path) do
+    n = n + 1
+    path = ("%s%s %d%s"):format(dir, base, n, ending)
+  end
+  return path
+end
+
+-- Copies a file, or a folder with all in it, from anywhere to a full path.
+local function copyAll(from, to)
+  local info = fs.info(from)
+  if not info then
+    return false, from .. " is gone."
+  elseif info.type ~= "folder" then
+    return fs.copy(from, to)
+  end
+  local ok, why = fs.makeFolder(to)
+  if not ok then
+    return ok, why
+  end
+  for _, entry in ipairs(fs.list(from, "") or {}) do
+    local copied, failure = copyAll(from .. "/" .. entry.name, to .. "/" .. entry.name)
+    if not copied then
+      return copied, failure
+    end
+  end
+  return true
+end
+
+-- A path with / for \\, and without the . and .. that it passes through, so a path that leaves the folder is not taken for one in it.
+local function normal(path)
+  path = path:gsub("\\", "/")
+  local lead = path:match("^/") or path:match("^%a:/") or ""
+  local parts = {}
+  for part in path:sub(#lead + 1):gmatch("[^/]+") do
+    if part == ".." and #parts > 0 and parts[#parts] ~= ".." then
+      parts[#parts] = nil
+    elseif part ~= "." then
+      parts[#parts + 1] = part
+    end
+  end
+  return lead .. table.concat(parts, "/")
+end
+
+-- Files dropped on a folder of the panel's, dir, which ends with a slash or is empty: a file of the folder moves there, with the
+-- tool's rename when it has one, and a file from elsewhere is copied there, under a free name.
+local function dropFiles(state, paths, dir)
+  if type(paths) ~= "table" or folder == "" then
+    return
+  end
+  local changed = false
+  for _, path in ipairs(paths) do
+    path = normal(tostring(path))
+    local name = path:match("([^/]+)$")
+    local root = normal(folder) .. "/"
+    if name and path:sub(1, #root) == root then
+      local from = path:sub(#root + 1)
+      local to = dir .. name
+      if to ~= from and dir:sub(1, #from + 1) ~= from .. "/" then
+        state.selected = from
+        rename(state, to)
+        changed = true
+      end
+    elseif name then
+      local to = freePath(dir, name)
+      say(state, copyAll(path, folder .. to))
+      state.selected = to
+      changed = true
+    end
+  end
+  if changed then
+    if dir ~= "" then
+      state.open[dir:sub(1, -2)] = true
+    end
+    ecs.event.emit("files.changed")
+    state.panel:redraw()
+  end
+end
+
+-- The folder that a drop on an entry goes into: a folder itself, when the drop is into it or on its tile, or the entry's folder.
+local function dropFolder(id, into)
+  if not id then
+    return ""
+  elseif into and isFolder(id) then
+    return id .. "/"
+  end
+  return id:match("^(.*/)[^/]*$") or ""
+end
+
 local function delete(state)
   local path = state.selected
   if not path then
@@ -348,6 +441,9 @@ local function grid(state, children)
         choose(state, id)
         menu(state, id, x, y)
       end,
+      onDrop = function(_, value)
+        dropFiles(state, value, entry.children and dropFolder(id, true) or dir)
+      end,
     }, {
       icon(id, entry.children ~= nil),
       ui.text(entry.label, { size = 12 }),
@@ -355,6 +451,8 @@ local function grid(state, children)
   end
   children[#children + 1] = ui.scroll({ id = "grid", grow = 1, onMenu = function(x, y)
     menu(state, nil, x, y, dir)
+  end, onDrop = function(_, value)
+    dropFiles(state, value, dir)
   end }, {
     #tiles > 0 and ui.row({ gap = 4, wrap = true }, tiles)
       or ui.text(state.search and "No file's name holds the text." or "The folder is empty.", { style = STYLES.note }),
@@ -414,6 +512,10 @@ local function draw(state, surface)
       onDrag = function(id)
         return "file-list", { folder .. id }
       end,
+      -- files dropped on a folder go into it, and on a file, or beside the files, into its folder
+      onDrop = function(id, where, _, value)
+        dropFiles(state, value, dropFolder(id, where == "into"))
+      end,
       onActivate = function(id)
         activate(state, id)
       end,
@@ -442,6 +544,8 @@ ecs.panel.registerType({
       state.dir = type(saved.dir) == "string" and saved.dir or ""
     end
     panels[panel] = state
+    -- files from another application, and those that a files panel drags, come as a list of paths
+    panel:acceptDrops({ "file-list" })
     return state
   end,
   draw = draw,
