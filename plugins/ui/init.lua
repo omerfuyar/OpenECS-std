@@ -696,7 +696,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -2203,8 +2203,17 @@ local function searchCharacter(event)
   end
 end
 
+-- a small triangle that points right, or left, centred at x, y: a folder's mark, and the row that goes back
+local function sideArrow(surface, x, y, half, color, left)
+  local tip, back = left and x - half / 2 or x + half / 2, left and x + half / 2 or x - half / 2
+  draw.triangles(surface, string.pack("ffffff", back, y - half, back, y + half, tip, y), "", color)
+end
+
 -- opens a dropdown's choices in a popup below it; a click or Return chooses one. Typing searches: the popup shows what is typed
--- in its first row, and below it only the choices that hold it, whatever their case; Backspace takes a character off
+-- in its first row, and below it only the choices that hold it, whatever their case; Backspace takes a character off. With
+-- `folders`, a separator such as ".", the choices are paths: the popup shows one folder at a time, its folders first, which a
+-- click, Return or Right opens in place, and a first row that goes back to the folder above, as Left and Backspace do; a search
+-- looks in every folder, and shows the whole paths
 local function openDropdown(panel, state, node)
   local all = node.choices
 
@@ -2218,14 +2227,83 @@ local function openDropdown(panel, state, node)
   local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
   local width = box.width
   local scale = state.scale
+  local separator = type(node.folders) == "string" and node.folders ~= "" and node.folders or nil
   local hover = 1
   local typed = ""
-  local choices = all
+  local folder = ""
+  -- the rows below the search's: { label, choice } for a choice, { label, folder } for a folder, and { label, back = true }
+  local rows = {}
   local popup
 
-  for i, choice in ipairs(all) do
-    if choice == node.value then
-      hover = i
+  -- the folder that holds a path, "" for the top, and the path's last part
+  local function split(path)
+    local at, last = path:find(separator, 1, true), nil
+
+    while at do
+      last = at
+      at = path:find(separator, at + 1, true)
+    end
+
+    if not last then
+      return "", path
+    end
+
+    return path:sub(1, last - 1), path:sub(last + #separator)
+  end
+
+  -- the parts of a choice's path below the open folder, or nil for a choice outside it
+  local function below(choice)
+    local text = tostring(choice)
+
+    if folder == "" then
+      return text
+    end
+
+    local start = folder .. separator
+    return text:sub(1, #start) == start and text:sub(#start + 1) or nil
+  end
+
+  local function fill()
+    rows = {}
+
+    if typed ~= "" or not separator then
+      for _, choice in ipairs(all) do
+        if matchesQuery(typed, choice) then
+          rows[#rows + 1] = { label = tostring(choice), choice = choice }
+        end
+      end
+
+      return
+    end
+
+    if folder ~= "" then
+      local above, name = split(folder)
+      rows[#rows + 1] = { label = name, back = true, folder = above }
+    end
+
+    local seen, leaves = {}, {}
+
+    for _, choice in ipairs(all) do
+      local rest = below(choice)
+
+      if rest then
+        local at = rest:find(separator, 1, true)
+
+        if at then
+          local name = rest:sub(1, at - 1)
+
+          if not seen[name] then
+            seen[name] = true
+            rows[#rows + 1] = { label = name, folder = folder == "" and name or folder .. separator .. name }
+          end
+        else
+          leaves[#leaves + 1] = { label = rest, choice = choice }
+        end
+      end
+    end
+
+    for _, leaf in ipairs(leaves) do
+      rows[#rows + 1] = leaf
     end
   end
 
@@ -2235,32 +2313,62 @@ local function openDropdown(panel, state, node)
   end
 
   local function height()
-    return rowHeight * math.max(1, #choices + top())
+    return rowHeight * math.max(1, #rows + top())
   end
 
-  local function search()
-    choices = {}
-
-    for _, choice in ipairs(all) do
-      if matchesQuery(typed, choice) then
-        choices[#choices + 1] = choice
-      end
-    end
-
-    hover = 1
+  -- shows the rows again, hovering the first that is not the way back, or the given one
+  local function refill(hovered)
+    fill()
+    hover = hovered or ((rows[1] and rows[1].back and rows[2]) and 2 or 1)
     popup:setSize(width, height())
     popup:redraw()
   end
 
+  local function open(to)
+    local from = folder
+    folder = to
+    fill()
+    local hovered
+
+    -- back in the folder above, the folder that was open is hovered
+    for i, row in ipairs(rows) do
+      if not row.back and row.folder == from then
+        hovered = i
+      end
+    end
+
+    refill(hovered)
+  end
+
   local function choose(index)
+    local row = rows[index]
+
+    if row.choice == nil then
+      open(row.folder)
+      return
+    end
+
     popup:close()
-    call(node.onChange, choices[index])
+    call(node.onChange, row.choice)
     panel:redraw()
   end
 
-  local function choiceAt(y)
+  local function rowAt(y)
     local index = math.floor(y / scale / rowHeight) + 1 - top()
-    return choices[index] ~= nil and index or nil
+    return rows[index] ~= nil and index or nil
+  end
+
+  -- the chosen one's folder is open first, with it hovered
+  if separator and node.value ~= nil then
+    folder = split(tostring(node.value))
+  end
+
+  fill()
+
+  for i, row in ipairs(rows) do
+    if row.choice ~= nil and row.choice == node.value then
+      hover = i
+    end
   end
 
   local message
@@ -2271,50 +2379,64 @@ local function openDropdown(panel, state, node)
     draw = function(surface)
       scale = surface.scale
       local h = height()
+      local half = lineHeight(font, textSize) / 4
       draw.fill(surface, 0, 0, width, h, "tabRow")
 
       if typed ~= "" then
         draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
       end
 
-      for i, choice in ipairs(choices) do
+      for i, row in ipairs(rows) do
         local y = (i - 1 + top()) * rowHeight
+        local x, room = size.paddingX, width - 2 * size.paddingX
 
         if i == hover then
           draw.fill(surface, 0, y, width, rowHeight, "tabShown")
         end
 
-        draw.text(surface, font, ellipsize(font, tostring(choice), textSize, width - 2 * size.paddingX), size.paddingX, y + size.paddingY, textSize,
-          choice == node.value and "accent" or "text")
+        if row.back then
+          sideArrow(surface, x + half, y + rowHeight / 2, half, "textDim", true)
+          x, room = x + 2 * half + size.paddingX, room - 2 * half - size.paddingX
+        elseif row.choice == nil then
+          sideArrow(surface, width - size.paddingX - half, y + rowHeight / 2, half, "textDim")
+          room = room - 2 * half - size.paddingX
+        end
+
+        local color = row.back and "textDim" or row.choice ~= nil and row.choice == node.value and "accent" or "text"
+        draw.text(surface, font, ellipsize(font, row.label, textSize, room), x, y + size.paddingY, textSize, color)
       end
 
       draw.outline(surface, 0, 0, width, h, 1, "tabShown")
     end,
     event = function(event)
       if event.type == "pointerMove" then
-        local index = choiceAt(event.y)
+        local index = rowAt(event.y)
 
         if index and index ~= hover then
           hover = index
           popup:redraw()
         end
-      elseif event.type == "pointerUp" and event.button == 1 and choiceAt(event.y) then
-        choose(choiceAt(event.y))
+      elseif event.type == "pointerUp" and event.button == 1 and rowAt(event.y) then
+        choose(rowAt(event.y))
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
-        if #choices > 0 then
-          hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #choices)
+        if #rows > 0 then
+          hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #rows)
           popup:redraw()
         end
       elseif event.type == "keyDown" and isEnter(event) then
-        if choices[hover] ~= nil then
+        if rows[hover] ~= nil then
           choose(hover)
         end
+      elseif event.type == "keyDown" and event.key == "Right" and rows[hover] and rows[hover].choice == nil and not rows[hover].back then
+        choose(hover)
+      elseif event.type == "keyDown" and (event.key == "Left" or event.key == "Backspace") and typed == "" and separator and folder ~= "" then
+        open(rows[1].folder)
       elseif event.type == "keyDown" and event.key == "Backspace" and typed ~= "" then
         typed = typed:sub(1, -2)
-        search()
+        refill()
       elseif event.type == "keyDown" and searchCharacter(event) then
         typed = typed .. searchCharacter(event)
-        search()
+        refill()
       end
     end,
   })
@@ -2325,39 +2447,54 @@ local function openDropdown(panel, state, node)
 end
 
 -- opens a menu of entries in a popup at a point of a panel, in layout units, such as where a right click was; an entry is
--- { label, keys, enabled, onClick }, or { line = true } for a line between entries; a click or Return runs an entry, and closes the menu
+-- { label, keys, enabled, onClick }, { label, entries } for a submenu, or { line = true } for a line between entries; a click or
+-- Return runs an entry, and closes the menu. A submenu opens in place, by a click, Return or Right, with a first row that goes back
+-- to the menu above it, as Left and Backspace do
 local function openMenu(panel, x, y, entries)
   local state = panelState(panel)
   local font = fontOf({})
   local textSize = fontSize()
   local rowHeight = lineHeight(font, textSize) + 2 * size.paddingY
   local lineGap = size.paddingY * 2 + 1
-  local tops, width, height = {}, 0, 0
+  local half = lineHeight(font, textSize) / 4
+  local mark = 2 * half + size.paddingX
+  -- the open menus, the first at the bottom: each the entries that it shows, with the way back first in a submenu
+  local stack = {}
+  local shown, tops, width, height
   local popup
 
-  for i, entry in ipairs(entries) do
-    tops[i] = height
+  local function layout()
+    shown = stack[#stack]
+    tops, width, height = {}, 0, 0
 
-    if entry.line then
-      height = height + lineGap
-    else
-      local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
-      width = math.max(width, measureText(font, entry.label or "", textSize) + keys + 2 * size.paddingX)
-      height = height + rowHeight
+    for i, entry in ipairs(shown) do
+      tops[i] = height
+
+      if entry.line then
+        height = height + lineGap
+      else
+        local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
+        local marks = (entry.entries or entry.back) and mark or 0
+        width = math.max(width, measureText(font, entry.label or "", textSize) + keys + marks + 2 * size.paddingX)
+        height = height + rowHeight
+      end
     end
   end
+
+  stack[1] = entries
+  layout()
 
   if height == 0 then
     return nil
   end
 
   local function usable(index)
-    local entry = entries[index]
+    local entry = shown[index]
     return entry ~= nil and not entry.line and entry.enabled ~= false
   end
 
   local function entryAt(at)
-    for i = #entries, 1, -1 do
+    for i = #shown, 1, -1 do
       if at >= tops[i] then
         return usable(i) and i or nil
       end
@@ -2368,8 +2505,8 @@ local function openMenu(panel, x, y, entries)
   local function step(from, by)
     local index = from
 
-    for _ = 1, #entries do
-      index = (index + by - 1) % #entries + 1
+    for _ = 1, #shown do
+      index = (index + by - 1) % #shown + 1
 
       if usable(index) then
         return index
@@ -2382,9 +2519,50 @@ local function openMenu(panel, x, y, entries)
   local hover = step(0, 1)
   local scale = state.scale
 
+  local function show(hovered)
+    layout()
+    hover = hovered or step(shown[1] and shown[1].back and 1 or 0, 1)
+    popup:setSize(width, height)
+    popup:redraw()
+  end
+
+  local function back()
+    if #stack > 1 then
+      local from = shown.from
+      stack[#stack] = nil
+      layout()
+      local hovered
+
+      for i, entry in ipairs(shown) do
+        if entry == from then
+          hovered = i
+        end
+      end
+
+      show(hovered)
+    end
+  end
+
   local function run(index)
+    local entry = shown[index]
+
+    if entry.back then
+      back()
+      return
+    elseif entry.entries then
+      local inner = { from = entry, { label = entry.label, back = true } }
+
+      for _, each in ipairs(entry.entries) do
+        inner[#inner + 1] = each
+      end
+
+      stack[#stack + 1] = inner
+      show()
+      return
+    end
+
     popup:close()
-    call(entries[index].onClick)
+    call(entry.onClick)
     panel:redraw()
   end
 
@@ -2398,7 +2576,7 @@ local function openMenu(panel, x, y, entries)
       scale = surface.scale
       draw.fill(surface, 0, 0, width, height, "tabRow")
 
-      for i, entry in ipairs(entries) do
+      for i, entry in ipairs(shown) do
         if entry.line then
           draw.fill(surface, size.paddingX, tops[i] + size.paddingY, width - 2 * size.paddingX, 1, "tabShown")
         else
@@ -2406,10 +2584,19 @@ local function openMenu(panel, x, y, entries)
             draw.fill(surface, 0, tops[i], width, rowHeight, "tabShown")
           end
 
-          local color = entry.enabled == false and "textDim" or "text"
-          draw.text(surface, font, entry.label or "", size.paddingX, tops[i] + size.paddingY, textSize, color)
+          local color = (entry.enabled == false or entry.back) and "textDim" or "text"
+          local middle = tops[i] + rowHeight / 2
 
-          if entry.keys then
+          if entry.back then
+            sideArrow(surface, size.paddingX + half, middle, half, "textDim", true)
+            draw.text(surface, font, entry.label or "", size.paddingX + mark, tops[i] + size.paddingY, textSize, color)
+          else
+            draw.text(surface, font, entry.label or "", size.paddingX, tops[i] + size.paddingY, textSize, color)
+          end
+
+          if entry.entries then
+            sideArrow(surface, width - size.paddingX - half, middle, half, color)
+          elseif entry.keys then
             local keysWidth = measureText(font, entry.keys, textSize)
             draw.text(surface, font, entry.keys, width - size.paddingX - keysWidth, tops[i] + size.paddingY, textSize, "textDim")
           end
@@ -2433,6 +2620,10 @@ local function openMenu(panel, x, y, entries)
         popup:redraw()
       elseif event.type == "keyDown" and isEnter(event) and hover then
         run(hover)
+      elseif event.type == "keyDown" and event.key == "Right" and hover and shown[hover].entries then
+        run(hover)
+      elseif event.type == "keyDown" and (event.key == "Left" or event.key == "Backspace") then
+        back()
       end
     end,
   })
