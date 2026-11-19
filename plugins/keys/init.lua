@@ -224,6 +224,8 @@ local function addRow(list)
         width = 0,
         grow = 3,
         placeholder = "Function",
+        -- the functions' names are in folders by their dots, as ecs.workspace.switch2
+        folders = ".",
         onSelect = function(selected)
           list.newFunction = selected
         end,

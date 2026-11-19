@@ -183,6 +183,7 @@
 ---A selector, tabs or a dropdown.
 ---@class ui.ChoiceProps: ui.Props
 ---@field onSelect? fun(choice: integer) Gets the number of the chosen one, from 1.
+---@field folders? string A dropdown's separator of folders, such as ".": its choices are paths, shown a folder at a time.
 
 ---A field; it needs an id, which keeps what is typed.
 ---@class ui.FieldProps: ui.Props
@@ -251,3 +252,4 @@
 ---@field keys? string The keys that run the same, shown at the entry's right, such as "Ctrl+D".
 ---@field enabled? boolean False shows the entry dimmed, and it does not run; true if missing.
 ---@field onClick? fun() Runs when the entry is clicked, or chosen with Return; the menu closes first.
+---@field entries? ui.MenuEntry[] A submenu's entries, which open in place of the menu's; the entry has no onClick then.
