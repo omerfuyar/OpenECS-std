@@ -834,7 +834,8 @@ end
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
 -- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
--- and onToggle(id, open) its new state
+-- and onToggle(id, open) its new state; a node's marks are short texts at the end of its row, such as an eye and a lock, each on or off,
+-- and a click on one gives onMark(id, mark, on) its new state without choosing the node
 function elements.tree(nodes, props)
   props = props or {}
   ecs.check(props.id, "A tree needs an id, which keeps its offset.")
@@ -858,11 +859,30 @@ function elements.tree(nodes, props)
         end }, { element("disclosure", { open = shown }) })
       end
 
-      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, {
+      local cells = {
         elements.space({ width = depth * size.checkSize, grow = 0 }),
         arrow,
         elements.text(item.label or tostring(item.id), { color = item.color }),
-      })
+      }
+
+      -- the marks are rows with onClick, as the arrow is, so a press on one turns it and does not choose the node
+      if item.marks and #item.marks > 0 then
+        cells[#cells + 1] = elements.space({ grow = 1 })
+
+        for _, mark in ipairs(item.marks) do
+          cells[#cells + 1] = elements.row({
+            id = props.id .. ":" .. tostring(item.id) .. ":" .. tostring(mark.id),
+            tooltip = mark.tooltip,
+            onClick = function()
+              if props.onMark then
+                props.onMark(item.id, mark.id, not mark.on)
+              end
+            end,
+          }, { elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
+        end
+      end
+
+      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, cells)
       ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
 
       if shown then
@@ -875,7 +895,7 @@ function elements.tree(nodes, props)
 
   -- the list works with indexes, and the tree with ids
   local listProps = shallowCopy(props)
-  listProps.open, listProps.onToggle, listProps.selected = nil, nil, nil
+  listProps.open, listProps.onToggle, listProps.selected, listProps.onMark = nil, nil, nil, nil
 
   local indexOf, selected = {}, {}
 
