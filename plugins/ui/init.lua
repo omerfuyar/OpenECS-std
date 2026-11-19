@@ -870,7 +870,7 @@ function elements.tree(nodes, props)
         cells[#cells + 1] = elements.space({ grow = 1 })
 
         for _, mark in ipairs(item.marks) do
-          cells[#cells + 1] = elements.row({
+          local cell = elements.row({
             id = props.id .. ":" .. tostring(item.id) .. ":" .. tostring(mark.id),
             tooltip = mark.tooltip,
             onClick = function()
@@ -879,6 +879,9 @@ function elements.tree(nodes, props)
               end
             end,
           }, { elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
+          -- a press on a mark keeps the list's choice, and drags nothing
+          cell.keepsChoice = true
+          cells[#cells + 1] = cell
         end
       end
 
@@ -3591,16 +3594,19 @@ local function handlePointerDown(panel, state, event, x, y)
     return grabScrollbar(panel, state, scroll, y)
   end
 
-  -- a press on a list's item chooses it; the element under the pointer still gets the press
+  -- a press on a list's item chooses it; the element under the pointer still gets the press. A tree's mark keeps the choice.
   local item = find(root, x, y, isListItem)
+  local keeps = find(root, x, y, function(node)
+    return node.keepsChoice == true
+  end)
 
   local how = event.shift and "range" or event.ctrl and "toggle" or nil
 
-  if item and (how or item.itemIndex ~= item.list.selected) then
+  if item and not keeps and (how or item.itemIndex ~= item.list.selected) then
     selectItem(item.list, item.itemIndex, how)
   end
 
-  state.itemDrag = item and item.list.onDrag and { list = item.list.id, index = item.itemIndex, x = x, y = y } or nil
+  state.itemDrag = item and not keeps and item.list.onDrag and { list = item.list.id, index = item.itemIndex, x = x, y = y } or nil
 
   local node = find(root, x, y, interactive)
 
