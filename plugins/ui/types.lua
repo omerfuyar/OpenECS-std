@@ -119,7 +119,7 @@
 ---@field label? string The id as text if missing.
 ---@field color? ecs.Color
 ---@field children? ui.TreeNode[]
----@field marks? ui.TreeMark[] Short texts at the end of the node's row, each on or off, such as an eye and a lock. Lua only.
+---@field marks? ui.TreeMark[] Short texts at the end of the node's row, each on or off, such as an eye and a lock.
 
 ---A mark of a tree's node: a click on it gives the tree's onMark its new state, and does not choose the node.
 ---@class ui.TreeMark
@@ -138,7 +138,7 @@
 ---@field onDrag? fun(id: any): string?, any As a list's, with the node's id.
 ---@field onDrop? fun(id: any, where: "before"|"into"|"after"|nil, dataType: string, value: any) Data dropped on a node gives its id, and where it landed: before it on its upper quarter, after it on its lower quarter, and into it between; nil and nil beside the nodes.
 ---@field onToggle? fun(id: any, open: boolean) A click on an arrow gives the node's id and its new state.
----@field onMark? fun(id: any, mark: any, on: boolean) A click on a node's mark gives the node's id, the mark's id and its new state. Lua only.
+---@field onMark? fun(id: any, mark: any, on: boolean) A click on a node's mark gives the node's id, the mark's id and its new state.
 
 ---A graph's bar: a number, or a list of numbers that stack.
 ---@alias ui.GraphValue number|number[]

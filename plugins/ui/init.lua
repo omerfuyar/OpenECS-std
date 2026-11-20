@@ -4043,7 +4043,7 @@ local CALLBACKS = {
   search = { "onChange", "onSubmit" },
   list = { "onSelect", "onActivate" },
   table = { "onSelect", "onActivate", "onSort" },
-  tree = { "onSelect", "onActivate", "onToggle" },
+  tree = { "onSelect", "onActivate", "onToggle", "onMark" },
   section = { "onToggle" },
   color = { "onChange" },
 }
@@ -4090,9 +4090,16 @@ local function build(panel, description)
         return false
       end
     elseif id and (asked or not ASKED[callback]) then
-      props[callback] = function(value, open)
+      -- onToggle gets a node's new state second, and onMark a mark's id second and its new state third
+      props[callback] = function(value, second, third)
         local taken = panelState(panel).taken
-        taken[id .. "\0" .. callback] = { value = value, open = open }
+
+        if callback == "onMark" then
+          taken[id .. "\0" .. callback] = { value = value, mark = second, on = third }
+        else
+          taken[id .. "\0" .. callback] = { value = value, open = second }
+        end
+
         panel:redraw()
       end
     end
