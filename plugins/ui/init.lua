@@ -4012,11 +4012,17 @@ function services.edit(panel, id)
   end
 end
 
--- scrolls a scroll element so that one of its children shows
+-- scrolls a scroll element so that one of its children shows, or a tree so that one of its nodes does
 function services.reveal(panel, scrollId, childId)
   local state = panelState(panel)
   local scroll = state.root and findById(state.root, scrollId)
   local child = scroll and findById(scroll, childId)
+
+  if not child and scroll and scroll.tree then
+    for index, id in ipairs(scroll.tree.ids) do
+      child = child or (id == childId and scroll.items[index]) or nil
+    end
+  end
 
   if child then
     scrollIntoView(state, scroll, child)
@@ -4261,7 +4267,7 @@ ecs.service.register({
     doc = "Scroll so a child shows\n"
         .. "@param panel The panel that shows the scroll element\n"
         .. "@param scroll The id of the scroll element, or of a list, tree or table\n"
-        .. "@param child The id of an element inside it, in the last layout; nothing happens if it has none",
+        .. "@param child The id of an element inside it, or of a tree's node, in the last layout; nothing happens if it has none",
     fn = services.reveal,
   },
   column = {
