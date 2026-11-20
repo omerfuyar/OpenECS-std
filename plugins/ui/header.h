@@ -109,6 +109,16 @@ typedef struct UiColumn
     f64 width;
 } UiColumn;
 
+/// @brief A mark of a tree's node: a short text at the end of its row, such as an eye or a lock. A list of marks ends with one whose id is nullptr.
+/// on points to whether it is on, which UI_TREE writes when the mark is clicked; a click does not choose the node.
+typedef struct UiTreeMark
+{
+    const char *id;
+    const char *text;
+    bool *on;
+    const char *tooltip; // nullptr for none
+} UiTreeMark;
+
 /// @brief A node of a tree. A list of nodes ends with one whose id is nullptr. A node whose children are not nullptr has an arrow, even with none,
 /// and open points to whether it is open, which UI_TREE writes when the arrow is clicked.
 typedef struct UiTreeNode
@@ -117,6 +127,7 @@ typedef struct UiTreeNode
     const char *label; // the id if it is nullptr
     const struct UiTreeNode *children;
     bool *open;
+    const UiTreeMark *marks; // nullptr for none
 } UiTreeNode;
 
 /// @brief What UI_SHOW describes into. Ui_Init prepares it.
@@ -815,6 +826,27 @@ static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeN
             Ui_AddTreeNodes(Ui_SetTable(item, "children"), open, node->children);
         }
 
+        if (node->marks != nullptr)
+        {
+            ECSValue *marks = Ui_SetTable(item, "marks");
+
+            for (const UiTreeMark *mark = node->marks; mark->id != nullptr; mark++)
+            {
+                ECSValue *described = Ui_AddItem(marks);
+
+                if (described == nullptr)
+                {
+                    break;
+                }
+
+                ECSValue_SetTable(described);
+                Ui_SetString(described, "id", mark->id);
+                Ui_SetString(described, "text", mark->text);
+                Ui_SetBool(described, "on", mark->on != nullptr && *mark->on);
+                Ui_SetString(described, "tooltip", mark->tooltip);
+            }
+        }
+
         if (node->open != nullptr && *node->open)
         {
             Ui_SetBool(open, node->id, true);
@@ -822,9 +854,23 @@ static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeN
     }
 }
 
+/// @brief Finds the mark of an id among a node's marks, or nullptr.
+static inline const UiTreeMark *Ui_FindTreeMark(const UiTreeNode *node, const char *id)
+{
+    for (const UiTreeMark *mark = node != nullptr ? node->marks : nullptr; id != nullptr && mark != nullptr && mark->id != nullptr; mark++)
+    {
+        if (strcmp(mark->id, id) == 0)
+        {
+            return mark;
+        }
+    }
+
+    return nullptr;
+}
+
 /// @brief A tree of nodes, which end with one whose id is nullptr. selected points to the chosen node's id, one of the nodes' own, or nullptr; a
-/// click on a node's arrow writes its new state into its open.
-/// @return Whether a node was chosen or opened or closed since the last draw.
+/// click on a node's arrow writes its new state into its open, and a click on a node's mark writes its new state into its on.
+/// @return Whether a node was chosen, opened or closed, or a mark turned since the last draw.
 static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const UiProps *props)
 {
     const ECSValue *taken = Ui_Take(props->id, "onSelect");
@@ -838,10 +884,19 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
         *opened->open = ECSValue_GetBool(ECSValue_GetTableField(toggled, "open"), false);
     }
 
+    const ECSValue *marked = Ui_Take(props->id, "onMark");
+    const UiTreeMark *mark = Ui_FindTreeMark(Ui_FindTreeNode(nodes, ECSValue_GetString(ECSValue_GetTableField(marked, "value"), nullptr)),
+                                             ECSValue_GetString(ECSValue_GetTableField(marked, "mark"), nullptr));
+
+    if (mark != nullptr && mark->on != nullptr)
+    {
+        *mark->on = ECSValue_GetBool(ECSValue_GetTableField(marked, "on"), false);
+    }
+
     ECSValue *description = Ui_Add("tree", props);
     Ui_SetString(description, "selected", *selected);
     Ui_AddTreeNodes(Ui_SetTable(description, "nodes"), Ui_SetTable(description, "open"), nodes);
-    return chosen != nullptr || opened != nullptr;
+    return chosen != nullptr || opened != nullptr || mark != nullptr;
 }
 
 /// @brief The id of the node of the tree with an id that was activated, with a click or Return, one of the nodes' own, or nullptr if none was.
