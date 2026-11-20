@@ -490,6 +490,9 @@ local function draw(state, surface)
           state.view = choice == 2 and "grid" or "tree"
         end,
       }),
+      ui.toggle(state.locked, { id = "lock", label = "Lock", tooltip = "Stay where it is when the tool shows another file", onChange = function(on)
+        state.locked = on
+      end }),
       ui.search(state.search or "", { grow = 1, placeholder = "Search files", onChange = function(text)
         state.search = text ~= "" and text or nil
       end }),
@@ -530,6 +533,12 @@ local function draw(state, surface)
     })
   end
   ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, children))
+  -- a file that files.reveal showed is scrolled to once the folders above it are laid out open
+  if state.revealing then
+    local path = state.revealing
+    state.revealing = nil
+    ui.reveal(state.panel, state.view == "grid" and "grid" or "tree", state.view == "grid" and "tile:" .. path or path)
+  end
 end
 
 ecs.panel.registerType({
@@ -537,8 +546,9 @@ ecs.panel.registerType({
   title = "Files",
   stateVersion = STATE_VERSION,
   create = function(panel, saved, version)
-    local state = { panel = panel, open = {}, view = "tree", dir = "", tiles = {} }
+    local state = { panel = panel, open = {}, view = "tree", dir = "", tiles = {}, locked = false }
     if version == STATE_VERSION and type(saved) == "table" then
+      state.locked = saved.locked == true
       state.open = saved.open or {}
       state.view = saved.view == "grid" and "grid" or "tree"
       state.dir = type(saved.dir) == "string" and saved.dir or ""
@@ -577,7 +587,7 @@ ecs.panel.registerType({
     ui.event(state.panel, event)
   end,
   saveState = function(state)
-    return { open = state.open, view = state.view, dir = state.dir }
+    return { open = state.open, view = state.view, dir = state.dir, locked = state.locked, selected = state.selected }
   end,
   destroy = function(state)
     ui.forget(state.panel)
@@ -585,7 +595,39 @@ ecs.panel.registerType({
   end,
 })
 
+-- Shows a file in each files panel that is not locked: chooses it, without the tool's choose, opens the folders above it in the tree,
+-- or shows its folder in the grid, and scrolls to it.
+local function show(path)
+  if folder == "" or not fs.info(folder .. path) then
+    return
+  end
+  for panel, state in pairs(panels) do
+    if not state.locked then
+      state.selected = path
+      local above = ""
+      for part in path:gmatch("([^/]+)/") do
+        above = above == "" and part or (above .. "/" .. part)
+        state.open[above] = true
+      end
+      state.dir = path:match("^(.*/)[^/]*$") or ""
+      if state.search and not ui.matches(state.search, path:match("[^/]*$")) then
+        state.search = nil
+      end
+      state.revealing = path
+      panel:redraw()
+    end
+  end
+end
+
 ecs.service.register({
+  reveal = { sig = "void(string path)", doc = "Show a file in each files panel that is not locked: choose it, open the folders above it and scroll to it\n@param path The file's path in the folder", fn = show },
+  lock = { sig = "void(handle<ecs.panel> panel)", doc = "Lock a files panel, so it stays where it is when the tool shows another file, or unlock it\n@param panel The files panel", fn = function(panel)
+    local state = panels[panel]
+    if state then
+      state.locked = not state.locked
+      panel:redraw()
+    end
+  end },
   setFolder = { sig = "void(string folder)", doc = "Show a folder in the files panels\n@param folder The folder's path, ending with a slash; an empty text shows none", fn = setFolder },
   folder = { sig = "string()", doc = "The shown folder\n@return The folder's path, ending with a slash, or an empty text", fn = function()
     return folder
