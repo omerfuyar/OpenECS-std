@@ -485,14 +485,14 @@ local function draw(state, surface)
       children[#children + 1] = ui.text(tostring(state.message), { color = "#e06c75", wrap = true })
     end
     children[#children + 1] = ui.row({ gap = 6, align = "center" }, {
-      ui.toggle(state.locked, { id = "lock", label = "Lock", tooltip = "Stay where it is when the tool shows another file", onChange = function(on)
-        state.locked = on
-      end }),
       ui.selector(state.view == "grid" and 2 or 1, { "Tree", "Grid" }, {
         id = "view", tooltip = "The folder as a tree, or one folder at a time as a grid of icons", onSelect = function(choice)
           state.view = choice == 2 and "grid" or "tree"
         end,
       }),
+      ui.toggle(state.locked, { id = "lock", label = "Lock", tooltip = "Stay where it is when the tool shows another file", onChange = function(on)
+        state.locked = on
+      end }),
       ui.search(state.search or "", { grow = 1, placeholder = "Search files", onChange = function(text)
         state.search = text ~= "" and text or nil
       end }),
