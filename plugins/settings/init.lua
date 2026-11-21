@@ -109,54 +109,58 @@ local function read(setting, typed)
   return typed
 end
 
+-- each panel's state is an object of Settings, whose functions are methods
+local Settings = {}
+Settings.__index = Settings
+
 -- whether a setting matches the window's search, by its name, description, owner or value
-local function matches(window, setting)
-  return ui.matches(window.query, table.concat({ setting.name, setting.description or "", setting.owner or "", show(setting.value) }, "\n"))
+function Settings:matches(setting)
+  return ui.matches(self.query, table.concat({ setting.name, setting.description or "", setting.owner or "", show(setting.value) }, "\n"))
 end
 
 -- whether an owner's section shows open: while the window searches, every section with a setting that matches does
-local function isOpen(window, owner)
-  return window.query ~= "" or not window.closed[owner]
+function Settings:isOpen(owner)
+  return self.query ~= "" or not self.closed[owner]
 end
 
 -- reads the settings again; the window's items are the settings that match the search in the open sections, which Up and Down choose
-local function refresh(window)
-  local chosen = window.items[window.selected]
-  window.settings = {}
-  window.items = {}
+function Settings:refresh()
+  local chosen = self.items[self.selected]
+  self.settings = {}
+  self.items = {}
 
   for _, setting in ipairs(readSettings()) do
-    if matches(window, setting) then
-      window.settings[#window.settings + 1] = setting
+    if self:matches(setting) then
+      self.settings[#self.settings + 1] = setting
     end
   end
 
-  for _, setting in ipairs(window.settings) do
-    if isOpen(window, setting.owner) then
-      window.items[#window.items + 1] = setting
+  for _, setting in ipairs(self.settings) do
+    if self:isOpen(setting.owner) then
+      self.items[#self.items + 1] = setting
     end
   end
 
-  window.selected = math.min(math.max(window.selected, 1), math.max(#window.items, 1))
+  self.selected = math.min(math.max(self.selected, 1), math.max(#self.items, 1))
 
-  for i, setting in ipairs(window.items) do
+  for i, setting in ipairs(self.items) do
     if chosen and setting.name == chosen.name then
-      window.selected = i
+      self.selected = i
     end
   end
 
-  window.panel:redraw()
+  self.panel:redraw()
 end
 
-local function set(window, setting, value)
+function Settings:set(setting, value)
   local ok, message = ecs.setting.set(setting.name, value)
 
   if not ok then
     ecs.log.warn(message or ("'%s' is not changed."):format(setting.name))
   end
 
-  window.invalid[setting.name] = nil
-  refresh(window)
+  self.invalid[setting.name] = nil
+  self:refresh()
 end
 
 -- the next value of a setting one step forward or back, or nil if the window does not step its type
@@ -183,11 +187,11 @@ local function step(setting, direction)
 end
 
 -- the control that shows and changes a setting's value
-local function control(window, setting)
+function Settings:control(setting)
   local id = "value:" .. setting.name
 
   if setting.type == "bool" then
-    return ui.toggle(setting.value, { id = id, look = "switch", onChange = function(on) set(window, setting, on) end })
+    return ui.toggle(setting.value, { id = id, look = "switch", onChange = function(on) self:set(setting, on) end })
   elseif setting.type == "choice" then
     local selected = 0
 
@@ -195,16 +199,16 @@ local function control(window, setting)
       selected = choice == setting.value and i or selected
     end
 
-    return ui.dropdown(selected, setting.choices, { id = id, grow = 1, onSelect = function(choice) set(window, setting, setting.choices[choice]) end })
+    return ui.dropdown(selected, setting.choices, { id = id, grow = 1, onSelect = function(choice) self:set(setting, setting.choices[choice]) end })
   elseif setting.type == "key" then
-    return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) set(window, setting, key) end })
+    return ui.key(setting.value, { id = id, grow = 1, onChange = function(key) self:set(setting, key) end })
   elseif setting.type == "path" then
     -- a path is typed, or chosen with the file dialog, which gives it as if it were typed
     return ui.path(setting.value, {
       id = id,
       grow = 1,
       onSubmit = function(path)
-        set(window, setting, path)
+        self:set(setting, path)
       end,
     })
   end
@@ -213,9 +217,9 @@ local function control(window, setting)
   local fieldElement = ui.field(show(setting.value), {
     id = id,
     grow = 1,
-    valid = not window.invalid[setting.name],
+    valid = not self.invalid[setting.name],
     onChange = function(typed)
-      window.invalid[setting.name] = read(setting, typed) == nil
+      self.invalid[setting.name] = read(setting, typed) == nil
     end,
     onSubmit = function(typed)
       local value, expected = read(setting, typed)
@@ -223,11 +227,11 @@ local function control(window, setting)
       -- a text that cannot be read is reported, and typing goes on
       if value == nil then
         ecs.log.warn(("'%s' needs %s."):format(setting.name, expected))
-        window.invalid[setting.name] = true
+        self.invalid[setting.name] = true
         return false
       end
 
-      set(window, setting, value)
+      self:set(setting, value)
     end,
   })
 
@@ -237,7 +241,7 @@ local function control(window, setting)
       id = "color:" .. setting.name,
       alpha = #setting.value == 9,
       onChange = function(color)
-        set(window, setting, color)
+        self:set(setting, color)
       end,
     })
     return ui.row({ gap = 6, grow = 1 }, { picker, fieldElement })
@@ -259,14 +263,14 @@ local function valueBelowUser(setting)
   return layers.default
 end
 
-local function settingRow(window, setting)
+function Settings:settingRow(setting)
   -- a setting that the user changed shows its name in the accent, and a button that takes the change away
   local changed = setting.layer == "user"
   local reset = changed and ui.button("Reset", {
     id = "reset:" .. setting.name,
     tooltip = "Back to " .. show(valueBelowUser(setting)),
     onClick = function()
-      set(window, setting, nil)
+      self:set(setting, nil)
     end,
   }) or ui.space({ width = 0, grow = 0 })
 
@@ -276,50 +280,50 @@ local function settingRow(window, setting)
       ui.text(setting.name, { color = changed and "accent" or nil }),
       ui.text(setting.description, { style = STYLES.note }),
     }),
-    ui.row({ width = 0, grow = 2, gap = 6 }, { control(window, setting), reset }),
+    ui.row({ width = 0, grow = 2, gap = 6 }, { self:control(setting), reset }),
   })
 end
 
 -- changes the chosen setting one step, in the user's settings file
-local function change(window, direction)
-  local setting = window.items[window.selected]
+function Settings:change(direction)
+  local setting = self.items[self.selected]
   local value = setting and step(setting, direction)
 
   if value ~= nil then
-    set(window, setting, value)
+    self:set(setting, value)
   end
 end
 
 -- toggles or cycles the chosen setting, or starts typing its value
-local function edit(window)
-  local setting = window.items[window.selected]
+function Settings:edit()
+  local setting = self.items[self.selected]
 
   if not setting then
     return
   elseif setting.type == "bool" or setting.type == "choice" then
-    change(window, 1)
+    self:change(1)
   else
-    ui.edit(window.panel, "value:" .. setting.name)
+    ui.edit(self.panel, "value:" .. setting.name)
   end
 end
 
 -- the window's elements: the title, then the settings, each owner's in a section of its name, which a click opens and closes
-local function view(window)
+function Settings:view()
   local sections, rows = {}, {}
 
-  for i, setting in ipairs(window.settings) do
-    rows[#rows + 1] = settingRow(window, setting)
+  for i, setting in ipairs(self.settings) do
+    rows[#rows + 1] = self:settingRow(setting)
 
     -- a section takes its children when it is made, so each owner's is made once its rows are
-    if i == #window.settings or setting.owner ~= window.settings[i + 1].owner then
+    if i == #self.settings or setting.owner ~= self.settings[i + 1].owner then
       local owner = setting.owner
 
       sections[#sections + 1] = ui.section(owner == "ecs" and "Core" or owner, {
         id = "owner:" .. owner,
-        open = isOpen(window, owner),
+        open = self:isOpen(owner),
         onToggle = function(open)
-          window.closed[owner] = not open or nil
-          refresh(window)
+          self.closed[owner] = not open or nil
+          self:refresh()
         end,
       }, rows)
       rows = {}
@@ -334,89 +338,99 @@ local function view(window)
   local list = ui.list({
     id = "list",
     gap = 4,
-    selected = window.selected,
+    selected = self.selected,
     onSelect = function(index)
-      window.selected = index
-      window.panel:redraw()
+      self.selected = index
+      self.panel:redraw()
     end,
   }, sections)
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Settings", { style = STYLES.title }),
-    ui.search(window.query, {
+    ui.search(self.query, {
       placeholder = "Search settings",
       results = "list",
       onChange = function(query)
-        window.query = query
-        refresh(window)
+        self.query = query
+        self:refresh()
       end,
     }),
     list,
   })
 end
 
+function Settings.create(panel, saved, version)
+  local window = setmetatable({ panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {}, query = "" }, Settings)
+  windows[panel] = window
+
+  if version == STATE_VERSION and saved then
+    for _, owner in ipairs(saved.closed or {}) do
+      window.closed[owner] = true
+    end
+  end
+
+  window:refresh()
+
+  -- the list has the keys from the start, so Up, Down and Return work at once
+  ui.edit(panel, "list")
+
+  if version == STATE_VERSION and saved and saved.selected then
+    for i, setting in ipairs(window.items) do
+      if setting.name == saved.selected then
+        window.selected = i
+      end
+    end
+  end
+
+  return window
+end
+
+function Settings:destroy()
+  ui.forget(self.panel)
+  windows[self.panel] = nil
+end
+
+function Settings:saveState()
+  local chosen, closed = self.items[self.selected], {}
+
+  for owner in pairs(self.closed) do
+    closed[#closed + 1] = owner
+  end
+
+  table.sort(closed)
+  return { selected = chosen and chosen.name or nil, closed = closed }
+end
+
+function Settings:draw(surface)
+  ui.show(self.panel, surface, self:view())
+end
+
+function Settings:event(event)
+  if event.type == "shown" then
+    self:refresh()
+  end
+
+  -- Return edits the chosen setting, when no element of the window takes it
+  if not ui.event(self.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #self.items > 0 then
+    self:edit()
+  end
+end
+
 ecs.panel.registerType({
   name = "window",
   title = "Settings",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local window = { panel = panel, settings = {}, items = {}, selected = 1, invalid = {}, closed = {}, query = "" }
-    windows[panel] = window
-
-    if version == STATE_VERSION and saved then
-      for _, owner in ipairs(saved.closed or {}) do
-        window.closed[owner] = true
-      end
-    end
-
-    refresh(window)
-
-    -- the list has the keys from the start, so Up, Down and Return work at once
-    ui.edit(panel, "list")
-
-    if version == STATE_VERSION and saved and saved.selected then
-      for i, setting in ipairs(window.items) do
-        if setting.name == saved.selected then
-          window.selected = i
-        end
-      end
-    end
-
-    return window
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    windows[state.panel] = nil
-  end,
-  saveState = function(state)
-    local chosen, closed = state.items[state.selected], {}
-
-    for owner in pairs(state.closed) do
-      closed[#closed + 1] = owner
-    end
-
-    table.sort(closed)
-    return { selected = chosen and chosen.name or nil, closed = closed }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, view(state))
-  end,
-  event = function(state, event)
-    if event.type == "shown" then
-      refresh(state)
-    end
-
-    -- Return edits the chosen setting, when no element of the window takes it
-    if not ui.event(state.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #state.items > 0 then
-      edit(state)
-    end
-  end,
+  create = Settings.create,
+  destroy = Settings.destroy,
+  saveState = Settings.saveState,
+  draw = Settings.draw,
+  event = Settings.event,
 })
 
 -- a setting that another plugin or the user's file changes, and the settings of a plugin that is enabled or disabled, show at once
 local function refreshAll()
   for _, window in pairs(windows) do
-    refresh(window)
+    window:refresh()
   end
 end
 
@@ -453,11 +467,11 @@ local function forWindow(act)
 end
 
 services.previous = forWindow(function(window)
-  change(window, -1)
+  window:change(-1)
 end)
 
 services.next = forWindow(function(window)
-  change(window, 1)
+  window:change(1)
 end)
 
 ecs.service.register({

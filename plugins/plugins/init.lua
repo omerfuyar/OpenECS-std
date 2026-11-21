@@ -60,28 +60,32 @@ local function stateText(entry)
   return entry.failed and "failed" or entry.enabled and "enabled" or "disabled"
 end
 
+-- each panel's state is an object of Plugins, whose functions are methods
+local Plugins = {}
+Plugins.__index = Plugins
+
 -- the plugins that match the list's search, by name, description, state or the plugins they depend on
-local function refresh(list)
-  local chosen = list.plugins[list.selected]
-  list.plugins = {}
+function Plugins:refresh()
+  local chosen = self.plugins[self.selected]
+  self.plugins = {}
 
   for _, entry in ipairs(readPlugins()) do
     local texts = { entry.name, entry.description or "", entry.version or "", stateText(entry), table.concat(entry.depends or {}, " ") }
 
-    if ui.matches(list.query, table.concat(texts, "\n")) then
-      list.plugins[#list.plugins + 1] = entry
+    if ui.matches(self.query, table.concat(texts, "\n")) then
+      self.plugins[#self.plugins + 1] = entry
     end
   end
 
-  list.selected = math.min(math.max(list.selected, 1), math.max(#list.plugins, 1))
+  self.selected = math.min(math.max(self.selected, 1), math.max(#self.plugins, 1))
 
-  for i, entry in ipairs(list.plugins) do
+  for i, entry in ipairs(self.plugins) do
     if chosen and entry.name == chosen.name then
-      list.selected = i
+      self.selected = i
     end
   end
 
-  list.panel:redraw()
+  self.panel:redraw()
 end
 
 -- the core makes the change when the current pass of the main loop ends, then emits ecs.pluginsChanged, which refreshes every list
@@ -93,10 +97,10 @@ end
 
 -- the list's elements: the title, then a row for each plugin with its state, version, description and the plugins it depends on;
 -- a click, or Return on the chosen one, toggles it, unless an enabled plugin needs it, which fades its row
-local function view(list)
+function Plugins:view()
   local rows = {}
 
-  for _, entry in ipairs(list.plugins) do
+  for _, entry in ipairs(self.plugins) do
     local faded = entry.enabled and entry.needed
     local depends = entry.depends or {}
 
@@ -120,86 +124,96 @@ local function view(list)
   end
 
   if #rows == 0 then
-    local empty = list.query ~= "" and "No plugin matches the search." or "No other plugin is in the plugin folders."
+    local empty = self.query ~= "" and "No plugin matches the search." or "No other plugin is in the plugin folders."
     rows[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Plugins", { style = STYLES.title }),
     ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note }),
-    ui.search(list.query, {
+    ui.search(self.query, {
       placeholder = "Search plugins",
       results = "list",
       onChange = function(query)
-        list.query = query
-        refresh(list)
+        self.query = query
+        self:refresh()
       end,
-      -- Return toggles the plugin the list chose, as in the list
+      -- Return toggles the plugin the self chose, as in the self
       onSubmit = function()
-        toggle(list.plugins[list.selected])
+        toggle(self.plugins[self.selected])
       end,
     }),
     ui.list({
       id = "list",
-      selected = list.selected,
+      selected = self.selected,
       onSelect = function(index)
-        list.selected = index
-        list.panel:redraw()
+        self.selected = index
+        self.panel:redraw()
       end,
       onActivate = function(index)
-        toggle(list.plugins[index])
+        toggle(self.plugins[index])
       end,
     }, rows),
   })
+end
+
+function Plugins.create(panel, saved, version)
+  local list = setmetatable({ panel = panel, plugins = {}, selected = 1, query = "" }, Plugins)
+  lists[panel] = list
+  list:refresh()
+
+  -- the list has the keys from the start, so Up, Down and Return work at once
+  ui.edit(panel, "list")
+
+  -- the plugin chosen last time is chosen again
+  if version == STATE_VERSION and saved and saved.selected then
+    for i, entry in ipairs(list.plugins) do
+      if entry.name == saved.selected then
+        list.selected = i
+      end
+    end
+  end
+
+  return list
+end
+
+function Plugins:destroy()
+  ui.forget(self.panel)
+  lists[self.panel] = nil
+end
+
+function Plugins:saveState()
+  local chosen = self.plugins[self.selected]
+  return { selected = chosen and chosen.name or nil }
+end
+
+function Plugins:draw(surface)
+  ui.show(self.panel, surface, self:view())
+end
+
+function Plugins:event(event)
+  -- plugins may have been installed since the list was drawn
+  if event.type == "shown" then
+    self:refresh()
+  end
+
+  ui.event(self.panel, event)
 end
 
 ecs.panel.registerType({
   name = "list",
   title = "Plugins",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local list = { panel = panel, plugins = {}, selected = 1, query = "" }
-    lists[panel] = list
-    refresh(list)
-
-    -- the list has the keys from the start, so Up, Down and Return work at once
-    ui.edit(panel, "list")
-
-    -- the plugin chosen last time is chosen again
-    if version == STATE_VERSION and saved and saved.selected then
-      for i, entry in ipairs(list.plugins) do
-        if entry.name == saved.selected then
-          list.selected = i
-        end
-      end
-    end
-
-    return list
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    lists[state.panel] = nil
-  end,
-  saveState = function(state)
-    local chosen = state.plugins[state.selected]
-    return { selected = chosen and chosen.name or nil }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, view(state))
-  end,
-  event = function(state, event)
-    -- plugins may have been installed since the list was drawn
-    if event.type == "shown" then
-      refresh(state)
-    end
-
-    ui.event(state.panel, event)
-  end,
+  create = Plugins.create,
+  destroy = Plugins.destroy,
+  saveState = Plugins.saveState,
+  draw = Plugins.draw,
+  event = Plugins.event,
 })
 
 ecs.event.subscribe("ecs.pluginsChanged", function()
   for _, list in pairs(lists) do
-    refresh(list)
+    list:refresh()
   end
 end)
 
@@ -210,7 +224,7 @@ function services.open()
   local openList = next(lists)
 
   if openList then
-    refresh(lists[openList])
+    lists[openList]:refresh()
     ecs.layout.focus(openList)
     return
   end

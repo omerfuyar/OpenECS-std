@@ -31,8 +31,12 @@ local function scopeTitle(scope, titles)
   return titles[scope] and ("%s (%s)"):format(titles[scope], scope) or scope
 end
 
+-- each panel's state is an object of Keys, whose functions are methods
+local Keys = {}
+Keys.__index = Keys
+
 -- the bindings that run, in their scopes' order: the whole tool, the prefix, then the panel types by name; each scope's by key
-local function readBindings(list)
+function Keys:readBindings()
   local functions, titles = {}, {}
 
   for _, entry in ipairs(ecs.key.functions()) do
@@ -69,26 +73,26 @@ local function readBindings(list)
     return a.key < b.key
   end)
 
-  list.functions, list.titles, list.all = functions, titles, bindings
+  self.functions, self.titles, self.all = functions, titles, bindings
 end
 
 -- the text a search matches: the key, the function's name and description, and the scope
-local function searchText(list, binding)
+function Keys:searchText(binding)
   local about = binding.about
-  return table.concat({ binding.key, tostring(binding["function"]), about and about.description or "", scopeTitle(binding.scope, list.titles) }, "\n")
+  return table.concat({ binding.key, tostring(binding["function"]), about and about.description or "", scopeTitle(binding.scope, self.titles) }, "\n")
 end
 
-local function refresh(list)
-  readBindings(list)
-  list.bindings = {}
+function Keys:refresh()
+  self:readBindings()
+  self.bindings = {}
 
-  for _, binding in ipairs(list.all) do
-    if ui.matches(list.query, searchText(list, binding)) then
-      list.bindings[#list.bindings + 1] = binding
+  for _, binding in ipairs(self.all) do
+    if ui.matches(self.query, self:searchText(binding)) then
+      self.bindings[#self.bindings + 1] = binding
     end
   end
 
-  list.panel:redraw()
+  self.panel:redraw()
 end
 
 -- changes a key in the user's settings, and says why when the file cannot be written
@@ -121,16 +125,16 @@ local function unbind(binding)
 end
 
 -- gives a binding's function another key in its scope
-local function rebind(list, binding, key)
+function Keys:rebind(binding, key)
   if key ~= binding.key then
     setKey(binding.scope, key, binding["function"])
     unbind(binding)
   end
 
-  refresh(list)
+  self:refresh()
 end
 
-local function bindingRow(list, binding)
+function Keys:bindingRow(binding)
   local func = binding["function"]
   local changed = binding.layer == "user"
   local id = binding.scope .. ":" .. binding.key
@@ -149,7 +153,7 @@ local function bindingRow(list, binding)
       tooltip = "Take the key away from the function",
       onClick = function()
         unbind(binding)
-        refresh(list)
+        self:refresh()
       end,
     }) or nil,
     changed and ui.button("Reset", {
@@ -157,7 +161,7 @@ local function bindingRow(list, binding)
       tooltip = "Back to the key of the preset or the defaults",
       onClick = function()
         setKey(binding.scope, binding.key, nil)
-        refresh(list)
+        self:refresh()
       end,
     }) or nil,
   }
@@ -173,7 +177,7 @@ local function bindingRow(list, binding)
         grow = 1,
         tooltip = "Click, then press the new key",
         onChange = function(key)
-          rebind(list, binding, key)
+          self:rebind(binding, key)
         end,
       }) or ui.text(binding.key, { grow = 1, color = "textDim" }),
       buttons[1] or false,
@@ -183,10 +187,10 @@ local function bindingRow(list, binding)
 end
 
 -- the scopes a new key may go to: the whole tool, the prefix, and the panel types
-local function scopeChoices(list)
+function Keys:scopeChoices()
   local scopes, names = { TOOL, PREFIX }, {}
 
-  for name in pairs(list.titles) do
+  for name in pairs(self.titles) do
     names[#names + 1] = name
   end
 
@@ -199,27 +203,27 @@ local function scopeChoices(list)
   local texts = {}
 
   for i, scope in ipairs(scopes) do
-    texts[i] = scopeTitle(scope, list.titles)
+    texts[i] = scopeTitle(scope, self.titles)
   end
 
   return scopes, texts
 end
 
 -- the row that adds a key: a function, a scope, then a key, which binds it at once
-local function addRow(list)
+function Keys:addRow()
   local names = {}
 
-  for name in pairs(list.functions) do
+  for name in pairs(self.functions) do
     names[#names + 1] = name
   end
 
   table.sort(names)
-  local scopes, scopeTexts = scopeChoices(list)
-  local chosen = list.newFunction and names[list.newFunction]
+  local scopes, scopeTexts = self:scopeChoices()
+  local chosen = self.newFunction and names[self.newFunction]
 
   return ui.group({ title = "Add a key", gap = 6 }, {
     ui.row({ gap = 6 }, {
-      ui.dropdown(list.newFunction or 0, names, {
+      ui.dropdown(self.newFunction or 0, names, {
         id = "new:function",
         width = 0,
         grow = 3,
@@ -227,15 +231,15 @@ local function addRow(list)
         -- the functions' names are in folders by their dots, as ecs.workspace.switch2
         folders = ".",
         onSelect = function(selected)
-          list.newFunction = selected
+          self.newFunction = selected
         end,
       }),
-      ui.dropdown(list.newScope or 1, scopeTexts, {
+      ui.dropdown(self.newScope or 1, scopeTexts, {
         id = "new:scope",
         width = 0,
         grow = 2,
         onSelect = function(selected)
-          list.newScope = selected
+          self.newScope = selected
         end,
       }),
       ui.key("", {
@@ -245,9 +249,9 @@ local function addRow(list)
         tooltip = chosen and "Click, then press the key for " .. chosen or "Choose a function first",
         onChange = function(key)
           if chosen then
-            setKey(scopes[list.newScope or 1], key, chosen)
-            list.newFunction = nil
-            refresh(list)
+            setKey(scopes[self.newScope or 1], key, chosen)
+            self.newFunction = nil
+            self:refresh()
           end
         end,
       }),
@@ -256,21 +260,21 @@ local function addRow(list)
 end
 
 -- the list's elements: the title, the search, the row that adds a key, then a section for each scope, which a click opens and closes
-local function view(list)
+function Keys:view()
   local sections, rows = {}, {}
 
-  for i, binding in ipairs(list.bindings) do
-    rows[#rows + 1] = bindingRow(list, binding)
+  for i, binding in ipairs(self.bindings) do
+    rows[#rows + 1] = self:bindingRow(binding)
 
-    if i == #list.bindings or binding.scope ~= list.bindings[i + 1].scope then
+    if i == #self.bindings or binding.scope ~= self.bindings[i + 1].scope then
       local scope = binding.scope
 
-      sections[#sections + 1] = ui.section(scopeTitle(scope, list.titles), {
+      sections[#sections + 1] = ui.section(scopeTitle(scope, self.titles), {
         id = "scope:" .. scope,
-        open = list.query ~= "" or not list.closed[scope],
+        open = self.query ~= "" or not self.closed[scope],
         onToggle = function(open)
-          list.closed[scope] = not open or nil
-          list.panel:redraw()
+          self.closed[scope] = not open or nil
+          self.panel:redraw()
         end,
       }, rows)
       rows = {}
@@ -278,71 +282,81 @@ local function view(list)
   end
 
   if #sections == 0 then
-    sections[1] = ui.text(list.query ~= "" and "No key matches the search." or "The tool binds no keys.", { style = STYLES.note })
+    sections[1] = ui.text(self.query ~= "" and "No key matches the search." or "The tool binds no keys.", { style = STYLES.note })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Keys", { style = STYLES.title }),
-    ui.search(list.query, {
+    ui.search(self.query, {
       placeholder = "Search keys",
       onChange = function(query)
-        list.query = query
-        refresh(list)
+        self.query = query
+        self:refresh()
       end,
     }),
-    addRow(list),
+    self:addRow(),
     ui.scroll({ id = "bindings", gap = 4, grow = 1 }, sections),
   })
+end
+
+function Keys.create(panel, saved, version)
+  local list = setmetatable({ panel = panel, bindings = {}, all = {}, functions = {}, titles = {}, closed = {}, query = "" }, Keys)
+  lists[panel] = list
+
+  if version == STATE_VERSION and saved then
+    for _, scope in ipairs(saved.closed or {}) do
+      list.closed[scope] = true
+    end
+  end
+
+  list:refresh()
+  return list
+end
+
+function Keys:destroy()
+  ui.forget(self.panel)
+  lists[self.panel] = nil
+end
+
+function Keys:saveState()
+  local closed = {}
+
+  for scope in pairs(self.closed) do
+    closed[#closed + 1] = scope
+  end
+
+  table.sort(closed)
+  return { closed = closed }
+end
+
+function Keys:draw(surface)
+  ui.show(self.panel, surface, self:view())
+end
+
+function Keys:event(event)
+  -- plugins may have registered functions and panel types since the list was drawn
+  if event.type == "shown" then
+    self:refresh()
+  end
+
+  ui.event(self.panel, event)
 end
 
 ecs.panel.registerType({
   name = "list",
   title = "Keys",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local list = { panel = panel, bindings = {}, all = {}, functions = {}, titles = {}, closed = {}, query = "" }
-    lists[panel] = list
-
-    if version == STATE_VERSION and saved then
-      for _, scope in ipairs(saved.closed or {}) do
-        list.closed[scope] = true
-      end
-    end
-
-    refresh(list)
-    return list
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    lists[state.panel] = nil
-  end,
-  saveState = function(state)
-    local closed = {}
-
-    for scope in pairs(state.closed) do
-      closed[#closed + 1] = scope
-    end
-
-    table.sort(closed)
-    return { closed = closed }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, view(state))
-  end,
-  event = function(state, event)
-    -- plugins may have registered functions and panel types since the list was drawn
-    if event.type == "shown" then
-      refresh(state)
-    end
-
-    ui.event(state.panel, event)
-  end,
+  create = Keys.create,
+  destroy = Keys.destroy,
+  saveState = Keys.saveState,
+  draw = Keys.draw,
+  event = Keys.event,
 })
 
 -- the keys of a plugin that is enabled or disabled, and a new prefix, show at once
 local function refreshAll()
   for _, list in pairs(lists) do
-    refresh(list)
+    list:refresh()
   end
 end
 
@@ -359,7 +373,7 @@ local function open()
   local shown = next(lists)
 
   if shown then
-    refresh(lists[shown])
+    lists[shown]:refresh()
     ecs.layout.focus(shown)
     return
   end

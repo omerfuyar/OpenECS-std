@@ -49,81 +49,85 @@ local function textLines(path)
   return lines
 end
 
-local function load(state, path)
-  if state.voice then
-    mixer.stop(state.voice)
+-- each panel's state is an object of Viewer, whose functions are methods
+local Viewer = {}
+Viewer.__index = Viewer
+
+function Viewer:load(path)
+  if self.voice then
+    mixer.stop(self.voice)
   end
-  state.path, state.kind, state.lines, state.sound, state.voice, state.error = path, nil, nil, nil, nil, nil
-  state.panel.title = path and path:match("[^/\\]*$") or "Viewer"
+  self.path, self.kind, self.lines, self.sound, self.voice, self.error = path, nil, nil, nil, nil, nil
+  self.panel.title = path and path:match("[^/\\]*$") or "Viewer"
   if not path then
     return
   end
   local info = fs.info(path)
   if not info or info.type ~= "file" then
-    state.error = "No such file."
+    self.error = "No such file."
     return
   end
-  state.kind = kindOf(path)
-  state.size = info.size
-  if state.kind == "image" then
+  self.kind = kindOf(path)
+  self.size = info.size
+  if self.kind == "image" then
     -- Only the image's size is needed here: ui reads the file itself.
     local loaded = image.load(path, 1)
     if loaded then
-      state.imageWidth, state.imageHeight = loaded:size()
+      self.imageWidth, self.imageHeight = loaded:size()
       loaded:free()
     end
   end
-  if state.kind == "sound" then
+  if self.kind == "sound" then
     local sound, err = audio.load(path)
-    state.sound, state.error = sound, not sound and tostring(err) or nil
-  elseif state.kind == "text" then
-    state.lines = textLines(path)
-    if not state.lines then
-      state.kind = "other"
+    self.sound, self.error = sound, not sound and tostring(err) or nil
+  elseif self.kind == "text" then
+    self.lines = textLines(path)
+    if not self.lines then
+      self.kind = "other"
     end
   end
-  state.panel:redraw()
+  self.panel:redraw()
 end
 
-local function draw(state, surface)
+function Viewer:draw(surface)
   local children = {}
-  if not state.path then
+  if not self.path then
     children[1] = ui.text("No file is open.", { style = STYLES.note })
   else
-    children[#children + 1] = ui.text(("%s, %d bytes"):format(state.path, state.size or 0), { style = STYLES.note, wrap = true })
-    if state.error then
-      children[#children + 1] = ui.text(state.error, { color = "#e06c75", wrap = true })
-    elseif state.kind == "image" then
+    children[#children + 1] = ui.text(("%s, %d bytes"):format(self.path, self.size or 0), { style = STYLES.note, wrap = true })
+    if self.error then
+      children[#children + 1] = ui.text(self.error, { color = "#e06c75", wrap = true })
+    elseif self.kind == "image" then
       -- The image fills the panel: a big one whole, and a small one by a whole number of times, at most 16.
-      local w, h = state.imageWidth or 0, state.imageHeight or 0
+      local w, h = self.imageWidth or 0, self.imageHeight or 0
       local roomW, roomH = surface.width / surface.scale - 16, surface.height / surface.scale - 48
       local props = {}
       if w > 0 and h > 0 and roomW > 0 and roomH > 0 then
         local fit = math.min(roomW / w, roomH / h)
         fit = fit >= 1 and math.min(16, math.floor(fit)) or fit
         props = { width = w * fit, height = h * fit }
-        children[1] = ui.text(("%s, %d bytes, %d × %d, shown at %d%%"):format(state.path, state.size or 0, w, h, math.floor(fit * 100 + 0.5)), { style = STYLES.note, wrap = true })
+        children[1] = ui.text(("%s, %d bytes, %d × %d, shown at %d%%"):format(self.path, self.size or 0, w, h, math.floor(fit * 100 + 0.5)), { style = STYLES.note, wrap = true })
       end
-      children[#children + 1] = ui.image(state.path, props)
-    elseif state.kind == "sound" then
+      children[#children + 1] = ui.image(self.path, props)
+    elseif self.kind == "sound" then
       children[#children + 1] = ui.row({ gap = 8, align = "center" }, {
         ui.button("Play", { id = "play", onClick = function()
-          if state.voice then
-            mixer.stop(state.voice)
+          if self.voice then
+            mixer.stop(self.voice)
           end
-          state.voice = state.sound:play(1, false)
+          self.voice = self.sound:play(1, false)
         end }),
         ui.button("Stop", { id = "stop", onClick = function()
-          if state.voice then
-            mixer.stop(state.voice)
-            state.voice = nil
+          if self.voice then
+            mixer.stop(self.voice)
+            self.voice = nil
           end
         end }),
-        ui.text(("%.2f seconds"):format(state.sound:length()), {}),
+        ui.text(("%.2f seconds"):format(self.sound:length()), {}),
       })
-    elseif state.kind == "text" then
+    elseif self.kind == "text" then
       local items = {}
-      for i, spans in ipairs(state.lines) do
+      for i, spans in ipairs(self.lines) do
         items[i] = ui.text(#spans > 0 and spans or " ", { font = "mono", wrap = true })
       end
       children[#children + 1] = ui.scroll({ id = "text" }, items)
@@ -131,35 +135,43 @@ local function draw(state, surface)
       children[#children + 1] = ui.text("The viewer shows images, sounds and texts.", { style = STYLES.note })
     end
   end
-  ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, children))
+  ui.show(self.panel, surface, ui.column({ padding = 8, gap = 6 }, children))
+end
+
+function Viewer.create(panel, saved, version)
+  local state = setmetatable({ panel = panel }, Viewer)
+  panels[panel] = state
+  if version == STATE_VERSION and type(saved) == "table" and saved.path then
+    state:load(saved.path)
+  end
+  return state
+end
+
+function Viewer:event(event)
+  ui.event(self.panel, event)
+end
+
+function Viewer:saveState()
+  return { path = self.path }
+end
+
+function Viewer:destroy()
+  if self.voice then
+    mixer.stop(self.voice)
+  end
+  ui.forget(self.panel)
+  panels[self.panel] = nil
 end
 
 ecs.panel.registerType({
   name = "file",
   title = "Viewer",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local state = { panel = panel }
-    panels[panel] = state
-    if version == STATE_VERSION and type(saved) == "table" and saved.path then
-      load(state, saved.path)
-    end
-    return state
-  end,
-  draw = draw,
-  event = function(state, event)
-    ui.event(state.panel, event)
-  end,
-  saveState = function(state)
-    return { path = state.path }
-  end,
-  destroy = function(state)
-    if state.voice then
-      mixer.stop(state.voice)
-    end
-    ui.forget(state.panel)
-    panels[state.panel] = nil
-  end,
+  create = Viewer.create,
+  draw = Viewer.draw,
+  event = Viewer.event,
+  saveState = Viewer.saveState,
+  destroy = Viewer.destroy,
 })
 
 ecs.service.register({
@@ -167,14 +179,14 @@ ecs.service.register({
     local free
     for panel, state in pairs(panels) do
       if state.path == path then
-        load(state, path)
+        state:load(path)
         ecs.layout.focus(panel)
         return
       end
       free = free or state
     end
     if free then
-      load(free, path)
+      free:load(path)
       ecs.layout.focus(free.panel)
     else
       ecs.layout.open("viewer.file", { path = path })
@@ -189,13 +201,13 @@ ecs.service.register({
       free = free or state
     end
     if free then
-      load(free, path)
+      free:load(path)
     end
   end },
   reload = { sig = "void(string path)", doc = "Read a file again in the viewers that show it\n@param path The file's path", fn = function(path)
     for _, state in pairs(panels) do
       if state.path == path then
-        load(state, path)
+        state:load(path)
       end
     end
   end },

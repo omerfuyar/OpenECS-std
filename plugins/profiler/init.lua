@@ -207,22 +207,26 @@ local function report(profile)
   return table.concat(lines, "\n")
 end
 
-local function chosenTable(view)
-  local tab = TABS[view.tab]
+-- each panel's state is an object of Profiler, whose functions are methods
+local Profiler = {}
+Profiler.__index = Profiler
+
+function Profiler:chosenTable()
+  local tab = TABS[self.tab]
   local columns, rows
 
   if tab == "Plugins" then
-    columns, rows = PLUGIN_COLUMNS, pluginRows(view.profile)
+    columns, rows = PLUGIN_COLUMNS, pluginRows(self.profile)
   elseif tab == "Panels" then
-    columns, rows = PANEL_COLUMNS, panelRows(view.profile)
+    columns, rows = PANEL_COLUMNS, panelRows(self.profile)
   else
-    columns, rows = STEP_COLUMNS, stepRows(view.profile)
+    columns, rows = STEP_COLUMNS, stepRows(self.profile)
   end
 
   return ui.table(columns, rows, { id = "table:" .. tab, grow = 1, stretch = true })
 end
 
-local function describe(view)
+function Profiler:describe()
   local measuring = ecs.setting.get("ecs.profile") == true
   local children = {
     ui.text("Profiler", { style = STYLES.title }),
@@ -240,93 +244,103 @@ local function describe(view)
           end
         end,
       }),
-      ui.toggle(view.paused, {
+      ui.toggle(self.paused, {
         id = "pause",
         label = "Pause",
         tooltip = "Keeps the numbers that show, to read or copy them",
         onChange = function(on)
-          view.paused = on
+          self.paused = on
         end,
       }),
       ui.button("Copy report", {
         id = "copy",
         tooltip = "Copies the whole profile as text",
         onClick = function()
-          if view.profile then
-            ecs.clipboard.setText(report(view.profile))
+          if self.profile then
+            ecs.clipboard.setText(report(self.profile))
           end
         end,
       }),
     }),
   }
 
-  if not view.profile then
+  if not self.profile then
     local hint = measuring and "Measuring; the first numbers show within a second." or "Turn Measure on to see where the time goes."
     children[#children + 1] = ui.text(hint, { color = "textDim", wrap = true, selectable = false })
   else
-    children[#children + 1] = ui.text(summaryText(view.profile), { style = STYLES.note, wrap = true })
-    children[#children + 1] = graph(view.profile)
-    children[#children + 1] = ui.tabs(view.tab, TABS, {
+    children[#children + 1] = ui.text(summaryText(self.profile), { style = STYLES.note, wrap = true })
+    children[#children + 1] = graph(self.profile)
+    children[#children + 1] = ui.tabs(self.tab, TABS, {
       id = "tab",
       onSelect = function(selected)
-        view.tab = selected
+        self.tab = selected
       end,
     })
-    children[#children + 1] = chosenTable(view)
+    children[#children + 1] = self:chosenTable()
   end
 
   return ui.column({ style = STYLES.view }, children)
 end
 
 -- the panel reads the profile on a timer, not in each draw, so its own drawing stays small
-local function read(view)
-  if view.paused then
+function Profiler:read()
+  if self.paused then
     return
   end
 
-  local shown = view.profile
-  view.profile = ecs.profile.get()
+  local shown = self.profile
+  self.profile = ecs.profile.get()
 
-  if view.profile or shown then
-    view.panel:redraw()
+  if self.profile or shown then
+    self.panel:redraw()
   end
 end
 
 local views = {} -- every open profiler's state, by its panel handle
 
+function Profiler.create(panel, saved, version)
+  local view = setmetatable({ panel = panel, tab = 1, paused = false }, Profiler)
+
+  if version == STATE_VERSION and saved then
+    view.tab = math.min(math.max(saved.tab or 1, 1), #TABS)
+    view.paused = saved.paused == true
+  end
+
+  view.timer = ecs.timer.start(REFRESH, true, function()
+    view:read()
+  end)
+  view:read()
+  views[panel] = view
+  return view
+end
+
+function Profiler:destroy()
+  self.timer:stop()
+  ui.forget(self.panel)
+  views[self.panel] = nil
+end
+
+function Profiler:saveState()
+  return { tab = self.tab, paused = self.paused }
+end
+
+function Profiler:draw(surface)
+  ui.show(self.panel, surface, self:describe())
+end
+
+function Profiler:event(event)
+  ui.event(self.panel, event)
+end
+
 ecs.panel.registerType({
   name = "view",
   title = "Profiler",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local view = { panel = panel, tab = 1, paused = false }
-
-    if version == STATE_VERSION and saved then
-      view.tab = math.min(math.max(saved.tab or 1, 1), #TABS)
-      view.paused = saved.paused == true
-    end
-
-    view.timer = ecs.timer.start(REFRESH, true, function()
-      read(view)
-    end)
-    read(view)
-    views[panel] = view
-    return view
-  end,
-  destroy = function(state)
-    state.timer:stop()
-    ui.forget(state.panel)
-    views[state.panel] = nil
-  end,
-  saveState = function(state)
-    return { tab = state.tab, paused = state.paused }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, describe(state))
-  end,
-  event = function(state, event)
-    ui.event(state.panel, event)
-  end,
+  create = Profiler.create,
+  destroy = Profiler.destroy,
+  saveState = Profiler.saveState,
+  draw = Profiler.draw,
+  event = Profiler.event,
 })
 
 -- opens the profiler, or shows the one that is open, so a key can bring it up
