@@ -3,5 +3,5 @@
 
 ---A frame of an animated GIF file.
 ---@class image.Frame
----@field image userdata An image of type draw.image.
+---@field image ecs.Handle An image of type draw.image.
 ---@field seconds number How long it shows.
