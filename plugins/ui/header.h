@@ -80,6 +80,8 @@ struct UiProps
     const char *sort;            // the id of the column a table is sorted by
     UiFlag ascending;            // a table's sort arrow points up
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
+    i32 count;                   // a long list's number of items, when it describes only the items that ui's range gives
+    i32 first;                   // the number of a long list's first described item, from 1, as ui's range gives it
     bool onActivate;             // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
     bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
     const char *dialog;          // a path's file dialog: "openFile", "saveFile" or "openFolder"
@@ -263,7 +265,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     {
         const char *name;
         f64 number;
-    } numbers[] = {{"width", props->width}, {"height", props->height}, {"padding", props->padding}, {"gap", props->gap}, {"size", props->size}, {"step", props->step}, {"selected", props->selected}};
+    } numbers[] = {{"width", props->width}, {"height", props->height}, {"padding", props->padding}, {"gap", props->gap}, {"size", props->size}, {"step", props->step}, {"selected", props->selected}, {"count", props->count}, {"first", props->first}};
 
     for (usz i = 0; i < UI__COUNT(numbers); i++)
     {
