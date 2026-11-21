@@ -10,3 +10,4 @@ Notes for agents and the owner that belong in no other document: why the tools a
   - `bugprone-casting-through-void`: inotify gives `fs` its events as bytes.
 - The naming checks follow DESIGN.md, section 1.3: functions are PascalCase, such as `MixerFreeEcho`, or `ECSPlugin_Init`.
 - TextGrid's table of wide characters is between `clang-format off` and `on`, so it keeps its columns.
+- cglm's macros `CGLM_VECTOR_FUNCTIONS` and `CGLM_VECTOR_METHODS` are between `clang-format off` and `on`: clang-format 18, which the check `Format` uses, and later versions lay out a macro that ends with a braced element differently.

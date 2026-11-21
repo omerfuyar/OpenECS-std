@@ -12,8 +12,8 @@
 ---@class gpu.ShaderDesc
 ---@field stage "vertex"|"fragment"
 ---@field glsl? string GLSL source, version 450 for Vulkan, which gpu compiles to SPIR-V. Uniform blocks are in set 1 for vertex shaders and set 3 for fragment shaders, and samplers in set 2, as SDL's GPU API sets them.
----@field spirv? string SPIR-V bytes. Uniform blocks are in set 1 for vertex shaders and set 3 for fragment shaders, and samplers in set 2, as SDL's GPU API sets them.
----@field dxil? string DXIL bytes.
+---@field spirv? string|string.buffer|ffi.cdata* SPIR-V bytes. Uniform blocks are in set 1 for vertex shaders and set 3 for fragment shaders, and samplers in set 2, as SDL's GPU API sets them.
+---@field dxil? string|string.buffer|ffi.cdata* DXIL bytes.
 ---@field msl? string MSL source.
 ---@field entry? string The function the stage starts in; "main" if missing.
 ---@field uniforms? integer How many uniform blocks it reads; counted from GLSL or SPIR-V if missing, else 0. A draw gives the first one.
@@ -34,8 +34,8 @@
 ---@field vertices gpu.buffer A vertex buffer.
 ---@field indices? gpu.buffer An index buffer; without one, the vertices are drawn in order.
 ---@field count? integer How many indices, or vertices without indices, it draws; all if missing.
----@field vertexUniforms? string The vertex shader's first uniform block, as std140 lays it out, such as from an FFI array of floats.
----@field fragmentUniforms? string The fragment shader's first uniform block.
+---@field vertexUniforms? string|string.buffer|ffi.cdata* The vertex shader's first uniform block, as std140 lays it out, such as an FFI array of floats or a string.buffer of structs.
+---@field fragmentUniforms? string|string.buffer|ffi.cdata* The fragment shader's first uniform block.
 ---@field texture? gpu.texture The fragment shader's first sampler.
 ---@field atlas? integer A texture of the text's glyphs as the fragment shader's first sampler, by the number gpu.glyphs gave, if there is no texture.
 

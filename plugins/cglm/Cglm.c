@@ -36,24 +36,11 @@ typedef struct
     f32 values[16];
 } CglmMat4;
 
-/// @brief The plugin's state: the bytes that the bytes functions gave last, kept until the next call.
-static struct
-{
-    f32 bytes[16];
-} CGLM = {0};
-
 // a struct's floats, copied into a local of cglm's type, and a local copied into a struct
 #define CGLM_IN(type, name, from) \
     type name;                    \
     SDL_memcpy(name, from, sizeof(name))
 #define CGLM_OUT(target, from) SDL_memcpy(target, from, sizeof(*(target)))
-
-/// @brief Gives a struct's floats as bytes, kept until the next call.
-static SHUSlice CglmBytes(const void *floats, usz count)
-{
-    SDL_memcpy(CGLM.bytes, floats, count * sizeof(f32));
-    return cs(CGLM.bytes, count * sizeof(f32));
-}
 
 // the functions of a vector of N floats, which call cglm's glm_vecN_ functions
 #define CGLM_VECTOR(N)                                                                                              \
@@ -111,16 +98,13 @@ static SHUSlice CglmBytes(const void *floats, usz count)
         {                                                                                                           \
             result[i] = one[i] + (amount * (two[i] - one[i]));                                                      \
         }                                                                                                           \
-    }                                                                                                               \
-    static SHUSlice CglmVec##N##Bytes(const CglmVec##N *vector)                                                     \
-    {                                                                                                               \
-        return CglmBytes(vector, N);                                                                                \
     }
 
 CGLM_VECTOR(2)
 CGLM_VECTOR(3)
 CGLM_VECTOR(4)
 
+// clang-format off
 // the registration of a vector's functions, with their signatures
 #define CGLM_VECTOR_FUNCTIONS(N)                                                                                                                                 \
     {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "void(struct<cglm.vec" #N "> a, struct<cglm.vec" #N "> b, out struct<cglm.vec" #N "> sum)",                   \
@@ -161,22 +145,14 @@ CGLM_VECTOR(4)
          "@param from The vector at 0\n"                                                                                                                         \
          "@param to The vector at 1\n"                                                                                                                           \
          "@param t Where between them: 0 gives from, 1 gives to, and t below 0 or above 1 goes past them\n"                                                      \
-         "@param at The vector at t"},                                                                                                                           \
-    {                                                                                                                                                            \
-        "vec" #N "Bytes", (ECSFunction)CglmVec##N##Bytes, "buffer(struct<cglm.vec" #N "> v)",                                                                    \
-            "Give a vector's floats as bytes, such as for a shader's uniforms; kept until the next call\n"                                                       \
-            "@param v A vector\n"                                                                                                                                \
-            "@return " #N " 32-bit floats in the system's byte order"                                                                                            \
-    }
+         "@param at The vector at t"}
 
 // the methods of a vector of N floats: an operator's name, such as add, is also the operator, such as a + b
 #define CGLM_VECTOR_METHODS(N)                                                                                                                        \
     {"vec" #N, "add", "vec" #N "Add"}, {"vec" #N, "sub", "vec" #N "Sub"}, {"vec" #N, "mul", "vec" #N "Scale"}, {"vec" #N, "scale", "vec" #N "Scale"}, \
         {"vec" #N, "dot", "vec" #N "Dot"}, {"vec" #N, "norm", "vec" #N "Norm"}, {"vec" #N, "distance", "vec" #N "Distance"},                          \
-        {"vec" #N, "normalize", "vec" #N "Normalize"}, {"vec" #N, "lerp", "vec" #N "Lerp"},                                                           \
-    {                                                                                                                                                 \
-        "vec" #N, "bytes", "vec" #N "Bytes"                                                                                                           \
-    }
+        {"vec" #N, "normalize", "vec" #N "Normalize"}, {"vec" #N, "lerp", "vec" #N "Lerp"}
+// clang-format on
 
 static void CglmVec2Make(f32 x, f32 y, CglmVec2 *retVector)
 {
@@ -262,11 +238,6 @@ static void CglmMat4Inv(const CglmMat4 *matrix, CglmMat4 *retInverse)
     }
 
     CGLM_OUT(retInverse, result);
-}
-
-static SHUSlice CglmMat4Bytes(const CglmMat4 *matrix)
-{
-    return CglmBytes(matrix->values, 16);
 }
 
 static void CglmTranslateMake(const CglmVec3 *vector, CglmMat4 *retMatrix)
@@ -416,11 +387,6 @@ static void CglmQuatRotatev(const CglmQuat *rotation, const CglmVec3 *vector, Cg
     CGLM_OUT(retTurned, result);
 }
 
-static SHUSlice CglmQuatBytes(const CglmQuat *rotation)
-{
-    return CglmBytes(rotation, 4);
-}
-
 static f32 CglmPerlinVec2(const CglmVec2 *point)
 {
     CGLM_IN(vec2, vec, point);
@@ -468,13 +434,11 @@ static SHUResult CglmAddMethods(ECSPlugin plugin)
         {"mat4", "translate", "translate"},
         {"mat4", "rotate", "rotate"},
         {"mat4", "scale", "scale"},
-        {"mat4", "bytes", "mat4Bytes"},
         {"quat", "mul", "quatMul"},
         {"quat", "normalize", "quatNormalize"},
         {"quat", "slerp", "quatSlerp"},
         {"quat", "mat4", "quatMat4"},
         {"quat", "rotatev", "quatRotatev"},
-        {"quat", "bytes", "quatBytes"},
     };
 
     for (usz i = 0; i < SDL_arraysize(methods); i++)
@@ -558,10 +522,6 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Give the matrix that undoes a matrix\n"
          "@param m A matrix\n"
          "@param inverse The inverse, or all 0 if m's determinant is 0 and it has none"},
-        {"mat4Bytes", (ECSFunction)CglmMat4Bytes, "buffer(struct<cglm.mat4> m)",
-         "Give a matrix's floats as bytes, column by column, such as for a shader's uniforms; kept until the next call\n"
-         "@param m A matrix\n"
-         "@return 16 32-bit floats in the system's byte order"},
         {"translateMake", (ECSFunction)CglmTranslateMake, "void(struct<cglm.vec3> v, out struct<cglm.mat4> matrix)",
          "Give the matrix that moves by a vector\n"
          "@param v The move along x, y and z\n"
@@ -658,10 +618,6 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param q A quaternion, of any length but 0\n"
          "@param v The vector to turn\n"
          "@param turned The turned vector"},
-        {"quatBytes", (ECSFunction)CglmQuatBytes, "buffer(struct<cglm.quat> q)",
-         "Give a quaternion's floats as bytes, x, y, z and w, such as for a shader's uniforms; kept until the next call\n"
-         "@param q A quaternion\n"
-         "@return 4 32-bit floats in the system's byte order"},
         {"perlinVec2", (ECSFunction)CglmPerlinVec2, "float(struct<cglm.vec2> point)",
          "Give Perlin noise at a point, from about -1 to 1\n"
          "@param point The point\n"
