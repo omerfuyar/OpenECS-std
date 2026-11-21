@@ -7,10 +7,9 @@ local ffi = require("ffi")
 local draw = require("draw")
 local image = require("image")
 
--- floats as bytes in native order, as draw takes points
+-- floats in an FFI array, as draw takes points
 local function floats(...)
-  local count = select("#", ...)
-  return ffi.string(ffi.new("float[?]", count, ...), count * 4)
+  return ffi.new("float[?]", select("#", ...), ...)
 end
 
 -- sizes in layout units, which the user can change as settings of the plugin
@@ -256,21 +255,26 @@ function draw.text(surface, font, text, x, y, textSize, color)
   return width
 end
 
+-- a buffer's bytes as a string, which a record's key holds: a buffer is a string, a string.buffer or an FFI array
+local function bytesOf(buffer)
+  return type(buffer) == "cdata" and ffi.string(buffer, ffi.sizeof(buffer)) or tostring(buffer)
+end
+
 function draw.triangles(surface, points, indices, color)
   if not recording then
     return drawn.triangles(surface, points, indices, color)
   end
 
   local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+  local pointBytes = bytesOf(points)
+  local xy = ffi.cast("const float *", pointBytes)
 
-  local xy = ffi.cast("const float *", points)
-
-  for i = 0, #points / 8 - 1 do
+  for i = 0, #pointBytes / 8 - 1 do
     local x, y = xy[i * 2], xy[i * 2 + 1]
     left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
   end
 
-  record("triangles", points .. indices .. tostring(color), left, top, right, bottom, surface, points, indices, color)
+  record("triangles", pointBytes .. bytesOf(indices) .. tostring(color), left, top, right, bottom, surface, points, indices, color)
 end
 
 function draw.clip(surface, x, y, width, height, body)
@@ -2890,7 +2894,7 @@ local function squareImage(hue)
     end
   end
 
-  return draw.newImage(PICKER.pixels, PICKER.pixels, ffi.string(pixels, ffi.sizeof(pixels)))
+  return draw.newImage(PICKER.pixels, PICKER.pixels, pixels)
 end
 
 -- the image of the hue bar, from red at the top round to red at the bottom
@@ -2902,7 +2906,7 @@ local function hueImage()
     pixels[y] = 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5)
   end
 
-  return draw.newImage(1, PICKER.pixels, ffi.string(pixels, ffi.sizeof(pixels)))
+  return draw.newImage(1, PICKER.pixels, pixels)
 end
 
 -- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
