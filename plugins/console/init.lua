@@ -212,25 +212,29 @@ local function copy(entry)
   ecs.clipboard.setText(entry.count > 1 and ("%s (×%d)"):format(entry.text, entry.count) or entry.text)
 end
 
+-- each panel's state is an object of Console, whose functions are methods
+local Console = {}
+Console.__index = Console
+
 -- A click on an entry chooses it, and a second click on it soon after, a double click, goes to what it is about.
-local function activate(state, entry)
-  if state.clicked == entry then
-    state.clicked = nil
+function Console:activate(entry)
+  if self.clicked == entry then
+    self.clicked = nil
     goTo(entry)
   else
-    state.clicked = entry
+    self.clicked = entry
     ecs.timer.start(0.4, false, function()
-      if state.clicked == entry then
-        state.clicked = nil
+      if self.clicked == entry then
+        self.clicked = nil
       end
     end)
   end
 end
 
 -- The menu of a right click on an entry, which the click chose.
-local function menu(state, entry, x, y)
-  state.chosen = entry
-  ui.menu(state.panel, x, y, {
+function Console:menu(entry, x, y)
+  self.chosen = entry
+  ui.menu(self.panel, x, y, {
     { label = "Go to", enabled = entry.file ~= nil or entry.links ~= nil, onClick = function()
       goTo(entry)
     end },
@@ -240,90 +244,100 @@ local function menu(state, entry, x, y)
   })
 end
 
+function Console.create(panel, saved)
+  local state = setmetatable({ panel = panel, follow = true, hidden = {} }, Console)
+  if type(saved) == "table" and type(saved.hidden) == "table" then
+    state.hidden = saved.hidden
+  end
+  panels[panel] = state
+  return state
+end
+
+function Console:draw(surface)
+  local counts = { info = 0, warn = 0, error = 0 }
+  local items, shown, numbers, selected = {}, {}, {}, nil
+  for i, entry in ipairs(entries) do
+    counts[entry.level] = (counts[entry.level] or 0) + entry.count
+    if not self.hidden[entry.level] and ui.matches(self.search or "", entry.text) then
+      shown[#shown + 1], numbers[#shown + 1] = entry, i
+      selected = entry == self.chosen and #shown or selected
+    end
+  end
+  -- a long console builds only the entries in view
+  local first, last = ui.range(self.panel, "entries", #shown)
+  for index = first, last do
+    items[#items + 1] = entryBox(numbers[index], shown[index], shown[index] == self.chosen)
+  end
+  self.shown, self.built = #shown, #items
+  if #shown == 0 then
+    items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note, selectable = false })
+  end
+  -- the levels' toggles filter the entries, and show how many each has
+  local header = {}
+  for _, level in ipairs(LEVELS) do
+    header[#header + 1] = ui.toggle(not self.hidden[level], {
+      id = "show:" .. level, label = ("%s %d"):format(NAMES[level], counts[level] or 0), tooltip = "Show the entries of this level",
+      onChange = function(on)
+        self.hidden[level] = not on or nil
+      end,
+    })
+  end
+  -- the search shows only the entries that hold each word typed
+  header[#header + 1] = ui.search(self.search or "", { width = 200, placeholder = "Search entries", onChange = function(text)
+    self.search = text ~= "" and text or nil
+  end })
+  header[#header + 1] = ui.space()
+  header[#header + 1] = ui.toggle(ecs.setting.get("console.clearOnRun") == true, {
+    id = "clearOnRun", label = "Clear on run", tooltip = "Clear the console when the tool starts a run, such as a game that plays",
+    onChange = function(on)
+      ecs.setting.set("console.clearOnRun", on)
+    end,
+  })
+  header[#header + 1] = ui.button("Clear", { id = "clear", tooltip = "Take out every entry", onClick = function()
+    entries = {}
+    redraw()
+  end })
+  ui.show(self.panel, surface, ui.column({ padding = 8, gap = 6 }, {
+    ui.row({ gap = 8, align = "center", wrap = true }, header),
+    -- a click chooses an entry, a double click goes to what it is about, and a right click opens its menu
+    ui.list({ id = "entries", gap = 4, grow = 1, count = #shown, first = first, selected = selected, onSelect = function(index)
+      self.chosen = shown[index]
+    end, onActivate = function(index)
+      self:activate(shown[index])
+    end, onMenu = function(index, x, y)
+      if index and shown[index] then
+        self:menu(shown[index], x, y)
+      end
+    end }, items),
+  }))
+  if self.follow and #shown > 0 then
+    self.follow = false
+    ui.revealItem(self.panel, "entries", #shown)
+  end
+end
+
+function Console:event(event)
+  ui.event(self.panel, event)
+end
+
+-- the levels it hides, and how many entries show and are built, which a test reads
+function Console:saveState()
+  return { hidden = self.hidden, shown = self.shown, built = self.built, chosen = self.chosen and self.chosen.text or nil }
+end
+
+function Console:destroy()
+  ui.forget(self.panel)
+  panels[self.panel] = nil
+end
+
 ecs.panel.registerType({
   name = "log",
   title = "Console",
-  create = function(panel, saved)
-    local state = { panel = panel, follow = true, hidden = {} }
-    if type(saved) == "table" and type(saved.hidden) == "table" then
-      state.hidden = saved.hidden
-    end
-    panels[panel] = state
-    return state
-  end,
-  draw = function(state, surface)
-    local counts = { info = 0, warn = 0, error = 0 }
-    local items, shown, numbers, selected = {}, {}, {}, nil
-    for i, entry in ipairs(entries) do
-      counts[entry.level] = (counts[entry.level] or 0) + entry.count
-      if not state.hidden[entry.level] and ui.matches(state.search or "", entry.text) then
-        shown[#shown + 1], numbers[#shown + 1] = entry, i
-        selected = entry == state.chosen and #shown or selected
-      end
-    end
-    -- a long console builds only the entries in view
-    local first, last = ui.range(state.panel, "entries", #shown)
-    for index = first, last do
-      items[#items + 1] = entryBox(numbers[index], shown[index], shown[index] == state.chosen)
-    end
-    state.shown, state.built = #shown, #items
-    if #shown == 0 then
-      items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note, selectable = false })
-    end
-    -- the levels' toggles filter the entries, and show how many each has
-    local header = {}
-    for _, level in ipairs(LEVELS) do
-      header[#header + 1] = ui.toggle(not state.hidden[level], {
-        id = "show:" .. level, label = ("%s %d"):format(NAMES[level], counts[level] or 0), tooltip = "Show the entries of this level",
-        onChange = function(on)
-          state.hidden[level] = not on or nil
-        end,
-      })
-    end
-    -- the search shows only the entries that hold each word typed
-    header[#header + 1] = ui.search(state.search or "", { width = 200, placeholder = "Search entries", onChange = function(text)
-      state.search = text ~= "" and text or nil
-    end })
-    header[#header + 1] = ui.space()
-    header[#header + 1] = ui.toggle(ecs.setting.get("console.clearOnRun") == true, {
-      id = "clearOnRun", label = "Clear on run", tooltip = "Clear the console when the tool starts a run, such as a game that plays",
-      onChange = function(on)
-        ecs.setting.set("console.clearOnRun", on)
-      end,
-    })
-    header[#header + 1] = ui.button("Clear", { id = "clear", tooltip = "Take out every entry", onClick = function()
-      entries = {}
-      redraw()
-    end })
-    ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, {
-      ui.row({ gap = 8, align = "center", wrap = true }, header),
-      -- a click chooses an entry, a double click goes to what it is about, and a right click opens its menu
-      ui.list({ id = "entries", gap = 4, grow = 1, count = #shown, first = first, selected = selected, onSelect = function(index)
-        state.chosen = shown[index]
-      end, onActivate = function(index)
-        activate(state, shown[index])
-      end, onMenu = function(index, x, y)
-        if index and shown[index] then
-          menu(state, shown[index], x, y)
-        end
-      end }, items),
-    }))
-    if state.follow and #shown > 0 then
-      state.follow = false
-      ui.revealItem(state.panel, "entries", #shown)
-    end
-  end,
-  event = function(state, event)
-    ui.event(state.panel, event)
-  end,
-  -- the levels it hides, and how many entries show and are built, which a test reads
-  saveState = function(state)
-    return { hidden = state.hidden, shown = state.shown, built = state.built, chosen = state.chosen and state.chosen.text or nil }
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    panels[state.panel] = nil
-  end,
+  create = Console.create,
+  draw = Console.draw,
+  event = Console.event,
+  saveState = Console.saveState,
+  destroy = Console.destroy,
 })
 
 ecs.service.register({

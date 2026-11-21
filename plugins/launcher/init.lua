@@ -51,26 +51,30 @@ local function readEntries()
   return entries
 end
 
+-- each panel's state is an object of Launcher, whose functions are methods
+local Launcher = {}
+Launcher.__index = Launcher
+
 -- reads both lists again, the entries that match the search by title, name, type or date, and keeps the chosen entry chosen if it is still there
-local function refresh(list)
-  local chosen = list.entries[list.selected]
-  list.entries = {}
+function Launcher:refresh()
+  local chosen = self.entries[self.selected]
+  self.entries = {}
 
   for _, entry in ipairs(readEntries()) do
-    if ui.matches(list.query, table.concat({ entry.title or "", entry.name or "", entry.type, entry.detail or "" }, "\n")) then
-      list.entries[#list.entries + 1] = entry
+    if ui.matches(self.query, table.concat({ entry.title or "", entry.name or "", entry.type, entry.detail or "" }, "\n")) then
+      self.entries[#self.entries + 1] = entry
     end
   end
 
-  list.selected = math.min(math.max(list.selected, 1), math.max(#list.entries, 1))
+  self.selected = math.min(math.max(self.selected, 1), math.max(#self.entries, 1))
 
-  for i, entry in ipairs(list.entries) do
+  for i, entry in ipairs(self.entries) do
     if chosen and entry.type == chosen.type and entry.name == chosen.name then
-      list.selected = i
+      self.selected = i
     end
   end
 
-  list.panel:redraw()
+  self.panel:redraw()
 end
 
 -- opens an entry: a preset's tool, or a saved session
@@ -93,10 +97,10 @@ local function open(entry)
 end
 
 -- the list's elements: the title, then one row for each entry, which a click, or Return on the chosen one, opens
-local function view(list)
+function Launcher:view()
   local rows = {}
 
-  for _, entry in ipairs(list.entries) do
+  for _, entry in ipairs(self.entries) do
     rows[#rows + 1] = ui.row({ style = STYLES.item }, {
       ui.text(entry.title),
       ui.text(entry.type == "preset" and "preset" or entry.detail, { style = STYLES.note }),
@@ -104,79 +108,89 @@ local function view(list)
   end
 
   if #rows == 0 then
-    local empty = list.query ~= "" and "No preset or session matches the search." or "There are no presets and no saved sessions."
+    local empty = self.query ~= "" and "No preset or session matches the search." or "There are no presets and no saved sessions."
     rows[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("OpenECS", { style = STYLES.title }),
-    ui.search(list.query, {
+    ui.search(self.query, {
       placeholder = "Search tools and sessions",
       results = "list",
       onChange = function(query)
-        list.query = query
-        refresh(list)
+        self.query = query
+        self:refresh()
       end,
-      -- Return opens the entry the list chose, so a search and Return open a tool
+      -- Return opens the entry the self chose, so a search and Return open a tool
       onSubmit = function()
-        open(list.entries[list.selected])
+        open(self.entries[self.selected])
       end,
     }),
     ui.list({
       id = "list",
-      selected = list.selected,
+      selected = self.selected,
       onSelect = function(index)
-        list.selected = index
-        list.panel:redraw()
+        self.selected = index
+        self.panel:redraw()
       end,
       onActivate = function(index)
-        open(list.entries[index])
+        open(self.entries[index])
       end,
     }, rows),
   })
+end
+
+function Launcher.create(panel, saved, version)
+  local list = setmetatable({ panel = panel, entries = {}, selected = 1, query = "" }, Launcher)
+  lists[panel] = list
+  list:refresh()
+
+  -- the list has the keys from the start, so Up, Down and Return work at once
+  ui.edit(panel, "list")
+
+  -- the entry chosen last time is chosen again
+  if version == STATE_VERSION and saved and saved.selected then
+    for i, entry in ipairs(list.entries) do
+      if entry.type == saved.selected.type and entry.name == saved.selected.name then
+        list.selected = i
+      end
+    end
+  end
+
+  return list
+end
+
+function Launcher:destroy()
+  ui.forget(self.panel)
+  lists[self.panel] = nil
+end
+
+function Launcher:saveState()
+  local chosen = self.entries[self.selected]
+  return { selected = chosen and { type = chosen.type, name = chosen.name } or nil }
+end
+
+function Launcher:draw(surface)
+  ui.show(self.panel, surface, self:view())
+end
+
+function Launcher:event(event)
+  if event.type == "shown" then
+    self:refresh()
+  end
+
+  ui.event(self.panel, event)
 end
 
 ecs.panel.registerType({
   name = "list",
   title = "Launcher",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local list = { panel = panel, entries = {}, selected = 1, query = "" }
-    lists[panel] = list
-    refresh(list)
-
-    -- the list has the keys from the start, so Up, Down and Return work at once
-    ui.edit(panel, "list")
-
-    -- the entry chosen last time is chosen again
-    if version == STATE_VERSION and saved and saved.selected then
-      for i, entry in ipairs(list.entries) do
-        if entry.type == saved.selected.type and entry.name == saved.selected.name then
-          list.selected = i
-        end
-      end
-    end
-
-    return list
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    lists[state.panel] = nil
-  end,
-  saveState = function(state)
-    local chosen = state.entries[state.selected]
-    return { selected = chosen and { type = chosen.type, name = chosen.name } or nil }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, view(state))
-  end,
-  event = function(state, event)
-    if event.type == "shown" then
-      refresh(state)
-    end
-
-    ui.event(state.panel, event)
-  end,
+  create = Launcher.create,
+  destroy = Launcher.destroy,
+  saveState = Launcher.saveState,
+  draw = Launcher.draw,
+  event = Launcher.event,
 })
 
 local services = {}

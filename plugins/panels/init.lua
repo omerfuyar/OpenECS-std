@@ -27,39 +27,43 @@ local function readTypes()
   return types
 end
 
+-- each panel's state is an object of Panels, whose functions are methods
+local Panels = {}
+Panels.__index = Panels
+
 -- whether a plugin's section shows open: while the list searches, every section with a type that matches does
-local function isOpen(list, plugin)
-  return list.query ~= "" or not list.closed[plugin]
+function Panels:isOpen(plugin)
+  return self.query ~= "" or not self.closed[plugin]
 end
 
 -- reads the types again, those that match the search by title, name, plugin or description; the list's items are the types of the open
 -- sections, which Up and Down choose
-local function refresh(list)
-  local chosen = list.items[list.selected]
-  list.types = {}
-  list.items = {}
+function Panels:refresh()
+  local chosen = self.items[self.selected]
+  self.types = {}
+  self.items = {}
 
   for _, entry in ipairs(readTypes()) do
-    if ui.matches(list.query, table.concat({ entry.title or "", entry.name, entry.plugin or "", entry.description or "" }, "\n")) then
-      list.types[#list.types + 1] = entry
+    if ui.matches(self.query, table.concat({ entry.title or "", entry.name, entry.plugin or "", entry.description or "" }, "\n")) then
+      self.types[#self.types + 1] = entry
     end
   end
 
-  for _, entry in ipairs(list.types) do
-    if isOpen(list, entry.plugin) then
-      list.items[#list.items + 1] = entry
+  for _, entry in ipairs(self.types) do
+    if self:isOpen(entry.plugin) then
+      self.items[#self.items + 1] = entry
     end
   end
 
-  list.selected = math.min(math.max(list.selected, 1), math.max(#list.items, 1))
+  self.selected = math.min(math.max(self.selected, 1), math.max(#self.items, 1))
 
-  for i, entry in ipairs(list.items) do
+  for i, entry in ipairs(self.items) do
     if chosen and entry.name == chosen.name then
-      list.selected = i
+      self.selected = i
     end
   end
 
-  list.panel:redraw()
+  self.panel:redraw()
 end
 
 -- opens a panel of a type in the group of the panel that had the focus, or where the core places new panels if that panel is gone
@@ -81,23 +85,23 @@ end
 
 -- the list's elements: the title, then for each plugin a section of its name, which a click opens and closes, with its description and a row
 -- for each of its panel types, which a click, or Return on the chosen one, opens
-local function view(list)
+function Panels:view()
   local sections, rows = {}, nil
 
   -- a section takes its children when it is made, so each plugin's is made once its rows are
   local function addSection(plugin)
     sections[#sections + 1] = ui.section(plugin, {
       id = "plugin:" .. plugin,
-      open = isOpen(list, plugin),
+      open = self:isOpen(plugin),
       onToggle = function(open)
-        list.closed[plugin] = not open or nil
-        refresh(list)
+        self.closed[plugin] = not open or nil
+        self:refresh()
       end,
     }, rows)
   end
 
-  for i, entry in ipairs(list.types) do
-    if i == 1 or entry.plugin ~= list.types[i - 1].plugin then
+  for i, entry in ipairs(self.types) do
+    if i == 1 or entry.plugin ~= self.types[i - 1].plugin then
       rows = {}
 
       if entry.description ~= "" then
@@ -110,105 +114,115 @@ local function view(list)
       ui.text(entry.name, { style = STYLES.note }),
     })
 
-    if i == #list.types or entry.plugin ~= list.types[i + 1].plugin then
+    if i == #self.types or entry.plugin ~= self.types[i + 1].plugin then
       addSection(entry.plugin)
     end
   end
 
   if #sections == 0 then
-    local empty = list.query ~= "" and "No panel type matches the search." or "The tool's plugins have no panel types."
+    local empty = self.query ~= "" and "No panel type matches the search." or "The tool's plugins have no panel types."
     sections[1] = ui.text(empty, { color = "textDim", selectable = false })
   end
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Open a panel", { style = STYLES.title }),
-    ui.search(list.query, {
+    ui.search(self.query, {
       placeholder = "Search panels",
       results = "list",
       onChange = function(query)
-        list.query = query
-        refresh(list)
+        self.query = query
+        self:refresh()
       end,
-      -- Return opens the type the list chose, so a search and Return open a panel
+      -- Return opens the type the self chose, so a search and Return open a panel
       onSubmit = function()
-        open(list.items[list.selected])
+        open(self.items[self.selected])
       end,
     }),
     ui.list({
       id = "list",
-      selected = list.selected,
+      selected = self.selected,
       onSelect = function(index)
-        list.selected = index
-        list.panel:redraw()
+        self.selected = index
+        self.panel:redraw()
       end,
       onActivate = function(index)
-        open(list.items[index])
+        open(self.items[index])
       end,
     }, sections),
   })
+end
+
+function Panels.create(panel, saved, version)
+  local list = setmetatable({ panel = panel, types = {}, items = {}, selected = 1, closed = {}, query = "" }, Panels)
+  lists[panel] = list
+
+  if version == STATE_VERSION and saved then
+    for _, plugin in ipairs(saved.closed or {}) do
+      list.closed[plugin] = true
+    end
+  end
+
+  list:refresh()
+
+  -- the list has the keys from the start, so Up, Down and Return work at once
+  ui.edit(panel, "list")
+
+  -- the type chosen last time is chosen again
+  if version == STATE_VERSION and saved and saved.selected then
+    for i, entry in ipairs(list.items) do
+      if entry.name == saved.selected then
+        list.selected = i
+      end
+    end
+  end
+
+  return list
+end
+
+function Panels:destroy()
+  ui.forget(self.panel)
+  lists[self.panel] = nil
+end
+
+function Panels:saveState()
+  local chosen, closed = self.items[self.selected], {}
+
+  for plugin in pairs(self.closed) do
+    closed[#closed + 1] = plugin
+  end
+
+  table.sort(closed)
+  return { selected = chosen and chosen.name or nil, closed = closed }
+end
+
+function Panels:draw(surface)
+  ui.show(self.panel, surface, self:view())
+end
+
+function Panels:event(event)
+  -- plugins may have registered types since the list was drawn
+  if event.type == "shown" then
+    self:refresh()
+  end
+
+  ui.event(self.panel, event)
 end
 
 ecs.panel.registerType({
   name = "list",
   title = "Panels",
   stateVersion = STATE_VERSION,
-  create = function(panel, saved, version)
-    local list = { panel = panel, types = {}, items = {}, selected = 1, closed = {}, query = "" }
-    lists[panel] = list
-
-    if version == STATE_VERSION and saved then
-      for _, plugin in ipairs(saved.closed or {}) do
-        list.closed[plugin] = true
-      end
-    end
-
-    refresh(list)
-
-    -- the list has the keys from the start, so Up, Down and Return work at once
-    ui.edit(panel, "list")
-
-    -- the type chosen last time is chosen again
-    if version == STATE_VERSION and saved and saved.selected then
-      for i, entry in ipairs(list.items) do
-        if entry.name == saved.selected then
-          list.selected = i
-        end
-      end
-    end
-
-    return list
-  end,
-  destroy = function(state)
-    ui.forget(state.panel)
-    lists[state.panel] = nil
-  end,
-  saveState = function(state)
-    local chosen, closed = state.items[state.selected], {}
-
-    for plugin in pairs(state.closed) do
-      closed[#closed + 1] = plugin
-    end
-
-    table.sort(closed)
-    return { selected = chosen and chosen.name or nil, closed = closed }
-  end,
-  draw = function(state, surface)
-    ui.show(state.panel, surface, view(state))
-  end,
-  event = function(state, event)
-    -- plugins may have registered types since the list was drawn
-    if event.type == "shown" then
-      refresh(state)
-    end
-
-    ui.event(state.panel, event)
-  end,
+  create = Panels.create,
+  destroy = Panels.destroy,
+  saveState = Panels.saveState,
+  draw = Panels.draw,
+  event = Panels.event,
 })
 
 -- the panel types of a plugin that is enabled or disabled show at once
 ecs.event.subscribe("ecs.pluginsChanged", function()
   for _, list in pairs(lists) do
-    refresh(list)
+    list:refresh()
   end
 end)
 
@@ -225,7 +239,7 @@ function services.open()
   local openList = next(lists)
 
   if openList then
-    refresh(lists[openList])
+    lists[openList]:refresh()
     ecs.layout.focus(openList)
     return
   end
