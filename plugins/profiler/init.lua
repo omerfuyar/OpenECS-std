@@ -9,7 +9,7 @@ local STYLES = ui.styles()
 
 local REFRESH = 0.5 -- seconds between the panel's readings of the profile
 local STATE_VERSION = 1 -- version of a panel's saved state: the chosen tab, and whether it is paused
-local TABS = { "Plugins", "Panels", "Steps" }
+local TABS = { "Plugins", "Panels", "Functions", "Steps" }
 local STEPS = { "wait", "input", "timers", "events", "layout", "panels", "upload", "interface", "present" }
 
 local PLUGIN_COLUMNS = {
@@ -26,6 +26,14 @@ local PANEL_COLUMNS = {
   { id = "seconds", title = "ms each second" },
   { id = "longest", title = "Longest ms" },
   { id = "calls", title = "Draws" },
+}
+
+local FUNCTION_COLUMNS = {
+  { id = "name", title = "Function" },
+  { id = "plugin", title = "Plugin" },
+  { id = "share", title = "Of a second" },
+  { id = "seconds", title = "ms each second" },
+  { id = "samples", title = "Samples" },
 }
 
 local STEP_COLUMNS = {
@@ -159,6 +167,17 @@ local function pluginRows(profile)
   return rows
 end
 
+-- the Lua functions, from the samples of LuaJIT's profiler, which ran its own time and not the functions it called
+local function functionRows(profile)
+  local rows = {}
+
+  for _, time in ipairs(profile.functions) do
+    rows[#rows + 1] = { name = time.name, plugin = time.plugin, share = percent(time.seconds), seconds = milliseconds(time.seconds), samples = time.samples }
+  end
+
+  return rows
+end
+
 -- a panel is named by its title and type, while it is open
 local function panelName(time)
   local panel = ecs.layout.findPanel(time.id)
@@ -202,6 +221,9 @@ local function report(profile)
   lines[#lines + 1] = "Panels, each one's draw in the last second:"
   addRows(panelRows(profile), PANEL_COLUMNS)
   lines[#lines + 1] = ""
+  lines[#lines + 1] = "Lua functions, from LuaJIT's samples in the last second:"
+  addRows(functionRows(profile), FUNCTION_COLUMNS)
+  lines[#lines + 1] = ""
   lines[#lines + 1] = "Steps of the main loop:"
   addRows(stepRows(profile), STEP_COLUMNS)
   return table.concat(lines, "\n")
@@ -219,6 +241,8 @@ function Profiler:chosenTable()
     columns, rows = PLUGIN_COLUMNS, pluginRows(self.profile)
   elseif tab == "Panels" then
     columns, rows = PANEL_COLUMNS, panelRows(self.profile)
+  elseif tab == "Functions" then
+    columns, rows = FUNCTION_COLUMNS, functionRows(self.profile)
   else
     columns, rows = STEP_COLUMNS, stepRows(self.profile)
   end
