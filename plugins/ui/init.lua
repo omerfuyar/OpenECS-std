@@ -80,10 +80,12 @@ local function panelState(panel)
   return state
 end
 
--- what ui keeps until a setting changes: the font size, the fonts by name, and what texts measure; draw keeps the fonts themselves
+-- what ui keeps until a setting changes: the font size, the fonts by name, what texts measure, and the lines of wrapped texts; draw keeps
+-- the fonts themselves
 local textSizeSetting
 local fonts = {}
 local measured, measuredCount = {}, 0
+local wrapped, wrappedCount = {}, 0
 local MEASURED_MOST = 8192
 local settingsChanged = true
 
@@ -554,6 +556,45 @@ local function wrap(font, text, textSize, width)
   end
 
   return lines
+end
+
+-- the lines of a text that wraps at a width, and the width of the widest, kept as measured texts are: each show wraps the same texts again,
+-- and wrapping measures many texts, each line so far with the next word, which would fill the kept measures
+local function wrapKept(font, text, textSize, width)
+  local bySize = wrapped[font]
+
+  if bySize == nil then
+    bySize = {}
+    wrapped[font] = bySize
+  end
+
+  local key = (textSize * 1024 + textScale) .. ":" .. width
+  local byText = bySize[key]
+
+  if byText == nil then
+    byText = {}
+    bySize[key] = byText
+  end
+
+  local kept = byText[text]
+
+  if kept == nil then
+    if wrappedCount >= MEASURED_MOST then
+      wrapped, wrappedCount = {}, 0
+      return wrapKept(font, text, textSize, width)
+    end
+
+    kept = { lines = wrap(font, text, textSize, width), width = 0 }
+
+    for _, line in ipairs(kept.lines) do
+      kept.width = math.max(kept.width, measureText(font, line, textSize))
+    end
+
+    byText[text] = kept
+    wrappedCount = wrappedCount + 1
+  end
+
+  return kept.lines, kept.width
 end
 
 -- a span's font: mono for code, else the text's; draw makes bold, italic, underline and struck text from the font itself, and a link is underlined
@@ -1513,12 +1554,8 @@ function measure(node, state, room)
       width = math.max(width, spanLine.width)
     end
   elseif node.type == "text" and node.wrap and (node.width or room) then
-    layout.lines = wrap(font, node.text, textSize, node.width or room)
-    width, height = 0, #layout.lines * line
-
-    for _, text in ipairs(layout.lines) do
-      width = math.max(width, measureText(font, text, textSize))
-    end
+    layout.lines, width = wrapKept(font, node.text, textSize, node.width or room)
+    height = #layout.lines * line
   elseif node.type == "text" and node.text:find("\n") then
     -- a text of many lines without wrap keeps its own lines, each cut with an ellipsis when it is drawn
     layout.lines = {}
@@ -3897,7 +3934,7 @@ function services.show(panel, surface, root)
 
   if settingsChanged then
     settingsChanged = false
-    fonts, measured, measuredCount = {}, {}, 0
+    fonts, measured, measuredCount, wrapped, wrappedCount = {}, {}, 0, {}, 0
     textSizeSetting = nil
     readSizes()
   end
