@@ -104,6 +104,7 @@ CGLM_VECTOR(2)
 CGLM_VECTOR(3)
 CGLM_VECTOR(4)
 
+// clang-format off
 // the registration of a vector's functions, with their signatures
 #define CGLM_VECTOR_FUNCTIONS(N)                                                                                                                                 \
     {"vec" #N "Add", (ECSFunction)CglmVec##N##Add, "void(struct<cglm.vec" #N "> a, struct<cglm.vec" #N "> b, out struct<cglm.vec" #N "> sum)",                   \
@@ -151,6 +152,7 @@ CGLM_VECTOR(4)
     {"vec" #N, "add", "vec" #N "Add"}, {"vec" #N, "sub", "vec" #N "Sub"}, {"vec" #N, "mul", "vec" #N "Scale"}, {"vec" #N, "scale", "vec" #N "Scale"}, \
         {"vec" #N, "dot", "vec" #N "Dot"}, {"vec" #N, "norm", "vec" #N "Norm"}, {"vec" #N, "distance", "vec" #N "Distance"},                          \
         {"vec" #N, "normalize", "vec" #N "Normalize"}, {"vec" #N, "lerp", "vec" #N "Lerp"}
+// clang-format on
 
 static void CglmVec2Make(f32 x, f32 y, CglmVec2 *retVector)
 {
