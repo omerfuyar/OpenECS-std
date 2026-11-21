@@ -16,7 +16,8 @@ typedef enum BuildType
     BuildType_MinSizeRel,
 } BuildType;
 
-static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"};
+// the build types as the flag -b takes them, case aside, and as the build folders are named
+static const SHUFlagChoice BUILD_TYPES[] = {{"Debug", NULL}, {"Release", NULL}, {"RelWithDebInfo", NULL}, {"MinSizeRel", NULL}, {NULL, NULL}};
 
 /// @brief The number of items of an array.
 #define COUNT(array) (sizeof(array) / sizeof(*(array)))
@@ -24,13 +25,14 @@ static const char *const BUILD_TYPE_STRINGS[] = {"Debug", "Release", "RelWithDeb
 /// @brief What the flags choose.
 static struct
 {
-    BuildType type;
+    int type; // a BuildType
     const char *output;       // OpenECS's build folder, such as ../build/Debug/, whose include/ holds the plugin interface
     const char *dependencies; // OpenECS's built dependencies, such as ../.shu/Debug/dependencies/: SDL's and stb's headers in include/, SDL's import libraries in lib/
     const char *compiler;     // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
     bool windows;             // the compiler compiles for Windows
     char *cache;              // shuild's cache, such as .shu/Debug/
     char *cmakeCache;         // the C++ libraries' builds, a folder for each compiler, as CMake keeps the compiler it configured with, such as .shu/Debug/cmake/gcc/
+    bool help;            // print the help, and build nothing
 } CONFIG = {BuildType_Debug, NULL, NULL, "gcc", false, NULL, NULL};
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
@@ -163,6 +165,15 @@ static const PluginNeeds PLUGIN_NEEDS[] = {
      {"tree-sitter-c/queries/highlights.scm", "queries/c/", "tree-sitter-lua/queries/highlights.scm", "queries/lua/", "tree-sitter-json/queries/highlights.scm", "queries/json/", NULL}},
 };
 
+// the flags, which shuild reads and prints the help of
+static const SHUFlag FLAGS[] = {
+    SHU_FLAG_REQUIRED("-o", "--output", "FOLDER", &CONFIG.output, "OpenECS's build folder, named from this folder, such as ../build/Debug/"),
+    SHU_FLAG_REQUIRED("-d", "--dependencies", "FOLDER", &CONFIG.dependencies, "OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/"),
+    SHU_FLAG_CHOICE("-b", "--build", "TYPE", &CONFIG.type, BUILD_TYPES, "Build type, Debug by default:"),
+    SHU_FLAG_STRING("-c", "--compiler", "CC", &CONFIG.compiler, "OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang"),
+    SHU_FLAG_SWITCH("-h", "--help", &CONFIG.help, "Show this help"),
+};
+
 #pragma endregion Setup
 
 #pragma region Declarations
@@ -195,83 +206,28 @@ int main(int argc, char **argv)
     return 0;
 }
 
-static void PrintUsage(void)
-{
-    printf(SHUM_COLOR_BOLD("Usage:") " ./shuild.ignore " SHUM_COLOR_GREEN("-o") " " SHUM_COLOR_CYAN("FOLDER") " " SHUM_COLOR_GREEN("-d") " " SHUM_COLOR_CYAN("FOLDER") " [" SHUM_COLOR_GREEN("FLAG") "...]\n");
-    printf("\n");
-    printf("OpenECS's shuild.c runs this build; see OpenECS's README.md.\n");
-    printf("\n");
-    printf(SHUM_COLOR_BOLD("Flags:") "\n");
-    printf("  " SHUM_COLOR_GREEN("-o") ", " SHUM_COLOR_GREEN("--output") " " SHUM_COLOR_CYAN("FOLDER") "  OpenECS's build folder, named from this folder, such as ../build/Debug/\n");
-    printf("  " SHUM_COLOR_GREEN("-d") ", " SHUM_COLOR_GREEN("--dependencies") " " SHUM_COLOR_CYAN("FOLDER") "\n");
-    printf("                       OpenECS's built dependencies, named from this folder, such as ../.shu/Debug/dependencies/\n");
-    printf("  " SHUM_COLOR_GREEN("-b") ", " SHUM_COLOR_GREEN("--build") " " SHUM_COLOR_CYAN("TYPE") "     Build type: debug (the default), release, relwithdebinfo or minsizerel\n");
-    printf("  " SHUM_COLOR_GREEN("-c") ", " SHUM_COLOR_GREEN("--compiler") " " SHUM_COLOR_CYAN("CC") "    OpenECS's compiler: gcc (the default), clang, or one for Windows, such as x86_64-w64-mingw32-clang\n");
-    printf("  " SHUM_COLOR_GREEN("-h") ", " SHUM_COLOR_GREEN("--help") "           Show this help\n");
-}
-
-/// @brief Stops the build with the usage, what is wrong and the argument.
-static void Refuse(const char *what, const char *argument)
-{
-    PrintUsage();
-    SHU_UtilFail("%s: " SHUM_LOG_VALUE("%s"), what, argument);
-}
-
 /// @brief Reads every flag into CONFIG. Returns false when the flags ask for the help, which it prints.
 static bool ReadArguments(int argc, char **argv)
 {
-    for (int i = 1; i < argc; i++)
+    SHU_FlagsRead(FLAGS, argc, argv);
+
+    if (CONFIG.help)
     {
-        const char *flag = argv[i];
-
-        if (!strcmp(flag, "-b") || !strcmp(flag, "--build"))
-        {
-            const char *name = i + 1 < argc ? argv[++i] : "";
-            usz type = 0;
-
-            while (type < COUNT(BUILD_TYPE_STRINGS) && strcasecmp(name, BUILD_TYPE_STRINGS[type]) != 0)
-            {
-                type++;
-            }
-
-            if (type == COUNT(BUILD_TYPE_STRINGS))
-            {
-                Refuse("Unknown build type", name);
-            }
-
-            CONFIG.type = (BuildType)type;
-        }
-        else if (!strcmp(flag, "-o") || !strcmp(flag, "--output"))
-        {
-            CONFIG.output = i + 1 < argc ? argv[++i] : NULL;
-        }
-        else if (!strcmp(flag, "-d") || !strcmp(flag, "--dependencies"))
-        {
-            CONFIG.dependencies = i + 1 < argc ? argv[++i] : NULL;
-        }
-        else if (!strcmp(flag, "-c") || !strcmp(flag, "--compiler"))
-        {
-            CONFIG.compiler = i + 1 < argc ? argv[++i] : CONFIG.compiler;
-        }
-        else if (!strcmp(flag, "-h") || !strcmp(flag, "--help"))
-        {
-            PrintUsage();
-            return false;
-        }
-        else
-        {
-            Refuse(flag[0] == '-' ? "Unknown flag" : "Unknown argument", flag);
-        }
+        SHU_FlagsPrintHelp(FLAGS);
+        printf("\nOpenECS's shuild.c runs this build; see OpenECS's README.md.\n");
+        return false;
     }
 
-    if (CONFIG.output == NULL || CONFIG.output[0] == '\0' || CONFIG.output[strlen(CONFIG.output) - 1] != '/')
+    SHU_FlagsCheck(FLAGS);
+
+    if (CONFIG.output[strlen(CONFIG.output) - 1] != '/')
     {
-        Refuse("The output folder is missing, or does not end with /", CONFIG.output == NULL ? "" : CONFIG.output);
+        SHU_UtilFail("The output folder does not end with /: " SHUM_LOG_VALUE("%s"), CONFIG.output);
     }
 
-    if (CONFIG.dependencies == NULL || CONFIG.dependencies[0] == '\0' || CONFIG.dependencies[strlen(CONFIG.dependencies) - 1] != '/')
+    if (CONFIG.dependencies[strlen(CONFIG.dependencies) - 1] != '/')
     {
-        Refuse("The dependencies' folder is missing, or does not end with /", CONFIG.dependencies == NULL ? "" : CONFIG.dependencies);
+        SHU_UtilFail("The dependencies' folder does not end with /: " SHUM_LOG_VALUE("%s"), CONFIG.dependencies);
     }
 
     return true;
@@ -285,7 +241,7 @@ static void Configure(void)
 
     // a build for another system has a cache of its own, as OpenECS's build has a folder of its own
     SHUPlatform target = SHU_CompilerGetTarget();
-    CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPE_STRINGS[CONFIG.type], SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUPlatform_GetString(target));
+    CONFIG.cache = SHU_UtilFormat(".shu/%s%s%s/", BUILD_TYPES[CONFIG.type].name, SHUM_PLATFORM_IS_HOST(target) ? "" : "-", SHUM_PLATFORM_IS_HOST(target) ? "" : SHUPlatform_GetString(target));
     SHU_CacheConfigure(CONFIG.cache);
 
     // a compiler named by its path, such as /usr/bin/clang, has a folder of its name
@@ -312,7 +268,7 @@ static void SetBuildFlags(bool ownCode)
         SHU_CompilerAddFlags("-fPIC");
     }
 
-    switch (CONFIG.type)
+    switch ((BuildType)CONFIG.type)
     {
     case BuildType_Debug:
         if (ownCode)
