@@ -1362,7 +1362,7 @@ local function choiceWidths(node, font, textSize)
   return widths
 end
 
-local measure
+local measure, measureRowWidths
 
 -- the lines of a row with wrap = true: each line takes the children that fit its width after the ones before, and a child wider than the width
 -- has a line of its own; each line is { first, last, height }, and the row is as wide as its widest line
@@ -1423,30 +1423,75 @@ local function measureChildren(node, state, room)
   local gaps = math.max(0, #node.children - 1) * (node.gap or 0)
   local rowRoom = horizontal(node) and (node.width or room) and (node.width or room) - 2 * paddingOf(node) - gaps
 
-  -- a row whose children need more than its width shares what the others leave among the children that can be narrower:
-  -- wrapped text, and columns, whose wrapped text breaks then
-  if rowRoom and along > rowRoom then
-    local narrowed, fixed = {}, along
-
-    for _, child in ipairs(node.children) do
-      if not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
-        narrowed[#narrowed + 1] = child
-        fixed = fixed - child.layout.naturalWidth
-      end
-    end
-
-    along, across = fixed, 0
-
-    for _, child in ipairs(narrowed) do
-      along = along + measure(child, state, math.max((rowRoom - fixed) / #narrowed, 1))
-    end
-
-    for _, child in ipairs(node.children) do
-      across = math.max(across, child.layout.naturalHeight)
-    end
+  if rowRoom then
+    along, across = measureRowWidths(node, state, rowRoom, along)
   end
 
   return along + gaps, across
+end
+
+-- the children of a row whose width is known get the widths that arrange gives them, and their wrapped text breaks at those widths:
+-- the children that can be narrower, wrapped text and columns, share what the others leave when the row's children need more than its width,
+-- each taking no more than it needs; then the growing ones among them get their part of what is left, as arrange shares it
+function measureRowWidths(node, state, rowRoom, along)
+  local fixed, open, widths = 0, {}, {}
+
+  for _, child in ipairs(node.children) do
+    if not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
+      open[#open + 1] = child
+      widths[child] = child.layout.naturalWidth
+    else
+      fixed = fixed + child.layout.naturalWidth
+    end
+  end
+
+  if along > rowRoom then
+    local left = rowRoom - fixed
+    local narrowed = true
+
+    -- a child that needs less than an even share keeps what it needs, and the others share the rest
+    while narrowed and #open > 0 do
+      narrowed = false
+
+      for i = #open, 1, -1 do
+        if open[i].layout.naturalWidth <= left / #open then
+          left = left - open[i].layout.naturalWidth
+          table.remove(open, i)
+          narrowed = true
+        end
+      end
+    end
+
+    for _, child in ipairs(open) do
+      widths[child] = math.max(left / #open, 1)
+    end
+  end
+
+  local used, grows = 0, 0
+
+  for _, child in ipairs(node.children) do
+    used = used + (widths[child] or child.layout.naturalWidth)
+    grows = grows + (child.grow == true and 1 or child.grow or 0)
+  end
+
+  along, across = 0, 0
+
+  for _, child in ipairs(node.children) do
+    local width = widths[child]
+    local grow = child.grow == true and 1 or child.grow or 0
+
+    if width and grows > 0 and grow > 0 and rowRoom > used then
+      width = width + (rowRoom - used) * grow / grows
+    end
+
+    if width and width ~= child.layout.naturalWidth then
+      measure(child, state, width)
+    end
+
+    along, across = along + child.layout.naturalWidth, math.max(across, child.layout.naturalHeight)
+  end
+
+  return along, across
 end
 
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
