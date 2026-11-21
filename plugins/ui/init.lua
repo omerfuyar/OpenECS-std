@@ -73,7 +73,7 @@ local function panelState(panel)
   local state = panels[panel]
 
   if not state then
-    state = { scroll = {}, scale = 1, taken = {} }
+    state = { scroll = {}, scale = 1, taken = {}, lists = {}, revealed = {} }
     panels[panel] = state
   end
 
@@ -737,7 +737,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -811,7 +811,8 @@ function elements.scroll(props, children)
 end
 
 -- a scroll element whose children are items to choose; children with selectable = false, such as headings, are not items;
--- a section's heading is not an item, and the children of an open section are items of the list, so Up and Down go through every section
+-- a section's heading is not an item, and the children of an open section are items of the list, so Up and Down go through every section.
+-- A long list gives count, its number of items, and only the items that ui.range names, from first: the others take their room without being built
 function elements.list(props, children)
   local flat = {}
 
@@ -829,6 +830,7 @@ function elements.list(props, children)
 
   local node = elements.scroll(props, flat)
   node.items = {}
+  node.first = node.first or 1
 
   -- selected is the chosen item's number, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first
   local chosen = {}
@@ -843,11 +845,19 @@ function elements.list(props, children)
     chosen[node.selected] = true
   end
 
+  local built = 0
+
   for _, child in ipairs(node.children) do
     if child.selectable ~= false then
-      local index = #node.items + 1
+      local index = node.first + built
+      built = built + 1
       node.items[index] = child
       child.list, child.itemIndex = node, index
+
+      -- an item of a long list keeps its id from its number, not from its place among the items built
+      if node.count and child.place == nil then
+        child.place = index
+      end
 
       -- an item takes the list's whole width, so its highlight does
       if child.stretch == nil then
@@ -867,6 +877,23 @@ function elements.list(props, children)
         end
       end
     end
+  end
+
+  -- the items not built take their room in two spaces, before and after the built ones, whose heights measure gives
+  if node.count then
+    node.last = node.first + built - 1
+
+    if node.first > 1 then
+      table.insert(node.children, 1, elements.space({ grow = 0 }))
+      node.children[1].place, node.spaceBefore = "before", node.children[1]
+    end
+
+    if node.last < node.count then
+      node.children[#node.children + 1] = elements.space({ grow = 0 })
+      node.children[#node.children].place, node.spaceAfter = "after", node.children[#node.children]
+    end
+  else
+    node.count = built
   end
 
   return node
@@ -1405,6 +1432,41 @@ end
 
 local measure, measureRowWidths
 
+-- what ui keeps of a list between shows: the height of each item when it was last shown, by its number, with their sum and count, and the
+-- height and gap of the list's view
+local function listKept(state, id)
+  local kept = state.lists[id]
+
+  if not kept then
+    kept = { heights = {}, known = 0, total = 0, view = 0, gap = 0 }
+    state.lists[id] = kept
+  end
+
+  return kept
+end
+
+-- an item's height as it was last shown, or else the average of those shown, or else a line of text with room around it
+local function itemHeight(kept, index)
+  return kept.heights[index] or (kept.known > 0 and kept.total / kept.known) or (lineHeight(fontOf({}), fontSize()) + 2 * size.paddingY)
+end
+
+local function keepItemHeight(kept, index, height)
+  local old = kept.heights[index]
+  kept.known, kept.total = kept.known + (old and 0 or 1), kept.total - (old or 0) + height
+  kept.heights[index] = height
+end
+
+-- the top of an item in its list's content, and its height, from the heights the list keeps
+local function itemSpan(kept, index, padding)
+  local top = padding
+
+  for i = 1, index - 1 do
+    top = top + itemHeight(kept, i) + kept.gap
+  end
+
+  return top, itemHeight(kept, index)
+end
+
 -- the lines of a row with wrap = true: each line takes the children that fit its width after the ones before, and a child wider than the width
 -- has a line of its own; each line is { first, last, height }, and the row is as wide as its widest line
 local function measureWrapped(node, state, rowRoom)
@@ -1615,7 +1677,32 @@ function measure(node, state, room)
   elseif node.type == "disclosure" then
     width, height = size.checkSize, line
   else
+    -- the spaces of a long list's items that are not built are as tall as those items were when they were last shown
+    local kept = node.items and listKept(state, node.id)
+
+    if kept then
+      kept.gap = node.gap or 0
+
+      if node.spaceBefore or node.spaceAfter then
+        state.longLists = state.longLists or {}
+        state.longLists[#state.longLists + 1] = node
+      end
+
+      if node.spaceBefore then
+        node.spaceBefore.height = itemSpan(kept, node.first, 0) - kept.gap
+      end
+
+      if node.spaceAfter then
+        local top, height = itemSpan(kept, node.count, 0)
+        node.spaceAfter.height = top + height - itemSpan(kept, node.last + 1, 0)
+      end
+    end
+
     local along, across = measureChildren(node, state, room)
+
+    for index, item in pairs(kept and node.items or {}) do
+      keepItemHeight(kept, index, item.layout.naturalHeight)
+    end
     local padding = paddingOf(node)
     width, height = across + 2 * padding, along + 2 * padding
 
@@ -3055,6 +3142,7 @@ local MOVE_KEYS = { Left = true, Right = true, Home = true, End = true }
 
 -- handles a key or text event while a field is edited
 local moveSelection -- chooses another item of a list; defined with the list's keys
+local revealItem -- scrolls a list so that an item shows; defined with scrollIntoView
 
 local function editField(panel, state, node, event)
   -- the cursor is a byte position before which text goes; a character may take several bytes
@@ -3168,6 +3256,21 @@ local function scrollIntoView(state, scroll, node)
   state.scroll[scroll.id] = math.min(math.max(offset, top + node.layout.height - scroll.layout.height), top)
 end
 
+-- scrolls a list so that an item shows: one that is built as it is, and another by the heights the list keeps, and again at the next show,
+-- where the item is built
+function revealItem(state, list, index)
+  if list.items[index] then
+    scrollIntoView(state, list, list.items[index])
+    return
+  end
+
+  local kept = listKept(state, list.id)
+  local top, height = itemSpan(kept, index, paddingOf(list))
+  local offset = state.scroll[list.id] or 0
+  state.scroll[list.id] = math.min(math.max(offset, top + height - kept.view), top)
+  state.revealed[list.id] = index
+end
+
 -- gives the keys to the next interactive element, or to the one before; a field or key element takes typing then
 local function moveKeyTarget(panel, state, back)
   local list = tabOrder(state.root, {})
@@ -3247,13 +3350,13 @@ end
 
 -- chooses the item of a list a number of items away from the chosen one, and scrolls it into view
 function moveSelection(state, list, step)
-  if #list.items == 0 then
+  if list.count == 0 then
     return
   end
 
-  local index = clamp(list.selected and list.selected + step or (step > 0 and 1 or #list.items), 1, #list.items)
+  local index = clamp(list.selected and list.selected + step or (step > 0 and 1 or list.count), 1, list.count)
   call(list.onSelect, index)
-  scrollIntoView(state, list, list.items[index])
+  revealItem(state, list, index)
 end
 
 -- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
@@ -3290,13 +3393,15 @@ end
 local function activateItem(list)
   local item = list.selected and list.items[list.selected]
 
-  if item and list.onActivate then
+  if list.selected and list.onActivate then
     list.onActivate(list.selected)
+    return true
   elseif item and item.onClick then
     item.onClick()
+    return true
   end
 
-  return item ~= nil and (list.onActivate ~= nil or item.onClick ~= nil)
+  return false
 end
 
 -- scrolls the scroll element that has the keys, or holds the element that has them: the arrows by a line, Page Up and Page Down by a page less a line,
@@ -3914,10 +4019,14 @@ local function assignIds(node, path, seen)
   end
 end
 
--- keeps each scroll element's offset as the layout kept it, from 0 to as far as its content goes
+-- keeps each scroll element's offset as the layout kept it, from 0 to as far as its content goes, and the height of each list's view
 local function keepScrollOffsets(node, state)
   if node.type == "scroll" then
     state.scroll[node.id] = node.layout.offset
+  end
+
+  if node.items then
+    listKept(state, node.id).view = node.layout.height
   end
 
   for _, child in ipairs(node.children or {}) do
@@ -3944,6 +4053,38 @@ function services.show(panel, surface, root)
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
   keepScrollOffsets(root, state)
+  state.height = height
+
+  -- a long list whose built items do not reach the edges of its view, as items were shorter than the list guessed, is built again
+  for _, list in ipairs(state.longLists or {}) do
+    local top, bottom = list.items[list.first], list.items[list.last]
+    local box = list.layout
+
+    if top and bottom and ((list.first > 1 and top.layout.y > box.y) or (list.last < list.count and bottom.layout.y + bottom.layout.height < box.y + box.height)) then
+      panel:redraw()
+    end
+  end
+
+  state.longLists = nil
+
+  -- an item that ui.revealItem scrolled to by its list's kept heights shows now, so it is scrolled to where it really is
+  for id, index in pairs(state.revealed) do
+    local list = findById(root, id)
+    local item = list and list.items and list.items[index]
+
+    if item or not list or index > (list.count or 0) then
+      state.revealed[id] = nil
+    end
+
+    if item then
+      local offset = state.scroll[id]
+      scrollIntoView(state, list, item)
+
+      if state.scroll[id] ~= offset then
+        panel:redraw()
+      end
+    end
+  end
 
   -- the element under the pointer and the pressed element are found again in the new layout
   state.hover = state.hover and state.pointerX and find(root, state.pointerX, state.pointerY, interactive) or nil
@@ -4108,6 +4249,45 @@ function services.reveal(panel, scrollId, childId)
 
   if child then
     scrollIntoView(state, scroll, child)
+    panel:redraw()
+  end
+end
+
+-- the items of a long list that are in view, or near it, so a panel builds only those: first and last are numbers from 1, and last is less than
+-- first when none shows
+function services.range(panel, id, count)
+  local state = panelState(panel)
+  local kept = listKept(state, id)
+  local offset, view = state.scroll[id] or 0, kept.view > 0 and kept.view or state.height
+  local first, last, top = 1, 0, 0
+
+  -- a panel not shown yet builds every item once, so the list learns its heights
+  if not view then
+    return 1, count
+  end
+
+  for i = 1, count do
+    local bottom = top + itemHeight(kept, i)
+
+    if bottom < offset - view / 2 then
+      first = i + 1
+    elseif top > offset + view * 1.5 then
+      break
+    end
+
+    last, top = i, bottom + kept.gap
+  end
+
+  return first, math.max(last, first - 1)
+end
+
+-- scrolls a list so that an item shows, by its number, whether it is built or not
+function services.revealItem(panel, id, index)
+  local state = panelState(panel)
+  local list = state.root and findById(state.root, id)
+
+  if list and list.items and index >= 1 and index <= list.count then
+    revealItem(state, list, index)
     panel:redraw()
   end
 end
@@ -4343,6 +4523,24 @@ ecs.service.register({
         .. "@param id The id of a field, a key element or a list, tree or table in the last layout, or else in the next one, such as an element"
         .. " that shows from the next draw; another id does nothing",
     fn = services.edit,
+  },
+  range = {
+    sig = "void(handle<ecs.panel> panel, string list, int count, out int first, out int last)",
+    doc = "Give the items of a long list that are in view or near it, so the panel builds only those and gives the list count and first\n"
+        .. "@param panel The panel that shows the list\n"
+        .. "@param list The list's id\n"
+        .. "@param count The number of the list's items\n"
+        .. "@param first The number of the first item to build, from 1\n"
+        .. "@param last The number of the last item to build; less than first when there is none",
+    fn = services.range,
+  },
+  revealItem = {
+    sig = "void(handle<ecs.panel> panel, string list, int index)",
+    doc = "Scroll a list so an item shows, by its number, whether the last draw built it or not\n"
+        .. "@param panel The panel that shows the list\n"
+        .. "@param list The list's id, in the last layout; nothing happens if no list has it\n"
+        .. "@param index The item's number, from 1",
+    fn = services.revealItem,
   },
   reveal = {
     sig = "void(handle<ecs.panel> panel, string scroll, string child)",

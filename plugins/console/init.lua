@@ -253,17 +253,21 @@ ecs.panel.registerType({
   end,
   draw = function(state, surface)
     local counts = { info = 0, warn = 0, error = 0 }
-    local items, shown, selected = {}, {}, nil
+    local items, shown, numbers, selected = {}, {}, {}, nil
     for i, entry in ipairs(entries) do
       counts[entry.level] = (counts[entry.level] or 0) + entry.count
       if not state.hidden[entry.level] and ui.matches(state.search or "", entry.text) then
-        items[#items + 1] = entryBox(i, entry, entry == state.chosen)
-        shown[#items] = entry
-        selected = entry == state.chosen and #items or selected
+        shown[#shown + 1], numbers[#shown + 1] = entry, i
+        selected = entry == state.chosen and #shown or selected
       end
     end
-    state.shown = #items
-    if #items == 0 then
+    -- a long console builds only the entries in view
+    local first, last = ui.range(state.panel, "entries", #shown)
+    for index = first, last do
+      items[#items + 1] = entryBox(numbers[index], shown[index], shown[index] == state.chosen)
+    end
+    state.shown, state.built = #shown, #items
+    if #shown == 0 then
       items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note, selectable = false })
     end
     -- the levels' toggles filter the entries, and show how many each has
@@ -294,7 +298,7 @@ ecs.panel.registerType({
     ui.show(state.panel, surface, ui.column({ padding = 8, gap = 6 }, {
       ui.row({ gap = 8, align = "center", wrap = true }, header),
       -- a click chooses an entry, a double click goes to what it is about, and a right click opens its menu
-      ui.list({ id = "entries", gap = 4, grow = 1, selected = selected, onSelect = function(index)
+      ui.list({ id = "entries", gap = 4, grow = 1, count = #shown, first = first, selected = selected, onSelect = function(index)
         state.chosen = shown[index]
       end, onActivate = function(index)
         activate(state, shown[index])
@@ -304,17 +308,17 @@ ecs.panel.registerType({
         end
       end }, items),
     }))
-    if state.follow and #items > 0 and items[#items].id then
+    if state.follow and #shown > 0 then
       state.follow = false
-      ui.reveal(state.panel, "entries", items[#items].id)
+      ui.revealItem(state.panel, "entries", #shown)
     end
   end,
   event = function(state, event)
     ui.event(state.panel, event)
   end,
-  -- the levels it hides, and how many entries show, which a test reads
+  -- the levels it hides, and how many entries show and are built, which a test reads
   saveState = function(state)
-    return { hidden = state.hidden, shown = state.shown, chosen = state.chosen and state.chosen.text or nil }
+    return { hidden = state.hidden, shown = state.shown, built = state.built, chosen = state.chosen and state.chosen.text or nil }
   end,
   destroy = function(state)
     ui.forget(state.panel)

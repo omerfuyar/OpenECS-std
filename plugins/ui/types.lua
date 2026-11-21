@@ -73,6 +73,8 @@
 
 ---@class ui.ListProps: ui.ScrollProps
 ---@field selected? integer|integer[] The chosen item's number, from 1, or a list of the chosen ones' numbers, each highlighted; Up and Down move from the first.
+---@field count? integer A long list's number of items, when its children are only the items that ui.range names; the others take their room without being built.
+---@field first? integer The number of a long list's first child, from 1, as ui.range gives it.
 ---@field onSelect? fun(item: integer, how: "toggle"|"range"|nil, between: integer[]?) A press on an item gives its number; with Ctrl, how is "toggle", and with Shift "range", with the numbers from the first chosen item to it.
 ---@field onActivate? fun(item: integer) A click on an item gives its number.
 ---@field onMenu? fun(item: integer?, x: number, y: number) A right click gives the item under it, which a right press chose if it was not, or nil beside the items, and the place.
