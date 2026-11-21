@@ -1,4 +1,4 @@
-// The notify standard plugin: desktop notifications and tray icons, which OpenECS gives to plugins (OVERVIEW 11), through SDL's notification
+// The notify standard plugin: desktop notifications and tray icons, which OpenECS gives to plugins (DESIGN 18), through SDL's notification
 // and tray functions (DESIGN 24). What the user does with them comes back as this plugin's events.
 
 #include "OpenECS.h"

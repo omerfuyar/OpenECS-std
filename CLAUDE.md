@@ -11,7 +11,7 @@ This repository is part of OpenECS. OpenECS's [CLAUDE.md](https://github.com/ome
 | [README.md](README.md) | Short introduction, and how to build and test.                                    |
 | [DESIGN.md](DESIGN.md) | How the plugins are built. OpenECS's DESIGN.md holds the conventions they follow. |
 
-OpenECS's OVERVIEW.md holds the product decisions for these plugins too, and OpenECS's [TODO.md](https://github.com/omerfuyar/OpenECS/blob/dev/TODO.md) their open questions and pending tasks, in its section Standard plugins. Before you propose or change anything, read the Contents of it, of OpenECS's DESIGN.md and of this DESIGN.md, then every section the task touches. Read OpenECS's DESIGN.md section 1 and this DESIGN.md section 1 before you write code.
+OpenECS's DESIGN.md holds the product decisions for these plugins too, and OpenECS's [TODO.md](https://github.com/omerfuyar/OpenECS/blob/dev/TODO.md) their open questions and pending tasks, in its section Standard plugins. Before you propose or change anything, read the Contents of it, of OpenECS's DESIGN.md and of this DESIGN.md, then every section the task touches. Read OpenECS's DESIGN.md section 1 and this DESIGN.md section 1 before you write code.
 
 | Path            | What it holds                                                                                                                                                                                              |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
