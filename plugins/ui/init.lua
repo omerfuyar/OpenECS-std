@@ -3,8 +3,15 @@
 -- Its elements are generic, so that plugins build their own views from them.
 
 local ecs = require("ecs")
+local ffi = require("ffi")
 local draw = require("draw")
 local image = require("image")
+
+-- floats as bytes in native order, as draw takes points
+local function floats(...)
+  local count = select("#", ...)
+  return ffi.string(ffi.new("float[?]", count, ...), count * 4)
+end
 
 -- sizes in layout units, which the user can change as settings of the plugin
 local SIZES = {
@@ -144,7 +151,7 @@ local function measureKept(font, text, textSize)
 
     kept = { draw.measure(font, text, textSize, textScale) }
     byText[text] = kept
-    measuredCount = measuredCount + 1
+    measuredCount += 1
   end
 
   return kept[1], kept[2]
@@ -187,7 +194,7 @@ local function record(name, key, left, top, right, bottom, ...)
 
   if clip then
     left, top, right, bottom = math.max(left, clip[1]), math.max(top, clip[2]), math.min(right, clip[3]), math.min(bottom, clip[4])
-    key = key .. "|" .. clip.key
+    key ..= "|" .. clip.key
   end
 
   recording[#recording + 1] = {
@@ -256,8 +263,10 @@ function draw.triangles(surface, points, indices, color)
 
   local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
 
-  for i = 1, #points // 8 do
-    local x, y = string.unpack("ff", points, (i - 1) * 8 + 1)
+  local xy = ffi.cast("const float *", points)
+
+  for i = 0, #points / 8 - 1 do
+    local x, y = xy[i * 2], xy[i * 2 + 1]
     left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
   end
 
@@ -293,7 +302,7 @@ local function changedArea(old, new)
   local first, most = 1, math.min(#old, #new)
 
   while first <= most and old[first].key == new[first].key do
-    first = first + 1
+    first += 1
   end
 
   if first > #old and first > #new then
@@ -336,7 +345,7 @@ local function replay(surface, calls, area)
       local clip, last = calls[i].clip, i
 
       while last < #calls and calls[last + 1].clip == clip do
-        last = last + 1
+        last += 1
       end
 
       local from, to = i, last
@@ -409,10 +418,10 @@ end
 
 -- the byte position of the character after the one at a position; unlike utf8.offset, a text that is not valid UTF-8 raises no error
 local function nextCharacter(text, at)
-  at = at + 1
+  at += 1
 
   while continues(text, at) do
-    at = at + 1
+    at += 1
   end
 
   return at
@@ -420,10 +429,10 @@ end
 
 -- the byte position of the character before a position
 local function previousCharacter(text, at)
-  at = at - 1
+  at -= 1
 
   while at > 1 and continues(text, at) do
-    at = at - 1
+    at -= 1
   end
 
   return at
@@ -436,11 +445,11 @@ end
 -- the byte position of the start of the word before a position; words are what lies between spaces
 local function wordStartBefore(text, at)
   while at > 1 and isSpace(text, at - 1) do
-    at = at - 1
+    at -= 1
   end
 
   while at > 1 and not isSpace(text, at - 1) do
-    at = at - 1
+    at -= 1
   end
 
   return at
@@ -449,11 +458,11 @@ end
 -- the byte position after the end of the word after a position
 local function wordEndAfter(text, at)
   while at <= #text and isSpace(text, at) do
-    at = at + 1
+    at += 1
   end
 
   while at <= #text and not isSpace(text, at) do
-    at = at + 1
+    at += 1
   end
 
   return at
@@ -483,7 +492,7 @@ local function ellipsize(font, text, textSize, width)
   local low, high = 0, utf8.len(text) or #text
 
   while low < high do
-    local middle = (low + high + 1) // 2
+    local middle = math.floor((low + high + 1) / 2)
     local cut = prefix(text, middle) .. "…"
 
     if measureText(font, cut, textSize) <= width then
@@ -512,7 +521,7 @@ local function wordParts(font, word, textSize, width)
       local low, high = 1, utf8.len(rest) or #rest
 
       while low < high do
-        local middle = (low + high + 1) // 2
+        local middle = math.floor((low + high + 1) / 2)
 
         if measureText(font, prefix(rest, middle), textSize) <= width then
           low = middle
@@ -591,7 +600,7 @@ local function wrapKept(font, text, textSize, width)
     end
 
     byText[text] = kept
-    wrappedCount = wrappedCount + 1
+    wrappedCount += 1
   end
 
   return kept.lines, kept.width
@@ -642,13 +651,13 @@ local function layoutSpans(node, textSize, width)
 
     -- runs of one span in a row are one run, so it is drawn with one call
     if last and last.span == span then
-      last.text = last.text .. text
-      last.width = last.width + runWidth
+      last.text ..= text
+      last.width += runWidth
     else
       line.runs[#line.runs + 1] = { x = x, text = text, span = span, width = runWidth }
     end
 
-    x = x + runWidth
+    x += runWidth
 
     if not blank then
       line.width = x
@@ -712,7 +721,7 @@ local function loadImageCached(path, scale)
 
     found = { picture = image.load(path, scale), triedAt = os.time() }
     images[key] = found
-    imageCount = imageCount + 1
+    imageCount += 1
   end
 
   found.usedAt = showCount
@@ -728,7 +737,7 @@ end
 
 -- a number as a field shows it: 14 digits keep what a user types, such as 0.1, and leave out the float's last digits
 local function formatNumber(number)
-  return math.type(number) == "integer" and tostring(number) or ("%.14g"):format(number)
+  return ("%.14g"):format(number)
 end
 
 -- element constructors -------------------------------------------------------
@@ -850,7 +859,7 @@ function elements.list(props, children)
   for _, child in ipairs(node.children) do
     if child.selectable ~= false then
       local index = node.first + built
-      built = built + 1
+      built += 1
       node.items[index] = child
       child.list, child.itemIndex = node, index
 
@@ -1348,7 +1357,7 @@ function elements.search(query, props)
     end
   end
 
-  fieldProps.placeholder = fieldProps.placeholder .. " (Ctrl+F)"
+  fieldProps.placeholder ..= " (Ctrl+F)"
   local field = elements.field(query, fieldProps)
   field.isSearch = true
   local children = { field }
@@ -1544,7 +1553,7 @@ function measureRowWidths(node, state, rowRoom, along)
       open[#open + 1] = child
       widths[child] = child.layout.naturalWidth
     else
-      fixed = fixed + child.layout.naturalWidth
+      fixed += child.layout.naturalWidth
     end
   end
 
@@ -1558,7 +1567,7 @@ function measureRowWidths(node, state, rowRoom, along)
 
       for i = #open, 1, -1 do
         if open[i].layout.naturalWidth <= left / #open then
-          left = left - open[i].layout.naturalWidth
+          left -= open[i].layout.naturalWidth
           table.remove(open, i)
           narrowed = true
         end
@@ -1573,8 +1582,8 @@ function measureRowWidths(node, state, rowRoom, along)
   local used, grows = 0, 0
 
   for _, child in ipairs(node.children) do
-    used = used + (widths[child] or child.layout.naturalWidth)
-    grows = grows + (child.grow == true and 1 or child.grow or 0)
+    used += (widths[child] or child.layout.naturalWidth)
+    grows += (child.grow == true and 1 or child.grow or 0)
   end
 
   along, across = 0, 0
@@ -1584,7 +1593,7 @@ function measureRowWidths(node, state, rowRoom, along)
     local grow = child.grow == true and 1 or child.grow or 0
 
     if width and grows > 0 and grow > 0 and rowRoom > used then
-      width = width + (rowRoom - used) * grow / grows
+      width += (rowRoom - used) * grow / grows
     end
 
     if width and width ~= child.layout.naturalWidth then
@@ -1647,7 +1656,7 @@ function measure(node, state, room)
     width, height = 0, boxed
 
     for _, choiceWidth in ipairs(choiceWidths(node, font, textSize)) do
-      width = width + choiceWidth
+      width += choiceWidth
     end
   elseif node.type == "toggle" then
     local box = node.look == "switch" and 2 * size.checkSize or size.checkSize
@@ -1748,7 +1757,7 @@ local function arrange(node, x, y, width, height, state)
       innerWidth = innerWidth - size.scrollbarWidth - 4
     end
 
-    innerY = innerY - layout.offset
+    innerY -= layout.offset
     innerHeight = math.max(layout.contentHeight - 2 * padding, innerHeight)
   end
 
@@ -1769,7 +1778,7 @@ local function arrange(node, x, y, width, height, state)
 
   for i, child in ipairs(node.children) do
     used = used + (row and child.layout.naturalWidth or child.layout.naturalHeight) + (i > 1 and gap or 0)
-    grows = grows + (child.grow == true and 1 or child.grow or 0)
+    grows += (child.grow == true and 1 or child.grow or 0)
   end
 
   local room = (row and innerWidth or innerHeight) - used
@@ -1792,7 +1801,7 @@ local function arrange(node, x, y, width, height, state)
       cross = crossRoom
     else
       local align = node.align or (row and "center" or "start")
-      crossAt = crossAt + (align == "center" and (crossRoom - cross) / 2 or align == "end" and crossRoom - cross or 0)
+      crossAt += (align == "center" and (crossRoom - cross) / 2 or align == "end" and crossRoom - cross or 0)
     end
 
     -- a separator stands up in a row, and lies across a column, unless its vertical prop says otherwise
@@ -1819,7 +1828,7 @@ function arrangeLine(node, line, x, y, width, state)
 
   for i = line.first, line.last do
     local grow = node.children[i].grow
-    grows = grows + (grow == true and 1 or grow or 0)
+    grows += (grow == true and 1 or grow or 0)
   end
 
   local room, along = width - line.width, x
@@ -1877,7 +1886,7 @@ local function choiceRects(node)
   local total = 0
 
   for _, width in ipairs(widths) do
-    total = total + width
+    total += width
   end
 
   local rects, x = {}, node.layout.x
@@ -1885,7 +1894,7 @@ local function choiceRects(node)
   for i, width in ipairs(widths) do
     local shared = node.look == "tabs" and width or total > 0 and width * node.layout.width / total or 0
     rects[i] = { x = x, width = shared }
-    x = x + shared
+    x += shared
   end
 
   return rects
@@ -1919,7 +1928,7 @@ end
 
 -- a small triangle that points down, centred on a point
 local function arrow(surface, x, y, half, color)
-  draw.triangles(surface, string.pack("ffffff", x - half, y - half / 2, x + half, y - half / 2, x, y + half / 2), "", color)
+  draw.triangles(surface, floats(x - half, y - half / 2, x + half, y - half / 2, x, y + half / 2), "", color)
 end
 
 local function paintSelector(node, surface, state, hover)
@@ -2043,7 +2052,7 @@ local function graphTotal(value)
   local total = 0
 
   for _, part in ipairs(value) do
-    total = total + part
+    total += part
   end
 
   return total
@@ -2077,7 +2086,7 @@ local function paintGraph(node, surface)
 
       if partHeight > 0 then
         draw.fill(surface, x, bottom - height - partHeight, bar, partHeight, node.colors[(j - 1) % #node.colors + 1])
-        height = height + partHeight
+        height += partHeight
       end
     end
   end
@@ -2094,11 +2103,11 @@ local function paintDisclosure(node, surface)
   local half, x, y = size.checkSize / 4, box.x + box.width / 2, box.y + box.height / 2
 
   if node.up then
-    draw.triangles(surface, string.pack("ffffff", x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
+    draw.triangles(surface, floats(x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
   elseif node.open then
     arrow(surface, x, y, half, "textDim")
   else
-    draw.triangles(surface, string.pack("ffffff", x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
+    draw.triangles(surface, floats(x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
   end
 end
 
@@ -2398,7 +2407,7 @@ end
 -- a small triangle that points right, or left, centred at x, y: a folder's mark, and the row that goes back
 local function sideArrow(surface, x, y, half, color, left)
   local tip, back = left and x - half / 2 or x + half / 2, left and x + half / 2 or x - half / 2
-  draw.triangles(surface, string.pack("ffffff", back, y - half, back, y + half, tip, y), "", color)
+  draw.triangles(surface, floats(back, y - half, back, y + half, tip, y), "", color)
 end
 
 -- opens a dropdown's choices in a popup below it; a click or Return chooses one. Typing searches: the popup shows what is typed
@@ -2627,7 +2636,7 @@ local function openDropdown(panel, state, node)
         typed = typed:sub(1, -2)
         refill()
       elseif event.type == "keyDown" and searchCharacter(event) then
-        typed = typed .. searchCharacter(event)
+        typed ..= searchCharacter(event)
         refill()
       end
     end,
@@ -2663,12 +2672,12 @@ local function openMenu(panel, x, y, entries)
       tops[i] = height
 
       if entry.line then
-        height = height + lineGap
+        height += lineGap
       else
         local keys = entry.keys and measureText(font, entry.keys, textSize) + 3 * size.paddingX or 0
         local marks = (entry.entries or entry.back) and mark or 0
         width = math.max(width, measureText(font, entry.label or "", textSize) + keys + marks + 2 * size.paddingX)
-        height = height + rowHeight
+        height += rowHeight
       end
     end
   end
@@ -2872,28 +2881,28 @@ local PICKER = { square = 160, bar = 16, gap = 8, pixels = 64 }
 
 -- the image of a picker's square at a hue: saturation grows to the right and value upwards
 local function squareImage(hue)
-  local pixels = {}
+  local pixels = ffi.new("uint32_t[?]", PICKER.pixels * PICKER.pixels)
 
   for y = 0, PICKER.pixels - 1 do
     for x = 0, PICKER.pixels - 1 do
       local red, green, blue = hsvToRgb(hue, x / (PICKER.pixels - 1), 1 - y / (PICKER.pixels - 1))
-      pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+      pixels[y * PICKER.pixels + x] = 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5)
     end
   end
 
-  return draw.newImage(PICKER.pixels, PICKER.pixels, table.concat(pixels))
+  return draw.newImage(PICKER.pixels, PICKER.pixels, ffi.string(pixels, ffi.sizeof(pixels)))
 end
 
 -- the image of the hue bar, from red at the top round to red at the bottom
 local function hueImage()
-  local pixels = {}
+  local pixels = ffi.new("uint32_t[?]", PICKER.pixels)
 
   for y = 0, PICKER.pixels - 1 do
     local red, green, blue = hsvToRgb(y / PICKER.pixels, 1, 1)
-    pixels[#pixels + 1] = string.pack("=I4", 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5))
+    pixels[y] = 0xFF000000 | math.floor(red * 255 + 0.5) << 16 | math.floor(green * 255 + 0.5) << 8 | math.floor(blue * 255 + 0.5)
   end
 
-  return draw.newImage(1, PICKER.pixels, table.concat(pixels))
+  return draw.newImage(1, PICKER.pixels, ffi.string(pixels, ffi.sizeof(pixels)))
 end
 
 -- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
@@ -3530,7 +3539,7 @@ local function paintTooltip(surface, state, width, height)
     boxWidth = math.max(boxWidth, measureText(font, text, textSize))
   end
 
-  boxWidth = boxWidth + 2 * size.paddingX
+  boxWidth += 2 * size.paddingX
   local x = clamp((state.pointerX or 0) + 12, 0, math.max(0, width - boxWidth))
   local y = (state.pointerY or 0) + 18
 
@@ -3623,7 +3632,7 @@ local function paintInspector(surface, state, width, height)
     boxWidth = math.max(boxWidth, measureText(font, text, textSize))
   end
 
-  boxWidth = boxWidth + 2 * size.paddingX
+  boxWidth += 2 * size.paddingX
   local x = clamp(state.pointerX + 12, 0, math.max(0, width - boxWidth))
   local y = state.pointerY + 18
 
@@ -4048,7 +4057,7 @@ function services.show(panel, surface, root)
     readSizes()
   end
 
-  showCount = showCount + 1
+  showCount += 1
   assignIds(root, "root", {})
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)

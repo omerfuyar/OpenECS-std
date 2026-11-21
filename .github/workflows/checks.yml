@@ -217,7 +217,7 @@ jobs:
     name: Lua (LuaLS)
     runs-on: ubuntu-24.04
     env:
-      LUALS_VERSION: 3.15.0
+      LUALS_VERSION: 3.19.2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -237,6 +237,6 @@ jobs:
       # the check reads OpenECS's ecs.lua as a library, so it finds code that misuses the ecs module
       - name: Check the Lua files
         run: |
-          echo '{ "workspace.library": ["../include"] }' > std/.luarc.json
+          echo '{ "runtime.version": "LuaJIT", "runtime.enableLuaJITExtensions": true, "workspace.library": ["../include"] }' > std/.luarc.json
           "$RUNNER_TEMP/luals/bin/lua-language-server" --check="$GITHUB_WORKSPACE/std" --checklevel=Warning --logpath="$RUNNER_TEMP/luals-log" | tee luals.log
           grep -q "no problems found" luals.log

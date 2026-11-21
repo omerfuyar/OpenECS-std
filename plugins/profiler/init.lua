@@ -58,7 +58,7 @@ local function busy(pass)
 
   for _, step in ipairs(STEPS) do
     if step ~= "wait" then
-      total = total + pass[step]
+      total += pass[step]
     end
   end
 
@@ -72,8 +72,8 @@ local function summarize(profile)
   for _, pass in ipairs(profile.passes) do
     if pass.panels + pass.interface + pass.present > 0 then
       local time = busy(pass)
-      frames = frames + 1
-      total = total + time
+      frames += 1
+      total += time
       longest = math.max(longest, time)
     end
   end
@@ -96,7 +96,7 @@ local function graphValues(profile)
       parts[j] = 0
 
       for _, step in ipairs(group.steps) do
-        parts[j] = parts[j] + pass[step] * 1000
+        parts[j] += pass[step] * 1000
       end
     end
 
@@ -135,7 +135,7 @@ local function stepRows(profile)
     local total, longest = 0, 0
 
     for _, pass in ipairs(profile.passes) do
-      total = total + pass[step]
+      total += pass[step]
       longest = math.max(longest, pass[step])
     end
 

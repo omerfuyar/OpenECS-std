@@ -34,7 +34,7 @@
 ---@field vertices gpu.buffer A vertex buffer.
 ---@field indices? gpu.buffer An index buffer; without one, the vertices are drawn in order.
 ---@field count? integer How many indices, or vertices without indices, it draws; all if missing.
----@field vertexUniforms? string The vertex shader's first uniform block, as std140 lays it out, such as from string.pack.
+---@field vertexUniforms? string The vertex shader's first uniform block, as std140 lays it out, such as from an FFI array of floats.
 ---@field fragmentUniforms? string The fragment shader's first uniform block.
 ---@field texture? gpu.texture The fragment shader's first sampler.
 ---@field atlas? integer A texture of the text's glyphs as the fragment shader's first sampler, by the number gpu.glyphs gave, if there is no texture.

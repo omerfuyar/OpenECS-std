@@ -177,7 +177,7 @@ local function freePath(dir, name)
   base, ending = base or name, base and ending or ""
   local path, n = dir .. name, 1
   while fs.info(folder .. path) do
-    n = n + 1
+    n += 1
     path = ("%s%s %d%s"):format(dir, base, n, ending)
   end
   return path
@@ -414,7 +414,7 @@ local function grid(state, children)
   end }) }
   local walked = ""
   for part in dir:gmatch("([^/]+)/") do
-    walked = walked .. part .. "/"
+    walked ..= part .. "/"
     local at = walked
     crumbs[#crumbs + 1] = ui.text("›", { style = STYLES.note })
     crumbs[#crumbs + 1] = ui.button(part, { id = "crumb:" .. at, tooltip = "Show this folder", onClick = function()
