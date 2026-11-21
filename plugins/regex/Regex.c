@@ -364,7 +364,7 @@ static void RegexSplit(RegexPattern *pattern, SHUSlice text, ECSValue *retParts,
 }
 
 /// @brief Replaces the first match, or every one, with PCRE2's substitution: $1 or ${name} for a group, and $$ for a dollar.
-static SHUSlice RegexSubstitute(RegexPattern *pattern, SHUSlice text, const char *replacement, bool all, i64 *retCount, const char **retError)
+static SHUSlice RegexSubstitute(RegexPattern *pattern, SHUSlice text, const char *replacement, bool all, i32 *retCount, const char **retError)
 {
     *retError = nullptr;
     *retCount = 0;
@@ -409,12 +409,12 @@ static SHUSlice RegexSubstitute(RegexPattern *pattern, SHUSlice text, const char
     return (SHUSlice){0};
 }
 
-static SHUSlice RegexReplace(RegexPattern *pattern, SHUSlice text, const char *replacement, i64 *retCount, const char **retError)
+static SHUSlice RegexReplace(RegexPattern *pattern, SHUSlice text, const char *replacement, i32 *retCount, const char **retError)
 {
     return RegexSubstitute(pattern, text, replacement, true, retCount, retError);
 }
 
-static SHUSlice RegexReplaceFirst(RegexPattern *pattern, SHUSlice text, const char *replacement, i64 *retCount, const char **retError)
+static SHUSlice RegexReplaceFirst(RegexPattern *pattern, SHUSlice text, const char *replacement, i32 *retCount, const char **retError)
 {
     return RegexSubstitute(pattern, text, replacement, false, retCount, retError);
 }
