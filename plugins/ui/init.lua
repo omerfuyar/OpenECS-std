@@ -4,6 +4,8 @@
 
 local ecs = require("ecs")
 local ffi = require("ffi")
+local newTable = require("table.new")
+local clearTable = require("table.clear")
 local draw = require("draw")
 local image = require("image")
 
@@ -182,30 +184,32 @@ end
 -- and drawing every pixel of a large panel for it would be slow.
 
 local drawn = draw -- the draw plugin's functions; draw below records calls while a show records them
-local recording -- the calls of the show that records them, or nil
+local recording -- the calls of the show that records them, or nil; its tables are reused from the show before the last
+local recorded = 0 -- how many calls the show has recorded
 local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
 
 -- room around a call's rectangle, in layout units, for smooth edges and slanted letters
 local CALL_EDGE = 2
 
-local function record(name, key, left, top, right, bottom, ...)
+-- the show's next call, with its rectangle and clip; the caller puts its arguments after the surface in it, from 1 to n
+local function record(name, left, top, right, bottom)
   local clip = recordClip
 
   if clip then
     left, top, right, bottom = math.max(left, clip[1]), math.max(top, clip[2]), math.min(right, clip[3]), math.min(bottom, clip[4])
-    key ..= "|" .. clip.key
   end
 
-  recording[#recording + 1] = {
-    name = name,
-    key = name .. key,
-    left = left - CALL_EDGE,
-    top = top - CALL_EDGE,
-    right = right + CALL_EDGE,
-    bottom = bottom + CALL_EDGE,
-    clip = clip,
-    args = table.pack(...),
-  }
+  recorded += 1
+  local call = recording[recorded]
+
+  if call == nil then
+    call = newTable(6, 8)
+    recording[recorded] = call
+  end
+
+  call.name, call.clip, call.key = name, clip, nil
+  call.left, call.top, call.right, call.bottom = left - CALL_EDGE, top - CALL_EDGE, right + CALL_EDGE, bottom + CALL_EDGE
+  return call
 end
 
 draw = setmetatable({}, { __index = drawn })
@@ -215,7 +219,8 @@ function draw.fill(surface, x, y, width, height, color)
     return drawn.fill(surface, x, y, width, height, color)
   end
 
-  record("fill", string.format("%g,%g,%g,%g,%s", x, y, width, height, color), x, y, x + width, y + height, surface, x, y, width, height, color)
+  local call = record("fill", x, y, x + width, y + height)
+  call[1], call[2], call[3], call[4], call[5], call.n = x, y, width, height, color, 5
 end
 
 function draw.outline(surface, x, y, width, height, thickness, color)
@@ -223,8 +228,8 @@ function draw.outline(surface, x, y, width, height, thickness, color)
     return drawn.outline(surface, x, y, width, height, thickness, color)
   end
 
-  record("outline", string.format("%g,%g,%g,%g,%g,%s", x, y, width, height, thickness, color), x, y, x + width, y + height,
-    surface, x, y, width, height, thickness, color)
+  local call = record("outline", x, y, x + width, y + height)
+  call[1], call[2], call[3], call[4], call[5], call[6], call.n = x, y, width, height, thickness, color, 6
 end
 
 function draw.circle(surface, x, y, radius, thickness, color)
@@ -232,8 +237,8 @@ function draw.circle(surface, x, y, radius, thickness, color)
     return drawn.circle(surface, x, y, radius, thickness, color)
   end
 
-  record("circle", string.format("%g,%g,%g,%g,%s", x, y, radius, thickness, color), x - radius, y - radius, x + radius, y + radius,
-    surface, x, y, radius, thickness, color)
+  local call = record("circle", x - radius, y - radius, x + radius, y + radius)
+  call[1], call[2], call[3], call[4], call[5], call.n = x, y, radius, thickness, color, 5
 end
 
 function draw.image(surface, picture, x, y, width, height)
@@ -241,7 +246,8 @@ function draw.image(surface, picture, x, y, width, height)
     return drawn.image(surface, picture, x, y, width, height)
   end
 
-  record("image", string.format("%s,%g,%g,%g,%g", tostring(picture), x, y, width, height), x, y, x + width, y + height, surface, picture, x, y, width, height)
+  local call = record("image", x, y, x + width, y + height)
+  call[1], call[2], call[3], call[4], call[5], call.n = picture, x, y, width, height, 5
 end
 
 function draw.text(surface, font, text, x, y, textSize, color)
@@ -250,16 +256,17 @@ function draw.text(surface, font, text, x, y, textSize, color)
   end
 
   local width, line = measureKept(font, text, textSize)
-  record("text", string.format("%s,%q,%g,%g,%g,%s", tostring(font), text, x, y, textSize, color), x, y, x + width, y + line,
-    surface, font, text, x, y, textSize, color)
+  local call = record("text", x, y, x + width, y + line)
+  call[1], call[2], call[3], call[4], call[5], call[6], call.n = font, text, x, y, textSize, color, 6
   return width
 end
 
--- a buffer's bytes as a string, which a record's key holds: a buffer is a string, a string.buffer or an FFI array
+-- a buffer's bytes as a string: a buffer is a string, a string.buffer or an FFI array
 local function bytesOf(buffer)
   return type(buffer) == "cdata" and ffi.string(buffer, ffi.sizeof(buffer)) or tostring(buffer)
 end
 
+-- triangles compare by the bytes of their buffers, which a plugin may fill again in place, so their call keeps the bytes as its key
 function draw.triangles(surface, points, indices, color)
   if not recording then
     return drawn.triangles(surface, points, indices, color)
@@ -274,7 +281,9 @@ function draw.triangles(surface, points, indices, color)
     left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
   end
 
-  record("triangles", pointBytes .. bytesOf(indices) .. tostring(color), left, top, right, bottom, surface, points, indices, color)
+  local call = record("triangles", left, top, right, bottom)
+  call[1], call[2], call[3], call.n = points, indices, color, 3
+  call.key = pointBytes .. bytesOf(indices) .. tostring(color)
 end
 
 function draw.clip(surface, x, y, width, height, body)
@@ -299,86 +308,140 @@ function draw.clip(surface, x, y, width, height, body)
   end
 end
 
+-- whether two calls draw the same: the same function, clip and arguments. A handle is the same object each time, so rawequal compares all
+local function sameCall(a, b)
+  local n = a.n
+
+  if a.name ~= b.name or n ~= b.n or a.key ~= b.key then
+    return false
+  end
+
+  local clipA, clipB = a.clip, b.clip
+
+  if clipA ~= clipB and (clipA == nil or clipB == nil or clipA.key ~= clipB.key) then
+    return false
+  end
+
+  if a.key then
+    return true
+  end
+
+  for i = 1, n do
+    if not rawequal(a[i], b[i]) then
+      return false
+    end
+  end
+
+  return true
+end
+
+-- a rectangle grown to hold a call's, when the call's has an area
+local function grow(call, left, top, right, bottom)
+  if call.right > call.left and call.bottom > call.top then
+    return math.min(left, call.left), math.min(top, call.top), math.max(right, call.right), math.max(bottom, call.bottom)
+  end
+
+  return left, top, right, bottom
+end
+
 -- the rectangle around the calls that differ between two shows, { left, top, right, bottom }; nil when none differs, and false when
 -- some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that changed
 -- covers every pixel it changed, old or new, so the pixels outside the rectangle are drawn by the same calls in the same order
-local function changedArea(old, new)
-  local first, most = 1, math.min(#old, #new)
+local function changedArea(old, oldCount, new, newCount)
+  local first, most = 1, math.min(oldCount, newCount)
 
-  while first <= most and old[first].key == new[first].key do
+  while first <= most and sameCall(old[first], new[first]) do
     first += 1
   end
 
-  if first > #old and first > #new then
+  if first > oldCount and first > newCount then
     return nil
   end
 
-  local lastOld, lastNew = #old, #new
+  local lastOld, lastNew = oldCount, newCount
 
-  while lastOld >= first and lastNew >= first and old[lastOld].key == new[lastNew].key do
+  while lastOld >= first and lastNew >= first and sameCall(old[lastOld], new[lastNew]) do
     lastOld, lastNew = lastOld - 1, lastNew - 1
   end
 
-  ---@type number[]|false
-  local area = false
-
-  local function add(call)
-    if call.right > call.left and call.bottom > call.top then
-      area = area and { math.min(area[1], call.left), math.min(area[2], call.top), math.max(area[3], call.right), math.max(area[4], call.bottom) }
-        or { call.left, call.top, call.right, call.bottom }
-    end
-  end
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
 
   for i = first, lastOld do
-    add(old[i])
+    left, top, right, bottom = grow(old[i], left, top, right, bottom)
   end
 
   for i = first, lastNew do
-    add(new[i])
+    left, top, right, bottom = grow(new[i], left, top, right, bottom)
   end
 
-  return area
+  return left < right and { left, top, right, bottom } or false
+end
+
+-- what a replay draws: drawn.clip takes a function, so the replay's functions read it here, made once, and not from closures made each show
+local replaying = { surface = nil, calls = nil, count = 0, area = nil, from = 1, to = 0 }
+
+-- makes the recorded calls from replaying.from to replaying.to that reach the area, or all of them
+local function replayGroup()
+  local surface, calls, area = replaying.surface, replaying.calls, replaying.area
+
+  for k = replaying.from, replaying.to do
+    local call = calls[k]
+
+    if not area or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2]) then
+      local name = call.name
+
+      if name == "fill" then
+        drawn.fill(surface, call[1], call[2], call[3], call[4], call[5])
+      elseif name == "text" then
+        drawn.text(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+      elseif name == "outline" then
+        drawn.outline(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+      elseif name == "circle" then
+        drawn.circle(surface, call[1], call[2], call[3], call[4], call[5])
+      elseif name == "image" then
+        drawn.image(surface, call[1], call[2], call[3], call[4], call[5])
+      else
+        drawn.triangles(surface, call[1], call[2], call[3])
+      end
+    end
+  end
+end
+
+-- makes the recorded calls, each group of calls with the same clip inside it
+local function replayCalls()
+  local surface, calls, count = replaying.surface, replaying.calls, replaying.count
+  local i = 1
+
+  while i <= count do
+    local clip, last = calls[i].clip, i
+
+    while last < count and calls[last + 1].clip == clip do
+      last += 1
+    end
+
+    replaying.from, replaying.to = i, last
+
+    if clip then
+      drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], replayGroup)
+    else
+      replayGroup()
+    end
+
+    i = last + 1
+  end
 end
 
 -- makes the recorded calls that reach an area, or all of them, each inside its clip
-local function replay(surface, calls, area)
-  local function run()
-    local i = 1
-
-    while i <= #calls do
-      local clip, last = calls[i].clip, i
-
-      while last < #calls and calls[last + 1].clip == clip do
-        last += 1
-      end
-
-      local from, to = i, last
-
-      local function group()
-        for k = from, to do
-          local call = calls[k]
-
-          if not area or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2]) then
-            drawn[call.name](table.unpack(call.args, 1, call.args.n))
-          end
-        end
-      end
-
-      if clip then
-        drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], group)
-      else
-        group()
-      end
-
-      i = last + 1
-    end
-  end
+local function replay(surface, calls, count, area)
+  replaying.surface, replaying.calls, replaying.count, replaying.area = surface, calls, count, area
 
   if area then
-    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], run)
+    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], replayCalls)
   else
-    run()
+    replayCalls()
   end
+
+  replaying.surface, replaying.calls, replaying.area = nil, nil, nil
 end
 
 local function lineHeight(font, textSize)
@@ -755,11 +818,16 @@ for name in ("id style width height grow stretch padding gap align background ho
   PROPS[name] = true
 end
 
+-- an element is a copy of its props, so the plugin's table stays as it gave it; room for the fields that ui adds is made at once
 local function element(elementType, props, children)
-  local node = shallowCopy(props)
+  local node = newTable(0, 12)
 
-  for name in pairs(node) do
-    ecs.check(PROPS[name], ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
+  for name, value in pairs(props or node) do
+    if not PROPS[name] then
+      ecs.check(false, ("ui does not know the prop '%s' of a %s."):format(tostring(name), elementType))
+    end
+
+    node[name] = value
   end
 
   -- the element takes each prop of its style that it does not give itself; a style's own style comes after it, so the nearer one wins
@@ -771,7 +839,9 @@ local function element(elementType, props, children)
 
     for name, value in pairs(style) do
       if name ~= "style" then
-        ecs.check(LOOK[name], ("A style gives only an element's look, not '%s'."):format(tostring(name)))
+        if not LOOK[name] then
+          ecs.check(false, ("A style gives only an element's look, not '%s'."):format(tostring(name)))
+        end
 
         if node[name] == nil then
           node[name] = value
@@ -4022,13 +4092,21 @@ local services = {}
 
 -- gives each element without an id one from its place in the tree. An id that two elements have is a misuse: clicks and keys would reach only the first.
 local function assignIds(node, path, seen)
-  node.id = node.id or path
-  ecs.check(not seen[node.id], "Two elements of a panel have the id '" .. tostring(node.id) .. "'. Give each its own id.")
+  local id = node.id or path
+  node.id = id
 
-  seen[node.id] = true
+  if seen[id] then
+    ecs.check(false, "Two elements of a panel have the id '" .. tostring(id) .. "'. Give each its own id.")
+  end
 
-  for i, child in ipairs(node.children or {}) do
-    assignIds(child, path .. "." .. (child.place or i), seen)
+  seen[id] = true
+  local children = node.children
+
+  if children then
+    for i = 1, #children do
+      local child = children[i]
+      assignIds(child, path .. "." .. (child.place or i), seen)
+    end
   end
 end
 
@@ -4062,7 +4140,9 @@ function services.show(panel, surface, root)
   end
 
   showCount += 1
-  assignIds(root, "root", {})
+  state.ids = state.ids or {}
+  clearTable(state.ids)
+  assignIds(root, "root", state.ids)
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
   keepScrollOffsets(root, state)
@@ -4112,8 +4192,9 @@ function services.show(panel, surface, root)
   end
 
   -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
-  local last = state.calls
-  state.calls, recording, recordClip = nil, {}, nil
+  local last, lastCount = state.calls, state.callCount
+  recording, recorded, recordClip = state.spare or {}, 0, nil
+  state.calls, state.spare = nil, nil
 
   local ok, message = pcall(function()
     draw.fill(surface, 0, 0, width, height, "background")
@@ -4126,19 +4207,19 @@ function services.show(panel, surface, root)
     end
   end)
 
-  local calls = recording
-  recording, recordClip = nil, nil
+  local calls, count = recording, recorded
+  recording, recorded, recordClip = nil, 0, nil
 
   if not ok then
     error(message, 0)
   end
 
-  local area = surface.kept and last and changedArea(last, calls)
+  local area = surface.kept and last and changedArea(last, lastCount, calls, count)
 
   if not surface.kept or not last then
-    replay(surface, calls, nil)
+    replay(surface, calls, count, nil)
   elseif area then
-    replay(surface, calls, area)
+    replay(surface, calls, count, area)
     local scale = surface.scale
     local left, top = math.max(0, math.floor(area[1] * scale)), math.max(0, math.floor(area[2] * scale))
     local right, bottom = math.min(surface.width, math.ceil(area[3] * scale)), math.min(surface.height, math.ceil(area[4] * scale))
@@ -4147,7 +4228,8 @@ function services.show(panel, surface, root)
     surface:changed(0, 0, 0, 0)
   end
 
-  state.calls = calls
+  -- the last show's calls are compared with the next's, and the tables of the one before are reused for the next
+  state.calls, state.callCount, state.spare = calls, count, last
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
@@ -4350,7 +4432,9 @@ local function build(panel, description)
 
   -- a prop ui does not know is a mistake of the code that describes, such as a name that ui.h and ui no longer share
   for name in pairs(props) do
-    ecs.check(DESCRIBED[name], ("A described '%s' has the prop '%s', which ui does not know."):format(tostring(description.type), tostring(name)))
+    if not DESCRIBED[name] then
+      ecs.check(false, ("A described '%s' has the prop '%s', which ui does not know."):format(tostring(description.type), tostring(name)))
+    end
   end
 
   -- a column or row with clickable = true is clicked like a button
@@ -4405,7 +4489,9 @@ local function build(panel, description)
 
   local takes = TAKES[elementType]
   local make = elements[elementType]
-  ecs.check(make, ("There is no element of type '%s'."):format(tostring(elementType)))
+  if not make then
+    ecs.check(false, ("There is no element of type '%s'."):format(tostring(elementType)))
+  end
 
   if takes == "children" then
     local children = {}
