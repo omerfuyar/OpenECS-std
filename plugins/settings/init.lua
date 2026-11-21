@@ -48,7 +48,7 @@ local function literal(value)
   local keys = {}
 
   for key in pairs(value) do
-    if math.type(key) ~= "integer" or key < 1 or key > #value then
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #value then
       keys[#keys + 1] = key
     end
   end
@@ -69,7 +69,7 @@ end
 local function show(value)
   if type(value) == "table" then
     return literal(value)
-  elseif math.type(value) == "float" then
+  elseif type(value) == "number" and value % 1 ~= 0 then
     return ("%g"):format(value)
   end
 
@@ -80,7 +80,9 @@ end
 -- returns the value, or nil and what the value must be
 local function read(setting, typed)
   if setting.type == "integer" then
-    local value = math.tointeger(tonumber(typed))
+    -- a number is whole when it has no fraction, as LuaJIT's numbers are all doubles
+    local value = tonumber(typed)
+    value = value and value % 1 == 0 and value or nil
     return value, value == nil and "a whole number" or nil
   elseif setting.type == "number" then
     local value = tonumber(typed)
@@ -174,7 +176,7 @@ local function step(setting, direction)
 
     return choices[1]
   elseif setting.type == "integer" then
-    return math.tointeger(value + direction)
+    return value + direction
   elseif setting.type == "number" then
     return value + direction
   end
