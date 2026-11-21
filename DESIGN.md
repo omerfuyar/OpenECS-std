@@ -580,7 +580,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel reads `ecs.profile.get()` every half second, not in each draw, so its own drawing stays small. Its Pause toggle keeps the numbers that show, to read or copy them.
 - A line sums up the last passes that drew a frame: how many, and their average and longest time without the wait.
 - A graph (5) shows each of the last passes without its wait, the oldest on the left, in four stacked parts: input, timers and events; layout; panels with their uploads; and the interface with present. A line marks a frame at 60 Hz, and a line of text names the parts in their colours.
-- Tabs choose a table: Plugins, each plugin's own time in the last second, as a share of the second and in milliseconds, its longest call and its calls; Panels, each panel's draw the same way, named by its title and type; Steps, each step's average and longest time over the last passes.
+- Tabs choose a table: Plugins, each plugin's own time in the last second, as a share of the second and in milliseconds, its longest call and its calls; Panels, each panel's draw the same way, named by its title and type; Functions, the Lua functions that took the most of the last second, by LuaJIT's sampling profiler, each with its plugin, share of the second, milliseconds and samples; Steps, each step's average and longest time over the last passes.
 - Copy report puts the whole profile on the clipboard as text, so a user can send where the time goes.
 
 ## 33. The key list
