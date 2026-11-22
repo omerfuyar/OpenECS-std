@@ -320,6 +320,46 @@ static void DrawOutline(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height
     DrawRect(surface, bounds, (SDL_Rect){rect.x + rect.w - edge, rect.y + edge, edge, rect.h - 2 * edge}, color);
 }
 
+// the pixels keep their colours; the part of the rectangle that nothing moves into keeps the ones it had
+static void DrawMove(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 byX, f32 byY)
+{
+    if (!DrawCanDraw(surface))
+    {
+        return;
+    }
+
+    SDL_Rect bounds = DrawBounds(surface);
+    SDL_Rect rect = DrawToPixels(surface->scale, x, y, width, height);
+    i32 moveX = (i32)SDL_roundf(byX * surface->scale);
+    i32 moveY = (i32)SDL_roundf(byY * surface->scale);
+    SDL_Rect target = {0};
+
+    // the pixels land where the rectangle, moved, is still inside it; they come from there moved back, which is inside it too
+    if (!SDL_GetRectIntersection(&rect, &bounds, &rect))
+    {
+        return;
+    }
+
+    SDL_Rect moved = {rect.x + moveX, rect.y + moveY, rect.w, rect.h};
+
+    if (!SDL_GetRectIntersection(&moved, &rect, &target))
+    {
+        return;
+    }
+
+    // rows go against the move, so a row is read before a row moves over it
+    u8 *pixels = surface->pixels.data;
+    usz rowBytes = (usz)target.w * sizeof(u32);
+
+    for (i32 i = 0; i < target.h; i++)
+    {
+        i32 row = moveY > 0 ? target.y + target.h - 1 - i : target.y + i;
+        u8 *destination = pixels + (usz)row * (usz)surface->pitch + (usz)target.x * sizeof(u32);
+        const u8 *source = pixels + (usz)(row - moveY) * (usz)surface->pitch + (usz)(target.x - moveX) * sizeof(u32);
+        SDL_memmove(destination, source, rowBytes);
+    }
+}
+
 static void DrawLine(ECSSurface *surface, f32 startX, f32 startY, f32 endX, f32 endY, f32 thickness, ECSColor color)
 {
     if (DrawCanDraw(surface))
@@ -1035,6 +1075,15 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param width The rectangle's width, in layout units\n"
          "@param height The rectangle's height, in layout units\n"
          "@param color The colour, blended by its alpha"},
+        {"move", (ECSFunction)DrawMove, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float byX, float byY)",
+         "Move the pixels of a rectangle by an offset, inside the rectangle, such as a view's that scrolled; the part that nothing moves into keeps its pixels\n"
+         "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param byX How far the pixels move right, in layout units, rounded to whole pixels\n"
+         "@param byY How far the pixels move down, in layout units, rounded to whole pixels"},
         {"outline", (ECSFunction)DrawOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, color color)",
          "Draw the edge of a rectangle\n"
          "@param surface The panel's surface, as its Draw gives it; draw draws only into pixels surfaces\n"
