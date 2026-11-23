@@ -93,6 +93,8 @@ local function watch(dir)
     end
     redraw()
   end) or true
+  -- what came before the watch started is listed after it, so no change falls between
+  listed[dir] = nil
   for _, entry in ipairs(entriesOf(dir)) do
     if entry.type == "folder" then
       watch(pathOf(dir, entry.name))
