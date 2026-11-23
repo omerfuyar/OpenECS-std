@@ -1,6 +1,6 @@
 // The parse standard plugin: reads JSON, TOML, INI, .env and CSV texts into values, which are Lua tables in Lua, and writes values back into them (DESIGN 17).
 // yyjson reads and writes JSON, and tomlc17 reads TOML; both are compiled into this plugin (DESIGN 1). The other formats are read and written here.
-// A function that fails gives nothing and why; the reason, and the text that a write gives, are kept until the plugin's next call.
+// A function that fails gives nothing and why, through ECS_Fail; the text that a write gives is kept until the plugin's next call.
 
 #include "Parse.h"
 
@@ -14,8 +14,8 @@
 
 static struct
 {
-    char *error; // why the last call failed
-    char *text;  // what the last write gave
+    ECSPlugin plugin;
+    char *text; // what the last write gave
 } PARSE = {0};
 
 /// @brief Compares two field names, for SDL_qsort.
@@ -28,7 +28,6 @@ static int SDLCALL ParseCompareNames(const void *first, const void *second)
 static void ParseFree(void *data)
 {
     (void)data;
-    SDL_free(PARSE.error);
     SDL_free(PARSE.text);
     SDL_zero(PARSE);
 }
@@ -37,16 +36,22 @@ static void ParseFree(void *data)
 
 const char *ParseFail(const char *format, ...)
 {
-    SDL_free(PARSE.error);
-    PARSE.error = nullptr;
-
     va_list arguments;
     va_start(arguments, format);
-    int length = SDL_vasprintf(&PARSE.error, format, arguments);
+    char *message = nullptr;
+    bool formatted = SDL_vasprintf(&message, format, arguments) >= 0;
     va_end(arguments);
 
     // a failure always says why, even when there was no memory for the reason
-    return length < 0 || PARSE.error == nullptr ? "out of memory" : PARSE.error;
+    const char *error = nullptr;
+    ECS_Fail(PARSE.plugin, &error, "%s", formatted ? message : "out of memory");
+    SDL_free(message);
+    return error;
+}
+
+ECSPlugin ParseGetPlugin(void)
+{
+    return PARSE.plugin;
 }
 
 const char *ParseKeepText(char **text)
@@ -198,6 +203,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
 {
     const ECSPluginDesc desc = {.Destroy = ParseFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc));
+    PARSE.plugin = plugin;
 
     // tomlc17 takes SDL's allocator, as the plugin's other libraries do (DESIGN 1.3)
     toml_option_t option = toml_default_option();

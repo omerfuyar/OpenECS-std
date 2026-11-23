@@ -30,9 +30,17 @@
 struct WebRequest;
 
 /// @brief A WebSocket message.
+/// @brief Bytes that arrive, which grow with SDL's allocator, as stb_ds would stop the program when memory runs out (std DESIGN 1.3).
+typedef struct WebBytes
+{
+    u8 *data;
+    usz size;
+    usz capacity;
+} WebBytes;
+
 typedef struct WebMessage
 {
-    u8 *data; // stb_ds array of its bytes
+    WebBytes bytes;
     bool text;
 } WebMessage;
 
@@ -46,8 +54,8 @@ typedef struct WebRequest
     CURL *easy;
     struct curl_slist *headers;
     char error[CURL_ERROR_SIZE];
-    u8 *body;   // stb_ds array of what has arrived
-    i32 status; // the HTTP status once done, or -1 if it failed
+    WebBytes body; // what has arrived
+    i32 status;    // the HTTP status once done, or -1 if it failed
     bool done;
     bool forgotten;       // freed by its owner while it runs; the plugin's thread frees it
     bool running;         // given to the multi handle, on the plugin's thread
@@ -96,20 +104,38 @@ static void WebRemove(WebRequest ***list, WebRequest *request)
     }
 }
 
-/// @brief Adds bytes at the end of an stb_ds array.
-static void WebAppendBytes(u8 **bytes, const void *data, usz size)
+/// @brief Adds bytes at the end.
+/// @return false when memory runs out.
+static bool WebAppendBytes(WebBytes *bytes, const void *data, usz size)
 {
+    if (size > bytes->capacity - bytes->size)
+    {
+        usz capacity = SDL_max(bytes->capacity * 2, bytes->size + size);
+        u8 *grown = size > SIZE_MAX / 2 - bytes->size ? nullptr : SDL_realloc(bytes->data, capacity);
+
+        if (grown == nullptr)
+        {
+            return false;
+        }
+
+        bytes->data = grown;
+        bytes->capacity = capacity;
+    }
+
     if (size > 0)
     {
-        SDL_memcpy(arraddnptr(*bytes, size), data, size);
+        SDL_memcpy(bytes->data + bytes->size, data, size);
+        bytes->size += size;
     }
+
+    return true;
 }
 
 static void WebFreeMessage(WebMessage *message)
 {
     if (message != nullptr)
     {
-        arrfree(message->data);
+        SDL_free(message->bytes.data);
         SDL_free(message);
     }
 }
@@ -128,8 +154,8 @@ static void WebFreeMessages(WebMessage **messages)
 static size_t WebWrite(char *data, size_t size, size_t count, void *user)
 {
     WebRequest *request = user;
-    WebAppendBytes(&request->body, data, size * count);
-    return size * count;
+    // a body larger than memory ends the request, which fails
+    return WebAppendBytes(&request->body, data, size * count) ? size * count : CURL_WRITEFUNC_ERROR;
 }
 
 /// @brief Keeps a piece of a WebSocket message that arrives, on the plugin's thread; a whole message goes to the inbox.
@@ -140,7 +166,7 @@ static size_t WebSocketWrite(char *data, size_t size, size_t count, void *user)
     const struct curl_ws_frame *frame = curl_ws_meta(request->easy);
 
     // curl answers pings, and ends the connection when it closes; only text and binary frames are messages
-    if (frame == nullptr || (frame->flags & (CURLWS_TEXT | CURLWS_BINARY)) == 0)
+    if (frame == nullptr || ((unsigned)frame->flags & ((unsigned)CURLWS_TEXT | (unsigned)CURLWS_BINARY)) == 0)
     {
         return length;
     }
@@ -154,13 +180,16 @@ static size_t WebSocketWrite(char *data, size_t size, size_t count, void *user)
             return CURL_WRITEFUNC_ERROR;
         }
 
-        request->partial->text = (frame->flags & CURLWS_TEXT) != 0;
+        request->partial->text = ((unsigned)frame->flags & (unsigned)CURLWS_TEXT) != 0;
     }
 
-    WebAppendBytes(&request->partial->data, data, length);
+    if (!WebAppendBytes(&request->partial->bytes, data, length))
+    {
+        return CURL_WRITEFUNC_ERROR;
+    }
 
     // the last piece of the last frame of a message ends it; CURLWS_CONT marks every frame but the last
-    if (frame->bytesleft == 0 && (frame->flags & CURLWS_CONT) == 0)
+    if (frame->bytesleft == 0 && ((unsigned)frame->flags & (unsigned)CURLWS_CONT) == 0)
     {
         SDL_LockMutex(WEB.lock);
         arrput(request->inbox, request->partial);
@@ -198,7 +227,7 @@ static size_t WebSocketRead(char *buffer, size_t size, size_t count, void *user)
     }
 
     // a message is one frame, which starts with its first piece; an empty one is the frame's head alone
-    usz messageSize = arrlenu(message->data);
+    usz messageSize = message->bytes.size;
 
     if (request->sent == 0 && curl_ws_start_frame(request->easy, message->text ? CURLWS_TEXT : CURLWS_BINARY, (curl_off_t)messageSize) != CURLE_OK)
     {
@@ -206,7 +235,7 @@ static size_t WebSocketRead(char *buffer, size_t size, size_t count, void *user)
     }
 
     usz length = SDL_min(room, messageSize - request->sent);
-    SDL_memcpy(buffer, message->data + request->sent, length);
+    SDL_memcpy(buffer, message->bytes.data + request->sent, length);
     request->sent += length;
 
     if (request->sent == messageSize)
@@ -228,7 +257,7 @@ static void WebFreeMemory(WebRequest *request)
     WebFreeMessage(request->taken);
     curl_easy_cleanup(request->easy);
     curl_slist_free_all(request->headers);
-    arrfree(request->body);
+    SDL_free(request->body.data);
     SDL_free(request);
 }
 
@@ -669,7 +698,7 @@ static SHUSlice WebBody(void *requestHandle)
 {
     WebRequest *request = requestHandle;
 
-    return WebDone(request) ? cs(request->body, arrlenu(request->body)) : cs(nullptr, 0);
+    return WebDone(request) ? cs(request->body.data, request->body.size) : cs(nullptr, 0);
 }
 
 static const char *WebHeader(void *requestHandle, const char *name)
@@ -765,7 +794,13 @@ static bool WebSocketSend(void *socketHandle, SHUSlice data, bool text, const ch
     }
 
     message->text = text;
-    WebAppendBytes(&message->data, data.data, data.size);
+
+    if (!WebAppendBytes(&message->bytes, data.data, data.size))
+    {
+        WebFreeMessage(message);
+        ECS_Fail(WEB.plugin, retError, "out of memory");
+        return false;
+    }
 
     // the plugin's thread wakes the connection, since curl wants it woken from the thread that runs it
     SDL_LockMutex(WEB.lock);
@@ -807,7 +842,7 @@ static SHUSlice WebSocketReceive(void *socketHandle, const char **retType)
     }
 
     *retType = socket->taken->text ? "text" : "binary";
-    return cs(socket->taken->data, arrlenu(socket->taken->data));
+    return cs(socket->taken->bytes.data, socket->taken->bytes.size);
 }
 
 static const char *WebSocketError(void *socketHandle)

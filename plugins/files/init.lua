@@ -34,17 +34,70 @@ local function redraw()
   end
 end
 
+-- each folder's entries without the hidden ones, folders first, then files, each by name; listed once, and again when its watch fires
+local listed = {}
+
+local function entriesOf(dir)
+  local entries = listed[dir]
+  if entries then
+    return entries
+  end
+  entries = {}
+  for _, entry in ipairs(fs.list(folder .. dir, "") or {}) do
+    if entry.name:sub(1, 1) ~= "." then
+      entries[#entries + 1] = entry
+    end
+  end
+  table.sort(entries, function(a, b)
+    if (a.type == "folder") ~= (b.type == "folder") then
+      return a.type == "folder"
+    end
+    return a.name < b.name
+  end)
+  listed[dir] = entries
+  return entries
+end
+
+local function pathOf(dir, name)
+  return dir == "" and name or (dir .. "/" .. name)
+end
+
+-- stops the watches of a folder that is gone and of the folders in it, and forgets their entries
+local function unwatch(dir)
+  for watched, w in pairs(watches) do
+    if watched == dir or watched:sub(1, #dir + 1) == dir .. "/" then
+      if w ~= true then
+        w:stop()
+      end
+      watches[watched] = nil
+      listed[watched] = nil
+    end
+  end
+end
+
+-- watches a folder and every folder in it; a folder made later is watched when it comes, and one removed stops its watches
 local function watch(dir)
   if watches[dir] then
     return
   end
-  watches[dir] = fs.watch(folder .. dir, function()
-    watch(dir)
+  watches[dir] = fs.watch(folder .. dir, function(_, name, kind)
+    listed[dir] = nil
+    if kind == "removed" then
+      unwatch(pathOf(dir, name))
+    else
+      for _, entry in ipairs(entriesOf(dir)) do
+        if entry.type == "folder" then
+          watch(pathOf(dir, entry.name))
+        end
+      end
+    end
     redraw()
   end) or true
-  for _, entry in ipairs(fs.list(folder .. dir, "") or {}) do
-    if entry.type == "folder" and entry.name:sub(1, 1) ~= "." then
-      watch(dir == "" and entry.name or (dir .. "/" .. entry.name))
+  -- what came before the watch started is listed after it, so no change falls between
+  listed[dir] = nil
+  for _, entry in ipairs(entriesOf(dir)) do
+    if entry.type == "folder" then
+      watch(pathOf(dir, entry.name))
     end
   end
 end
@@ -56,6 +109,7 @@ local function setFolder(path)
     end
   end
   watches = {}
+  listed = {}
   folder = path
   if folder ~= "" then
     watch("")
@@ -63,21 +117,17 @@ local function setFolder(path)
   redraw()
 end
 
--- The tree's nodes for a folder: folders first, then files, each by name.
-local function nodes(dir)
+-- The tree's nodes for a folder: folders first, then files, each by name. A folder's children are made only when open
+-- names it, or for every folder when open is nil, as a search looks in all of them; a closed folder has no children yet.
+local function nodes(dir, open)
   local list = {}
-  local entries = fs.list(folder .. dir, "") or {}
-  table.sort(entries, function(a, b)
-    if (a.type == "folder") ~= (b.type == "folder") then
-      return a.type == "folder"
+  for _, entry in ipairs(entriesOf(dir)) do
+    local path = pathOf(dir, entry.name)
+    local children = nil
+    if entry.type == "folder" then
+      children = (open == nil or open[path]) and nodes(path, open) or {}
     end
-    return a.name < b.name
-  end)
-  for _, entry in ipairs(entries) do
-    if entry.name:sub(1, 1) ~= "." then
-      local path = dir == "" and entry.name or (dir .. "/" .. entry.name)
-      list[#list + 1] = { id = path, label = entry.name, children = entry.type == "folder" and nodes(path) or nil }
-    end
+    list[#list + 1] = { id = path, label = entry.name, children = children }
   end
   return list
 end
@@ -113,7 +163,9 @@ end
 local Files = {}
 Files.__index = Files
 
+-- after the panel's own change of the folder, its entries are listed again at once, without waiting for the watch
 function Files:say(ok, message)
+  listed = {}
   self.message = not ok and message or nil
   self.panel:redraw()
 end
@@ -282,8 +334,9 @@ function Files:delete()
   if handlers.delete then
     handlers.delete(path)
   else
-    os.remove(folder .. path)
+    fs.remove(folder .. path)
   end
+  listed = {}
   self.selected = nil
   ecs.event.emit("files.changed")
 end
@@ -428,10 +481,7 @@ function Files:grid(children)
   children[#children + 1] = ui.row({ gap = 4, align = "center", wrap = true }, crumbs)
   local tiles = {}
   self.tiles = {}
-  local entries = nodes(dir:sub(1, -2))
-  if self.search then
-    entries = flat(entries, self.search, {})
-  end
+  local entries = self.search and flat(nodes(dir:sub(1, -2)), self.search, {}) or nodes(dir:sub(1, -2), {})
   for _, entry in ipairs(entries) do
     local id = entry.id
     self.tiles[#self.tiles + 1] = id
@@ -505,10 +555,12 @@ function Files:draw(surface)
   if folder ~= "" and self.view == "grid" then
     self:grid(children)
   elseif folder ~= "" then
-    local shown, open = nodes(""), self.open
+    local shown, open = nil, self.open
     if self.search then
       open = {}
-      shown = found(shown, self.search, open)
+      shown = found(nodes(""), self.search, open)
+    else
+      shown = nodes("", open)
     end
     children[#children + 1] = ui.tree(shown, {
       id = "tree", open = open, selected = self.selected, grow = 1, tooltip = "A right click opens a menu",

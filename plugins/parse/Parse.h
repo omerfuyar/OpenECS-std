@@ -1,15 +1,21 @@
 #pragma once
 
-// What the C files of the parse standard plugin share (DESIGN 17): building texts, and keeping the text that a write gives
-// and the reason that a call fails until the plugin's next call.
+// What the C files of the parse standard plugin share (DESIGN 17): building texts, failing a call, and keeping the text that a write gives until the
+// plugin's next call.
 
 #include "OpenECS.h"
 
 #pragma region Declarations
 
-/// @brief Keeps why a call fails, until the next call, and gives it.
+/// @brief How deep lists and tables may nest in what parse reads and writes; deeper data fails, so the plugin's recursion cannot overflow the stack.
+#define PARSE_MAX_DEPTH 512
+
+/// @brief Fails a call with ECS_Fail, and gives why, which stays valid until the next failure on the thread.
 OPENECS_PRINTF(1, 2)
 const char *ParseFail(const char *format, ...);
+
+/// @brief Gives the plugin, for ECS_Check.
+ECSPlugin ParseGetPlugin(void);
 
 /// @brief Keeps a text that a write built, until the next write, and gives it; frees the builder.
 /// @param text An stb_ds array of the text's characters, without a zero at its end.

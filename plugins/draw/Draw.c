@@ -80,27 +80,31 @@ static SDL_Rect DrawBounds(const ECSSurface *surface)
     return bounds;
 }
 
+/// @brief Multiplies the two channels of a pair, bits 0 to 7 and 16 to 23, by a factor from 0 to 255, divided by 255 and rounded.
+static inline u32 DrawScalePair(u32 pair, u32 factor)
+{
+    u32 product = pair * factor + 0x00800080u;
+    return ((product + ((product >> 8u) & 0x00FF00FFu)) >> 8u) & 0x00FF00FFu;
+}
+
+/// @brief Premultiplies a colour by its alpha, as surfaces hold colours.
+static inline u32 DrawPremultiply(ECSColor color)
+{
+    u32 alpha = color >> 24u;
+    return DrawScalePair(color & 0x00FF00FFu, alpha) | (DrawScalePair(((color >> 8u) & 0xFFu) | 0x00FF0000u, alpha) << 8u);
+}
+
+/// @brief Blends a premultiplied colour over a pixel, with 255 less its alpha; two channels are blended at once.
+static inline u32 DrawOver(u32 pixel, u32 source, u32 inverse)
+{
+    return source + (DrawScalePair(pixel & 0x00FF00FFu, inverse) | (DrawScalePair((pixel >> 8u) & 0x00FF00FFu, inverse) << 8u));
+}
+
 /// @brief Blends a colour over a pixel; surfaces hold premultiplied colours.
 static void DrawBlend(u32 *pixel, ECSColor color)
 {
-    u32 alpha = color >> 24;
-
-    if (alpha == 0xFF)
-    {
-        *pixel = color;
-        return;
-    }
-
-    u32 blended = 0;
-
-    for (u32 shift = 0; shift < 32; shift += 8)
-    {
-        u32 source = shift == 24 ? alpha : ((color >> shift) & 0xFF) * alpha / 255;
-        u32 destination = (*pixel >> shift) & 0xFF;
-        blended |= (source + destination * (255 - alpha) / 255) << shift;
-    }
-
-    *pixel = blended;
+    u32 alpha = color >> 24u;
+    *pixel = alpha == 0xFF ? color : DrawOver(*pixel, DrawPremultiply(color), 255 - alpha);
 }
 
 /// @brief Blends a colour over a pixel inside the bounds, with its alpha multiplied by how much of the pixel a shape covers, from 0 to 1.
@@ -111,9 +115,42 @@ static void DrawCover(const ECSSurface *surface, SDL_Rect bounds, i32 column, i3
         return;
     }
 
-    u32 alpha = (u32)SDL_roundf((f32)(color >> 24) * SDL_min(coverage, 1.0f));
+    u32 alpha = (u32)SDL_roundf((f32)(color >> 24u) * SDL_min(coverage, 1.0f));
     u32 *pixel = (u32 *)((u8 *)surface->pixels.data + (usz)row * (usz)surface->pitch) + column;
-    DrawBlend(pixel, (color & 0x00FFFFFF) | (alpha << 24));
+    DrawBlend(pixel, (color & 0x00FFFFFFu) | (alpha << 24u));
+}
+
+/// @brief Blends a colour over a row of pixels, from one column up to another, without it, inside the bounds.
+static void DrawSpan(const ECSSurface *surface, SDL_Rect bounds, i32 row, i32 start, i32 end, ECSColor color)
+{
+    start = SDL_max(start, bounds.x);
+    end = SDL_min(end, bounds.x + bounds.w);
+
+    if (row < bounds.y || row >= bounds.y + bounds.h || start >= end || (color >> 24u) == 0)
+    {
+        return;
+    }
+
+    u32 *pixel = (u32 *)((u8 *)surface->pixels.data + (usz)row * (usz)surface->pitch);
+    u32 alpha = color >> 24u;
+
+    if (alpha == 0xFF)
+    {
+        for (i32 column = start; column < end; column++)
+        {
+            pixel[column] = color;
+        }
+
+        return;
+    }
+
+    // the colour is premultiplied once for the row
+    u32 source = DrawPremultiply(color);
+
+    for (i32 column = start; column < end; column++)
+    {
+        pixel[column] = DrawOver(pixel[column], source, 255 - alpha);
+    }
 }
 
 /// @brief A distance from the edge of a shape to a pixel's centre, in pixels, negative inside; it gives the shape's coverage of the pixel.
@@ -147,18 +184,90 @@ typedef struct DrawRounded
     f32 thickness; // of a ring, or 0 for the whole shape
 } DrawRounded;
 
-static f32 DrawRoundedDistance(const void *shape, f32 x, f32 y)
+/// @brief The distance from the whole shape's edge to a point, negative inside; on a row, it grows with the point's distance from the centre.
+static f32 DrawRoundedEdge(const DrawRounded *rounded, f32 x, f32 y)
 {
-    const DrawRounded *rounded = shape;
-
     // how far the point is past the straight part of each side, toward the corners
     f32 pastX = SDL_fabsf(x - rounded->centerX) - (rounded->halfWidth - rounded->radius);
     f32 pastY = SDL_fabsf(y - rounded->centerY) - (rounded->halfHeight - rounded->radius);
     f32 outside = SDL_sqrtf(SDL_max(pastX, 0.0f) * SDL_max(pastX, 0.0f) + SDL_max(pastY, 0.0f) * SDL_max(pastY, 0.0f));
-    f32 distance = outside + SDL_min(SDL_max(pastX, pastY), 0.0f) - rounded->radius;
+    return outside + SDL_min(SDL_max(pastX, pastY), 0.0f) - rounded->radius;
+}
 
-    // a ring is the band from the edge inwards by its thickness
-    return rounded->thickness > 0.0f ? SDL_fabsf(distance + rounded->thickness / 2.0f) - rounded->thickness / 2.0f : distance;
+/// @brief The distance from the shape's edge, the band from the whole shape's edge inwards by its thickness for a ring.
+static f32 DrawRoundedDistance(const DrawRounded *rounded, f32 edge)
+{
+    return rounded->thickness > 0.0f ? SDL_fabsf(edge + rounded->thickness / 2.0f) - rounded->thickness / 2.0f : edge;
+}
+
+/// @brief Finds, on a row, the first column from one column toward another where the whole shape's edge is farther than a distance, or the
+/// other column if none is. The columns go away from the centre, so the distance only grows; a binary search finds it.
+static i32 DrawRoundedReach(const DrawRounded *rounded, f32 y, i32 from, i32 until, f32 limit)
+{
+    i32 step = until >= from ? 1 : -1;
+    i32 low = 0;
+    i32 high = (until - from) * step;
+
+    while (low < high)
+    {
+        i32 middle = low + (high - low) / 2;
+
+        if (DrawRoundedEdge(rounded, (f32)(from + middle * step) + 0.5f, y) > limit)
+        {
+            high = middle;
+        }
+        else
+        {
+            low = middle + 1;
+        }
+    }
+
+    return from + low * step;
+}
+
+/// @brief Blends the pixels of a row between two columns, without the second, each by the part the shape covers, inside the bounds.
+static void DrawRoundedEdges(const ECSSurface *surface, SDL_Rect bounds, const DrawRounded *rounded, i32 row, i32 start, i32 end, ECSColor color)
+{
+    start = SDL_max(start, bounds.x);
+    end = SDL_min(end, bounds.x + bounds.w);
+
+    f32 y = (f32)row + 0.5f;
+
+    for (i32 column = start; column < end; column++)
+    {
+        DrawCover(surface, bounds, column, row, color, 0.5f - DrawRoundedDistance(rounded, DrawRoundedEdge(rounded, (f32)column + 0.5f, y)));
+    }
+}
+
+/// @brief Draws one side of a row of a rounded shape, from the column at the centre outwards: a ring's hole is passed over, the part the shape
+/// covers whole is a span, and only the pixels at the edges compute how much the shape covers.
+static void DrawRoundedSide(const ECSSurface *surface, SDL_Rect bounds, const DrawRounded *rounded, i32 row, i32 from, i32 until, ECSColor color)
+{
+    if (from == until)
+    {
+        return;
+    }
+
+    f32 y = (f32)row + 0.5f;
+    bool ring = rounded->thickness > 0.0f;
+    i32 hole = ring ? DrawRoundedReach(rounded, y, from, until, -rounded->thickness - 0.5f) : from;
+    i32 full = ring ? DrawRoundedReach(rounded, y, hole, until, -rounded->thickness + 0.5f) : from;
+    i32 fullEnd = DrawRoundedReach(rounded, y, full, until, -0.5f);
+    i32 end = DrawRoundedReach(rounded, y, fullEnd, until, 0.5f);
+
+    // spans run left to right, so the side to the left swaps its ends
+    if (until >= from)
+    {
+        DrawRoundedEdges(surface, bounds, rounded, row, hole, full, color);
+        DrawSpan(surface, bounds, row, full, fullEnd, color);
+        DrawRoundedEdges(surface, bounds, rounded, row, fullEnd, end, color);
+    }
+    else
+    {
+        DrawRoundedEdges(surface, bounds, rounded, row, full + 1, hole + 1, color);
+        DrawSpan(surface, bounds, row, fullEnd + 1, full + 1, color);
+        DrawRoundedEdges(surface, bounds, rounded, row, end + 1, fullEnd + 1, color);
+    }
 }
 
 /// @brief A line of a thickness between two points, with flat ends, in pixels.
@@ -180,25 +289,6 @@ static f32 DrawStrokeDistance(const void *shape, f32 x, f32 y)
 
     // the distance to the band across the line, and to the band along it, whichever is farther
     return SDL_max(across - stroke->halfThickness, SDL_fabsf(along - length / 2.0f) - length / 2.0f);
-}
-
-/// @brief Blends a colour over a row of pixels, from one column up to another, without it, inside the bounds.
-static void DrawSpan(const ECSSurface *surface, SDL_Rect bounds, i32 row, i32 start, i32 end, ECSColor color)
-{
-    start = SDL_max(start, bounds.x);
-    end = SDL_min(end, bounds.x + bounds.w);
-
-    if (row < bounds.y || row >= bounds.y + bounds.h || start >= end || (color >> 24) == 0)
-    {
-        return;
-    }
-
-    u32 *pixel = (u32 *)((u8 *)surface->pixels.data + (usz)row * (usz)surface->pitch);
-
-    for (i32 column = start; column < end; column++)
-    {
-        DrawBlend(&pixel[column], color);
-    }
 }
 
 /// @brief Fills a rectangle in pixels.
@@ -272,10 +362,18 @@ static void DrawRoundedPixels(const ECSSurface *surface, SDL_Rect bounds, f32 x,
     }
 
     DrawRounded shape = {x + width / 2.0f, y + height / 2.0f, width / 2.0f, height / 2.0f, SDL_clamp(radius, 0.0f, SDL_min(width, height) / 2.0f), thickness};
-    SDL_Rect area = {(i32)SDL_floorf(x) - 1, (i32)SDL_floorf(y) - 1, 0, 0};
-    area.w = (i32)SDL_ceilf(x + width) + 1 - area.x;
-    area.h = (i32)SDL_ceilf(y + height) + 1 - area.y;
-    DrawSmooth(surface, bounds, area, DrawRoundedDistance, &shape, color);
+    i32 left = (i32)SDL_floorf(x) - 1;
+    i32 right = (i32)SDL_ceilf(x + width) + 1;
+    i32 top = SDL_max((i32)SDL_floorf(y) - 1, bounds.y);
+    i32 bottom = SDL_min((i32)SDL_ceilf(y + height) + 1, bounds.y + bounds.h);
+    i32 center = SDL_clamp((i32)SDL_floorf(shape.centerX), left, right);
+
+    // the columns from the centre's outwards, on each side, reach farther from the centre one after another
+    for (i32 row = top; row < bottom; row++)
+    {
+        DrawRoundedSide(surface, bounds, &shape, row, center, right, color);
+        DrawRoundedSide(surface, bounds, &shape, row, center - 1, left - 1, color);
+    }
 }
 
 /// @brief Turns a rectangle in layout units into pixels.
@@ -474,23 +572,25 @@ static ECSColor DrawSample(const SDL_Surface *image, f32 imageX, f32 imageY)
     f32 down = imageY - (f32)top;
     f32 sums[4] = {0}; // blue, green and red, each multiplied by alpha, then alpha
 
-    for (i32 corner = 0; corner < 4; corner++)
+    for (u32 corner = 0; corner < 4; corner++)
     {
-        i32 column = SDL_clamp(left + (corner & 1), 0, image->w - 1);
-        i32 row = SDL_clamp(top + (corner >> 1), 0, image->h - 1);
-        f32 weight = ((corner & 1) ? across : 1.0f - across) * ((corner >> 1) ? down : 1.0f - down);
+        i32 right = (i32)(corner & 1u);
+        i32 below = (i32)(corner >> 1u);
+        i32 column = SDL_clamp(left + right, 0, image->w - 1);
+        i32 row = SDL_clamp(top + below, 0, image->h - 1);
+        f32 weight = (right != 0 ? across : 1.0f - across) * (below != 0 ? down : 1.0f - down);
         u32 pixel = ((const u32 *)((const u8 *)image->pixels + (usz)row * (usz)image->pitch))[column];
-        f32 alpha = (f32)(pixel >> 24) * weight;
+        f32 alpha = (f32)(pixel >> 24u) * weight;
 
         for (u32 channel = 0; channel < 3; channel++)
         {
-            sums[channel] += (f32)((pixel >> (channel * 8)) & 0xFF) * alpha;
+            sums[channel] += (f32)((pixel >> (channel * 8u)) & 0xFFu) * alpha;
         }
 
         sums[3] += alpha;
     }
 
-    ECSColor color = (u32)SDL_roundf(sums[3]) << 24;
+    ECSColor color = (u32)SDL_roundf(sums[3]) << 24u;
 
     for (u32 channel = 0; sums[3] > 0.0f && channel < 3; channel++)
     {
@@ -507,7 +607,7 @@ static ECSColor DrawMultiply(ECSColor color, ECSColor factor)
 
     for (u32 shift = 0; shift < 32; shift += 8)
     {
-        product |= (((color >> shift) & 0xFF) * ((factor >> shift) & 0xFF) / 255) << shift;
+        product |= (((color >> shift) & 0xFFu) * ((factor >> shift) & 0xFFu) / 255) << shift;
     }
 
     return product;
@@ -908,7 +1008,7 @@ static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f3
 
     if (drawn != nullptr)
     {
-        TTF_SetTextColor(drawn, (Uint8)(color >> 16), (Uint8)(color >> 8), (Uint8)color, (Uint8)(color >> 24));
+        TTF_SetTextColor(drawn, (Uint8)(color >> 16u), (Uint8)(color >> 8u), (Uint8)color, (Uint8)(color >> 24u));
         TTF_DrawSurfaceText(drawn, (int)SDL_roundf(x * surface->scale), (int)SDL_roundf(y * surface->scale), target);
         TTF_GetTextSize(drawn, &width, nullptr);
         TTF_DestroyText(drawn);

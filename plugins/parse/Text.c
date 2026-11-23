@@ -607,18 +607,12 @@ const char *ParseWriteEnv(const ECSValue *data, const char **retError)
 #pragma region CSV
 
 /// @brief Gives the separator of fields: the separator's one character, or a comma if it is empty.
-/// @return false and why if it is longer, or a quote or a line break.
-static bool ParseReadSeparator(const char *separator, char *retSeparator, const char **retError)
+/// @return false, a misuse, if it is longer, or a quote or a line break.
+static bool ParseReadSeparator(const char *separator, char *retSeparator)
 {
     *retSeparator = separator[0] == '\0' ? ',' : separator[0];
-
-    if (SDL_strlen(separator) > 1 || SDL_strchr("\"\r\n", *retSeparator) != nullptr)
-    {
-        *retError = ParseFail("CSV's separator is one character, and not a quote or a line break");
-        return false;
-    }
-
-    return true;
+    return ECS_Check(ParseGetPlugin(), SDL_strlen(separator) <= 1 && SDL_strchr("\"\r\n", *retSeparator) == nullptr,
+                     "CSV's separator is one character, and not a quote or a line break");
 }
 
 /// @brief Reads a field in double quotes: two quotes in it are one.
@@ -719,7 +713,7 @@ void ParseReadCsv(SHUSlice text, const char *separator, ECSValue *retData, const
     *retError = nullptr;
     char character = ',';
 
-    if (!ParseReadSeparator(separator, &character, retError))
+    if (!ParseReadSeparator(separator, &character))
     {
         ECSValue_SetNil(retData);
         return;
@@ -767,7 +761,7 @@ const char *ParseWriteCsv(const ECSValue *rows, const char *separator, const cha
     *retError = nullptr;
     char character = ',';
 
-    if (!ParseReadSeparator(separator, &character, retError))
+    if (!ParseReadSeparator(separator, &character))
     {
         return nullptr;
     }

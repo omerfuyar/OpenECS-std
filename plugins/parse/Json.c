@@ -31,8 +31,15 @@ static void ParseJsonFree(void *context, void *pointer)
 static const yyjson_alc PARSE_JSON_ALLOCATOR = {ParseJsonMalloc, ParseJsonRealloc, ParseJsonFree, nullptr};
 
 /// @brief Makes a value what a JSON value holds.
-static SHUResult ParseFromJson(yyjson_val *json, ECSValue *retValue)
+/// @param depth How many lists and tables hold it.
+/// @return SHUResult_Ok, SHUResult_ErrOverflow past PARSE_MAX_DEPTH, or SHUResult_ErrAllocation.
+static SHUResult ParseFromJson(yyjson_val *json, ECSValue *retValue, usz depth)
 {
+    if (depth > PARSE_MAX_DEPTH && (yyjson_is_arr(json) || yyjson_is_obj(json)))
+    {
+        return SHUResult_ErrOverflow;
+    }
+
     switch (yyjson_get_type(json))
     {
     case YYJSON_TYPE_BOOL:
@@ -60,7 +67,7 @@ static SHUResult ParseFromJson(yyjson_val *json, ECSValue *retValue)
         {
             ECSValue *value = nullptr;
             SHU_ReturnResult(ECSValue_AddListItem(retValue, &value));
-            SHU_ReturnResult(ParseFromJson(item, value));
+            SHU_ReturnResult(ParseFromJson(item, value, depth + 1));
         }
 
         return SHUResult_Ok;
@@ -79,7 +86,7 @@ static SHUResult ParseFromJson(yyjson_val *json, ECSValue *retValue)
             {
                 ECSValue *value = nullptr;
                 SHU_ReturnResult(ECSValue_SetTableField(retValue, yyjson_get_str(key), &value));
-                SHU_ReturnResult(ParseFromJson(field, value));
+                SHU_ReturnResult(ParseFromJson(field, value, depth + 1));
             }
         }
 
@@ -91,11 +98,18 @@ static SHUResult ParseFromJson(yyjson_val *json, ECSValue *retValue)
     }
 }
 
-static yyjson_mut_val *ParseToJson(yyjson_mut_doc *document, const ECSValue *value, const char **retError);
+static yyjson_mut_val *ParseToJson(yyjson_mut_doc *document, const ECSValue *value, usz depth, const char **retError);
 
 /// @brief Makes a JSON array or object of a table.
-static yyjson_mut_val *ParseTableToJson(yyjson_mut_doc *document, const ECSValue *table, const char **retError)
+/// @param depth How many tables hold it.
+static yyjson_mut_val *ParseTableToJson(yyjson_mut_doc *document, const ECSValue *table, usz depth, const char **retError)
 {
+    if (depth > PARSE_MAX_DEPTH)
+    {
+        *retError = ParseFail("JSON: tables nest deeper than %d", PARSE_MAX_DEPTH);
+        return nullptr;
+    }
+
     usz itemCount = ECSValue_GetListCount(table);
 
     if (itemCount > 0 && ECSValue_GetTableFieldCount(table) > 0)
@@ -110,7 +124,7 @@ static yyjson_mut_val *ParseTableToJson(yyjson_mut_doc *document, const ECSValue
 
         for (usz i = 0; i < itemCount && array != nullptr; i++)
         {
-            yyjson_mut_val *item = ParseToJson(document, ECSValue_GetListItem(table, i), retError);
+            yyjson_mut_val *item = ParseToJson(document, ECSValue_GetListItem(table, i), depth + 1, retError);
             array = item != nullptr && yyjson_mut_arr_append(array, item) ? array : nullptr;
         }
 
@@ -122,7 +136,7 @@ static yyjson_mut_val *ParseTableToJson(yyjson_mut_doc *document, const ECSValue
 
     for (usz i = 0; i < arrlenu(names) && object != nullptr; i++)
     {
-        yyjson_mut_val *field = ParseToJson(document, ECSValue_GetTableField(table, names[i]), retError);
+        yyjson_mut_val *field = ParseToJson(document, ECSValue_GetTableField(table, names[i]), depth + 1, retError);
         object = field != nullptr && yyjson_mut_obj_add(object, yyjson_mut_strcpy(document, names[i]), field) ? object : nullptr;
     }
 
@@ -131,8 +145,9 @@ static yyjson_mut_val *ParseTableToJson(yyjson_mut_doc *document, const ECSValue
 }
 
 /// @brief Makes a JSON value of a value.
+/// @param depth How many tables hold it.
 /// @return The JSON value, or nullptr and why if the value cannot be written.
-static yyjson_mut_val *ParseToJson(yyjson_mut_doc *document, const ECSValue *value, const char **retError)
+static yyjson_mut_val *ParseToJson(yyjson_mut_doc *document, const ECSValue *value, usz depth, const char **retError)
 {
     usz length = 0;
 
@@ -159,7 +174,7 @@ static yyjson_mut_val *ParseToJson(yyjson_mut_doc *document, const ECSValue *val
         return yyjson_mut_strncpy(document, text, length);
     }
     case ECSValueType_Table:
-        return ParseTableToJson(document, value, retError);
+        return ParseTableToJson(document, value, depth, retError);
     default:
         *retError = ParseFail("JSON cannot hold a handle");
         return nullptr;
@@ -188,9 +203,11 @@ void ParseReadJson(SHUSlice text, ECSValue *retData, const char **retError)
         return;
     }
 
-    if (ParseFromJson(yyjson_doc_get_root(document), retData) != SHUResult_Ok)
+    SHUResult result = ParseFromJson(yyjson_doc_get_root(document), retData, 0);
+
+    if (result != SHUResult_Ok)
     {
-        *retError = ParseFail("out of memory");
+        *retError = result == SHUResult_ErrOverflow ? ParseFail("JSON: lists and objects nest deeper than %d", PARSE_MAX_DEPTH) : ParseFail("out of memory");
         ECSValue_SetNil(retData);
     }
 
@@ -201,7 +218,7 @@ const char *ParseWriteJson(const ECSValue *data, bool pretty, const char **retEr
 {
     *retError = nullptr;
     yyjson_mut_doc *document = yyjson_mut_doc_new(&PARSE_JSON_ALLOCATOR);
-    yyjson_mut_val *root = document == nullptr ? nullptr : ParseToJson(document, data, retError);
+    yyjson_mut_val *root = document == nullptr ? nullptr : ParseToJson(document, data, 0, retError);
 
     if (root == nullptr)
     {

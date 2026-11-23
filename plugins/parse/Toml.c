@@ -44,8 +44,15 @@ static SHUResult ParseSetTomlTime(const toml_datum_t *datum, ECSValue *retValue)
 }
 
 /// @brief Makes a value what a TOML value holds.
-static SHUResult ParseFromToml(const toml_datum_t *datum, ECSValue *retValue)
+/// @param depth How many arrays and tables hold it.
+/// @return SHUResult_Ok, SHUResult_ErrOverflow past PARSE_MAX_DEPTH, or SHUResult_ErrAllocation.
+static SHUResult ParseFromToml(const toml_datum_t *datum, ECSValue *retValue, usz depth)
 {
+    if (depth > PARSE_MAX_DEPTH && (datum->type == TOML_ARRAY || datum->type == TOML_TABLE))
+    {
+        return SHUResult_ErrOverflow;
+    }
+
     switch (datum->type)
     {
     case TOML_STRING:
@@ -71,7 +78,7 @@ static SHUResult ParseFromToml(const toml_datum_t *datum, ECSValue *retValue)
         {
             ECSValue *item = nullptr;
             SHU_ReturnResult(ECSValue_AddListItem(retValue, &item));
-            SHU_ReturnResult(ParseFromToml(&datum->u.arr.elem[i], item));
+            SHU_ReturnResult(ParseFromToml(&datum->u.arr.elem[i], item, depth + 1));
         }
 
         return SHUResult_Ok;
@@ -85,7 +92,7 @@ static SHUResult ParseFromToml(const toml_datum_t *datum, ECSValue *retValue)
             SHUResult result = name == nullptr ? SHUResult_ErrAllocation : ECSValue_SetTableField(retValue, name, &field);
             SDL_free(name);
             SHU_ReturnResult(result);
-            SHU_ReturnResult(ParseFromToml(&datum->u.tab.value[i], field));
+            SHU_ReturnResult(ParseFromToml(&datum->u.tab.value[i], field, depth + 1));
         }
 
         return SHUResult_Ok;
@@ -196,11 +203,30 @@ static bool ParseIsTomlSection(const ECSValue *value)
     return ECSValue_GetType(value) == ECSValueType_Table && (ECSValue_GetListCount(value) == 0 || ParseIsTableList(value));
 }
 
-static bool ParseAddTomlValue(char **text, const ECSValue *value, const char **retError);
+static bool ParseAddTomlValue(char **text, const ECSValue *value, usz depth, const char **retError);
+
+/// @brief Fails a write whose tables nest deeper than PARSE_MAX_DEPTH.
+/// @return false and why if they do.
+static bool ParseCheckTomlDepth(usz depth, const char **retError)
+{
+    if (depth > PARSE_MAX_DEPTH)
+    {
+        *retError = ParseFail("TOML: tables nest deeper than %d", PARSE_MAX_DEPTH);
+        return false;
+    }
+
+    return true;
+}
 
 /// @brief Adds a list as [a, b], or a table of named fields as { a = 1, b = 2 }.
-static bool ParseAddTomlInline(char **text, const ECSValue *table, const char **retError)
+/// @param depth How many tables hold it.
+static bool ParseAddTomlInline(char **text, const ECSValue *table, usz depth, const char **retError)
 {
+    if (!ParseCheckTomlDepth(depth, retError))
+    {
+        return false;
+    }
+
     usz count = ECSValue_GetListCount(table);
 
     if (count > 0 && ECSValue_GetTableFieldCount(table) > 0)
@@ -215,7 +241,7 @@ static bool ParseAddTomlInline(char **text, const ECSValue *table, const char **
     for (usz i = 0; i < count && written; i++)
     {
         ParseAddString(text, i == 0 ? "" : ", ");
-        written = ParseAddTomlValue(text, ECSValue_GetListItem(table, i), retError);
+        written = ParseAddTomlValue(text, ECSValue_GetListItem(table, i), depth + 1, retError);
     }
 
     const char **names = ParseSortFields(table);
@@ -225,7 +251,7 @@ static bool ParseAddTomlInline(char **text, const ECSValue *table, const char **
         ParseAddString(text, i == 0 ? " " : ", ");
         ParseAddTomlKey(text, names[i]);
         ParseAddString(text, " = ");
-        written = ParseAddTomlValue(text, ECSValue_GetTableField(table, names[i]), retError);
+        written = ParseAddTomlValue(text, ECSValue_GetTableField(table, names[i]), depth + 1, retError);
     }
 
     ParseAddString(text, count > 0 ? "]" : arrlenu(names) > 0 ? " }"
@@ -235,8 +261,9 @@ static bool ParseAddTomlInline(char **text, const ECSValue *table, const char **
 }
 
 /// @brief Adds a value as TOML writes it after a key's '='.
+/// @param depth How many tables hold it.
 /// @return false and why if TOML cannot hold it.
-static bool ParseAddTomlValue(char **text, const ECSValue *value, const char **retError)
+static bool ParseAddTomlValue(char **text, const ECSValue *value, usz depth, const char **retError)
 {
     usz length = 0;
     f64 number = ECSValue_GetNumber(value, 0.0);
@@ -268,7 +295,7 @@ static bool ParseAddTomlValue(char **text, const ECSValue *value, const char **r
         return true;
     }
     case ECSValueType_Table:
-        return ParseAddTomlInline(text, value, retError);
+        return ParseAddTomlInline(text, value, depth, retError);
     case ECSValueType_Nil:
         *retError = ParseFail("TOML cannot hold nil in a list");
         return false;
@@ -278,10 +305,11 @@ static bool ParseAddTomlValue(char **text, const ECSValue *value, const char **r
     }
 }
 
-static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *path, const char **retError);
+static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *path, usz depth, const char **retError);
 
 /// @brief Adds a field of a table that is written as a section: [path] with its table, or [[path]] for each table of its list.
-static bool ParseAddTomlSection(char **text, const ECSValue *value, const char *path, const char **retError)
+/// @param depth How many tables hold it.
+static bool ParseAddTomlSection(char **text, const ECSValue *value, const char *path, usz depth, const char **retError)
 {
     usz count = ECSValue_GetListCount(value);
     bool written = true;
@@ -302,13 +330,13 @@ static bool ParseAddTomlSection(char **text, const ECSValue *value, const char *
             ParseAddFormat(text, "%s[%s]\n", arrlenu(*text) > 0 ? "\n" : "", path);
         }
 
-        return ParseAddTomlTable(text, value, path, retError);
+        return ParseAddTomlTable(text, value, path, depth, retError);
     }
 
     for (usz i = 0; i < count && written; i++)
     {
         ParseAddFormat(text, "%s[[%s]]\n", arrlenu(*text) > 0 ? "\n" : "", path);
-        written = ParseAddTomlTable(text, ECSValue_GetListItem(value, i), path, retError);
+        written = ParseAddTomlTable(text, ECSValue_GetListItem(value, i), path, depth + 1, retError);
     }
 
     return written;
@@ -316,8 +344,14 @@ static bool ParseAddTomlSection(char **text, const ECSValue *value, const char *
 
 /// @brief Adds a table's fields: its values as key = value lines, then its tables as sections under its path.
 /// @param path The table's key path, such as a.b, or an empty text for the top.
-static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *path, const char **retError)
+/// @param depth How many tables hold it.
+static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *path, usz depth, const char **retError)
 {
+    if (!ParseCheckTomlDepth(depth, retError))
+    {
+        return false;
+    }
+
     const char **names = ParseSortFields(table);
     bool written = true;
 
@@ -329,7 +363,7 @@ static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *pa
         {
             ParseAddTomlKey(text, names[i]);
             ParseAddString(text, " = ");
-            written = ParseAddTomlValue(text, value, retError);
+            written = ParseAddTomlValue(text, value, depth + 1, retError);
             ParseAddString(text, "\n");
         }
     }
@@ -345,7 +379,7 @@ static bool ParseAddTomlTable(char **text, const ECSValue *table, const char *pa
             ParseAddString(&key, path[0] == '\0' ? "" : ".");
             ParseAddTomlKey(&key, names[i]);
             arrput(key, '\0');
-            written = ParseAddTomlSection(text, value, key, retError);
+            written = ParseAddTomlSection(text, value, key, depth + 1, retError);
             arrfree(key);
         }
     }
@@ -373,10 +407,15 @@ void ParseReadToml(SHUSlice text, ECSValue *retData, const char **retError)
     {
         *retError = ParseFail("TOML: %s", result.errmsg);
     }
-    else if (ParseFromToml(&result.toptab, retData) != SHUResult_Ok)
+    else
     {
-        *retError = ParseFail("out of memory");
-        ECSValue_SetNil(retData);
+        SHUResult read = ParseFromToml(&result.toptab, retData, 0);
+
+        if (read != SHUResult_Ok)
+        {
+            *retError = read == SHUResult_ErrOverflow ? ParseFail("TOML: arrays and tables nest deeper than %d", PARSE_MAX_DEPTH) : ParseFail("out of memory");
+            ECSValue_SetNil(retData);
+        }
     }
 
     toml_free(result);
@@ -394,7 +433,7 @@ const char *ParseWriteToml(const ECSValue *data, const char **retError)
 
     char *text = nullptr;
 
-    if (!ParseAddTomlTable(&text, data, "", retError))
+    if (!ParseAddTomlTable(&text, data, "", 0, retError))
     {
         arrfree(text);
         return nullptr;
