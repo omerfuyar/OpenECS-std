@@ -9,9 +9,16 @@ local clearTable = require("table.clear")
 local draw = require("draw")
 local image = require("image")
 
--- floats in an FFI array, as draw takes points
-local function floats(...)
-  return ffi.new("float[?]", select("#", ...), ...)
+-- a triangle's points, as draw takes them; one array is filled for each triangle, as draw copies the points or draws them at once
+local triangle
+
+do
+  local points = ffi.new("float[6]")
+
+  function triangle(surface, x1, y1, x2, y2, x3, y3, color)
+    points[0], points[1], points[2], points[3], points[4], points[5] = x1, y1, x2, y2, x3, y3
+    draw.triangles(surface, points, "", color)
+  end
 end
 
 -- sizes in layout units, which the user can change as settings of the plugin
@@ -186,7 +193,7 @@ end
 local drawn = draw -- the draw plugin's functions; draw below records calls while a show records them
 local recording -- the calls of the show that records them, or nil; its tables are reused from the show before the last
 local recorded = 0 -- how many calls the show has recorded
-local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
+local recordClip -- the clip of the calls now, { left, top, right, bottom, x, y, width, height, outer, scroll }, or nil
 local recordScroll -- the scroll element whose children the calls now draw, { id, outer }, or nil
 
 -- room around a call's rectangle, in layout units, for smooth edges and slanted letters
@@ -282,9 +289,32 @@ function draw.triangles(surface, points, indices, color)
     left, top, right, bottom = math.min(left, x), math.min(top, y), math.max(right, x), math.max(bottom, y)
   end
 
+  -- the call keeps the bytes, as the plugin may fill its buffers again before the show is drawn
+  local indexBytes = bytesOf(indices)
   local call = record("triangles", left, top, right, bottom)
-  call[1], call[2], call[3], call.n = points, indices, color, 3
-  call.key = pointBytes .. bytesOf(indices) .. tostring(color)
+  call[1], call[2], call[3], call.n = pointBytes, indexBytes, color, 3
+  call.key = pointBytes .. indexBytes .. tostring(color)
+end
+
+-- What ui's own clips paint: ui pushes the element, the surface and the interaction state on inside.stack, then clips a body, a function of
+-- inside, that reads them from its top, so a show makes no closure for its clips; clips nest as the elements do. A show also records its
+-- clips as it does its calls, in inside.clips, the tables of the show before the last, and counts them in inside.clipped.
+local inside = { stack = { top = 0 }, clips = nil, clipped = 0 }
+
+-- clips a body of inside, which paints an element on a surface with the interaction state
+function inside.clip(surface, x, y, width, height, body, node, state)
+  local stack = inside.stack
+  local top = stack.top
+  stack[top + 1], stack[top + 2], stack[top + 3], stack.top = node, surface, state, top + 3
+  draw.clip(surface, x, y, width, height, body)
+  stack.top = top
+end
+
+-- the element, surface and state of the clip that runs now
+function inside.arguments()
+  local stack = inside.stack
+  local top = stack.top
+  return stack[top - 2], stack[top - 1], stack[top]
 end
 
 function draw.clip(surface, x, y, width, height, body)
@@ -293,23 +323,20 @@ function draw.clip(surface, x, y, width, height, body)
   end
 
   local outer = recordClip
-  local clip = {
-    x,
-    y,
-    x + width,
-    y + height,
-    key = string.format("%g,%g,%g,%g", x, y, width, height),
-    x = x,
-    y = y,
-    width = width,
-    height = height,
-    outer = outer,
-    scroll = recordScroll,
-  }
+  local clipped = inside.clipped + 1
+  local clip = inside.clips[clipped]
+  inside.clipped = clipped
+
+  if clip == nil then
+    clip = newTable(4, 6)
+    inside.clips[clipped] = clip
+  end
+
+  clip[1], clip[2], clip[3], clip[4] = x, y, x + width, y + height
+  clip.x, clip.y, clip.width, clip.height, clip.outer, clip.scroll = x, y, width, height, outer, recordScroll
 
   if outer then
     clip[1], clip[2], clip[3], clip[4] = math.max(clip[1], outer[1]), math.max(clip[2], outer[2]), math.min(clip[3], outer[3]), math.min(clip[4], outer[4])
-    clip.key = outer.key .. ";" .. clip.key
   end
 
   recordClip = clip
@@ -319,6 +346,19 @@ function draw.clip(surface, x, y, width, height, body)
   if not ok then
     error(message, 0)
   end
+end
+
+-- whether two clips are the same: the same rectangles, inside the same clips
+local function sameClip(a, b)
+  while a ~= b do
+    if a == nil or b == nil or a.x ~= b.x or a.y ~= b.y or a.width ~= b.width or a.height ~= b.height then
+      return false
+    end
+
+    a, b = a.outer, b.outer
+  end
+
+  return true
 end
 
 -- whether two calls draw the same: the same function, clip and arguments. A handle is the same object each time, so rawequal compares all
@@ -331,7 +371,7 @@ local function sameCall(a, b)
 
   local clipA, clipB = a.clip, b.clip
 
-  if clipA ~= clipB and (clipA == nil or clipB == nil or clipA.key ~= clipB.key) then
+  if clipA ~= clipB and not sameClip(clipA, clipB) then
     return false
   end
 
@@ -422,7 +462,7 @@ do
     elseif a == nil or b == nil then
       return false
     elseif not insideScroll(b.scroll, id) then
-      return a.key == b.key
+      return sameClip(a, b)
     end
 
     return a.x == b.x and a.width == b.width and a.height == b.height and near(a.y - shift, b.y) and sameMovedClip(a.outer, b.outer, id, shift)
@@ -2348,7 +2388,7 @@ end
 
 -- a small triangle that points down, centred on a point
 local function arrow(surface, x, y, half, color)
-  draw.triangles(surface, floats(x - half, y - half / 2, x + half, y - half / 2, x, y + half / 2), "", color)
+  triangle(surface, x - half, y - half / 2, x + half, y - half / 2, x, y + half / 2, color)
 end
 
 local function paintSelector(node, surface, state, hover)
@@ -2366,31 +2406,36 @@ local function paintSelector(node, surface, state, hover)
   end
 end
 
--- a line under the whole row, and a thicker one in the accent colour under the chosen tab; tabs past the element's width are cut at its edge
-local function paintTabs(node, surface, state, hover)
+-- what paintTabs clips: a line under the whole row, and a thicker one in the accent colour under the chosen tab
+function inside.tabs()
+  local node, surface, state = inside.arguments()
   local box = node.layout
   local font, textSize = fontOf(node), node.size or fontSize()
   local textY = box.y + (box.height - lineHeight(font, textSize)) / 2
+  local hover = state.hover == node
+  draw.fill(surface, box.x, box.y + box.height - 1, box.width, 1, "tabShown")
 
-  draw.clip(surface, box.x, box.y, box.width, box.height, function()
-    draw.fill(surface, box.x, box.y + box.height - 1, box.width, 1, "tabShown")
+  for i, rect in ipairs(choiceRects(node)) do
+    local choice = node.choices[i]
+    local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.width
 
-    for i, rect in ipairs(choiceRects(node)) do
-      local choice = node.choices[i]
-      local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.width
-
-      if over and choice ~= node.value then
-        draw.fill(surface, rect.x, box.y, rect.width, box.height - 1, "tab")
-      end
-
-      if choice == node.value then
-        draw.fill(surface, rect.x, box.y + box.height - 3, rect.width, 3, "accent")
-      end
-
-      local shown = ellipsize(font, tostring(choice), textSize, rect.width - 2 * size.paddingX)
-      draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
+    if over and choice ~= node.value then
+      draw.fill(surface, rect.x, box.y, rect.width, box.height - 1, "tab")
     end
-  end)
+
+    if choice == node.value then
+      draw.fill(surface, rect.x, box.y + box.height - 3, rect.width, 3, "accent")
+    end
+
+    local shown = ellipsize(font, tostring(choice), textSize, rect.width - 2 * size.paddingX)
+    draw.text(surface, font, shown, rect.x + size.paddingX, textY, textSize, choice == node.value and (node.color or "text") or "textDim")
+  end
+end
+
+-- tabs past the element's width are cut at its edge
+local function paintTabs(node, surface, state)
+  local box = node.layout
+  inside.clip(surface, box.x, box.y, box.width, box.height, inside.tabs, node, state)
 end
 
 local function paintToggle(node, surface, hover)
@@ -2420,42 +2465,49 @@ local function paintToggle(node, surface, hover)
   end
 end
 
--- a field or a key element; the edited one shows what is typed, its selection and its cursor, and a key element asks for a key
-local function paintTyped(node, surface, state)
+-- what paintTyped clips: the edited one's text, selection and cursor, a key element's request for a key, or the text or placeholder
+function inside.typed()
+  local node, surface, state = inside.arguments()
   local box = node.layout
   local font, textSize = fontOf(node), node.size or fontSize()
   local line = lineHeight(font, textSize)
   local textY = box.y + (box.height - line) / 2
   local editing = state.editing == node.id
   local room = box.width - 2 * size.paddingX
+
+  if editing and node.type == "field" then
+    local textX, before = fieldText(node, state)
+    local first, last = selection(state)
+
+    if first then
+      local left = textX + measureText(font, state.typed:sub(1, first - 1), textSize)
+      draw.fill(surface, left, textY, textX + measureText(font, state.typed:sub(1, last - 1), textSize) - left, line, "selected")
+    end
+
+    draw.text(surface, font, state.typed, textX, textY, textSize, node.color or "text")
+    draw.fill(surface, textX + before, textY, 2, line, "accent")
+  elseif editing then
+    draw.text(surface, font, "Press a key", box.x + size.paddingX, textY, textSize, "textDim")
+  else
+    -- a dragged number shows the number the drag gives, before the panel has taken it
+    local drag = state.numberDrag
+    local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
+    -- an empty field shows its placeholder, dimmed, until it is typed in
+    if shown == "" and node.placeholder then
+      draw.text(surface, font, ellipsize(font, tostring(node.placeholder), textSize, room), box.x + size.paddingX, textY, textSize, "textDim")
+    else
+      draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
+    end
+  end
+end
+
+-- a field or a key element; the edited one shows what is typed, its selection and its cursor, and a key element asks for a key
+local function paintTyped(node, surface, state)
+  local box = node.layout
+  local editing = state.editing == node.id
   draw.fill(surface, box.x, box.y, box.width, box.height, "tabRow")
 
-  draw.clip(surface, box.x + 1, box.y + 1, box.width - 2, box.height - 2, function()
-    if editing and node.type == "field" then
-      local textX, before = fieldText(node, state)
-      local first, last = selection(state)
-
-      if first then
-        local left = textX + measureText(font, state.typed:sub(1, first - 1), textSize)
-        draw.fill(surface, left, textY, textX + measureText(font, state.typed:sub(1, last - 1), textSize) - left, line, "selected")
-      end
-
-      draw.text(surface, font, state.typed, textX, textY, textSize, node.color or "text")
-      draw.fill(surface, textX + before, textY, 2, line, "accent")
-    elseif editing then
-      draw.text(surface, font, "Press a key", box.x + size.paddingX, textY, textSize, "textDim")
-    else
-      -- a dragged number shows the number the drag gives, before the panel has taken it
-      local drag = state.numberDrag
-      local shown = drag and drag.id == node.id and drag.shown and formatNumber(drag.shown) or node.text
-      -- an empty field shows its placeholder, dimmed, until it is typed in
-      if shown == "" and node.placeholder then
-        draw.text(surface, font, ellipsize(font, tostring(node.placeholder), textSize, room), box.x + size.paddingX, textY, textSize, "textDim")
-      else
-        draw.text(surface, font, ellipsize(font, shown, textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
-      end
-    end
-  end)
+  inside.clip(surface, box.x + 1, box.y + 1, box.width - 2, box.height - 2, inside.typed, node, state)
 
   -- a number field marks a typed text that is not a number
   local valid = node.valid ~= false and not (editing and node.isNumber and readNumber(state.typed) == nil)
@@ -2523,32 +2575,36 @@ local function paintDisclosure(node, surface)
   local half, x, y = size.checkSize / 4, box.x + box.width / 2, box.y + box.height / 2
 
   if node.up then
-    draw.triangles(surface, floats(x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2), "", "textDim")
+    triangle(surface, x - half, y + half / 2, x + half, y + half / 2, x, y - half / 2, "textDim")
   elseif node.open then
     arrow(surface, x, y, half, "textDim")
   else
-    draw.triangles(surface, floats(x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y), "", "textDim")
+    triangle(surface, x - half / 2, y - half, x - half / 2, y + half, x + half / 2, y, "textDim")
   end
 end
 
 local paint
 
+-- what paintScroll clips: the children in view
+function inside.scroll()
+  local node, surface, state = inside.arguments()
+  local box = node.layout
+  local outer = recordScroll
+  recordScroll = recording and { id = node.id, outer = outer }
+
+  for _, child in ipairs(node.children) do
+    if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
+      paint(child, surface, state)
+    end
+  end
+
+  recordScroll = outer
+end
+
 -- the children of a scroll element draw inside it only, and its scroll bar over them
 local function paintScroll(node, surface, state)
   local box = node.layout
-
-  draw.clip(surface, box.x, box.y, box.width, box.height, function()
-    local outer = recordScroll
-    recordScroll = recording and { id = node.id, outer = outer }
-
-    for _, child in ipairs(node.children) do
-      if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
-        paint(child, surface, state)
-      end
-    end
-
-    recordScroll = outer
-  end)
+  inside.clip(surface, box.x, box.y, box.width, box.height, inside.scroll, node, state)
 
   if overflows(node) then
     local start, length = thumb(node)
@@ -2572,6 +2628,21 @@ local function linkSpans(node)
   end
 
   return spans
+end
+
+-- what a text of spans clips: its runs, line after line
+function inside.spans()
+  local node, surface = inside.arguments()
+  local box = node.layout
+  local textSize = node.size or fontSize()
+  local line = lineHeight(fontOf(node), textSize)
+
+  for i, spanLine in ipairs(box.spanLines) do
+    for _, run in ipairs(spanLine.runs) do
+      local color = run.span.color or (run.span.link and "accent") or node.color or "text"
+      draw.text(surface, spanFont(node, run.span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
+    end
+  end
 end
 
 -- draws an element and its children; it reads the interaction state, and changes none of it
@@ -2612,14 +2683,7 @@ function paint(node, surface, state)
 
   if node.type == "text" and box.spanLines then
     -- runs past the box are cut at its edge
-    draw.clip(surface, box.x, box.y, box.width, box.height, function()
-      for i, spanLine in ipairs(box.spanLines) do
-        for _, run in ipairs(spanLine.runs) do
-          local color = run.span.color or (run.span.link and "accent") or node.color or "text"
-          draw.text(surface, spanFont(node, run.span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
-        end
-      end
-    end)
+    inside.clip(surface, box.x, box.y, box.width, box.height, inside.spans, node, state)
   elseif node.type == "text" and box.lines then
     for i, text in ipairs(box.lines) do
       draw.text(surface, font, ellipsize(font, text, textSize, box.width), box.x, box.y + (i - 1) * line, textSize, node.color or "text")
@@ -2646,7 +2710,7 @@ function paint(node, surface, state)
     draw.text(surface, font, ellipsize(font, tostring(node.value or ""), textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
     arrow(surface, box.x + box.width - size.paddingX - line / 4, box.y + box.height / 2, line / 4, "textDim")
   elseif node.type == "selector" and node.look == "tabs" then
-    paintTabs(node, surface, state, hover)
+    paintTabs(node, surface, state)
   elseif node.type == "selector" then
     paintSelector(node, surface, state, hover)
   elseif node.type == "toggle" then
@@ -2832,7 +2896,7 @@ end
 -- a small triangle that points right, or left, centred at x, y: a folder's mark, and the row that goes back
 local function sideArrow(surface, x, y, half, color, left)
   local tip, back = left and x - half / 2 or x + half / 2, left and x + half / 2 or x - half / 2
-  draw.triangles(surface, floats(back, y - half, back, y + half, tip, y), "", color)
+  triangle(surface, back, y - half, back, y + half, tip, y, color)
 end
 
 -- opens a dropdown's choices in a popup below it; a click or Return chooses one. Typing searches: the popup shows what is typed
@@ -3305,8 +3369,9 @@ local function rgbToHsv(red, green, blue)
 end
 
 -- a picker's sizes, in layout units: the square of saturation and value, the bars of hue and alpha beside and below it, and the pixels of the
--- square's image, which draw stretches
-local PICKER = { square = 160, bar = 16, gap = 8, pixels = 64 }
+-- square's image, which draw stretches; how far an arrow key moves in the square or a bar, of its length; and the arrow keys' directions,
+-- down being positive, as in the surface
+local PICKER = { square = 160, bar = 16, gap = 8, pixels = 64, step = 1 / 32, arrows = { Left = { -1, 0 }, Right = { 1, 0 }, Up = { 0, -1 }, Down = { 0, 1 } } }
 
 -- the image of a picker's square at a hue: saturation grows to the right and value upwards
 local function squareImage(hue)
@@ -3333,12 +3398,6 @@ local function hueImage()
 
   return draw.newImage(1, PICKER.pixels, pixels)
 end
-
--- the arrow keys' directions, down being positive, as in the surface
-local ARROWS = { Left = { -1, 0 }, Right = { 1, 0 }, Up = { 0, -1 }, Down = { 0, 1 } }
-
--- how far an arrow key moves in a picker's square or bar, of its length
-local PICKER_STEP = 1 / 32
 
 -- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
 -- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange. The arrows move
@@ -3455,8 +3514,8 @@ local function openColorPicker(panel, state, node)
         panel:redraw()
       elseif event.type == "keyDown" and isEnter(event) then
         popup:close()
-      elseif event.type == "keyDown" and ARROWS[event.key] then
-        local dx, dy = ARROWS[event.key][1] * PICKER_STEP, ARROWS[event.key][2] * PICKER_STEP
+      elseif event.type == "keyDown" and PICKER.arrows[event.key] then
+        local dx, dy = PICKER.arrows[event.key][1] * PICKER.step, PICKER.arrows[event.key][2] * PICKER.step
 
         if event.shift and dy ~= 0 then
           hue = clamp(hue + dy, 0, 0.9999)
@@ -4024,19 +4083,27 @@ local function inspected(state)
   end)
 end
 
+local paintOutlines
+
+-- what paintOutlines clips for a scroll element: its children in view
+function inside.outlines()
+  local node, surface = inside.arguments()
+  local box = node.layout
+
+  for _, child in ipairs(node.children) do
+    if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
+      paintOutlines(child, surface)
+    end
+  end
+end
+
 -- outlines an element and its children; those of a scroll element only inside it, as they are drawn
-local function paintOutlines(node, surface)
+function paintOutlines(node, surface)
   local box = node.layout
   draw.outline(surface, box.x, box.y, box.width, box.height, 1, "tabShown")
 
   if node.type == "scroll" then
-    draw.clip(surface, box.x, box.y, box.width, box.height, function()
-      for _, child in ipairs(node.children) do
-        if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
-          paintOutlines(child, surface)
-        end
-      end
-    end)
+    inside.clip(surface, box.x, box.y, box.width, box.height, inside.outlines, node, nil)
   else
     for _, child in ipairs(node.children or {}) do
       paintOutlines(child, surface)
@@ -4468,30 +4535,47 @@ end
 
 local services = {}
 
--- ids that elements leave out come from their places, so they stay the same from one draw to the next
+-- gives each element without an id one from its parent's id and its place, so it stays the same from one draw to the next. An id that two
+-- elements have is a misuse: clicks and keys would reach only the first. An element is shown once: one that a show had already, or that a
+-- show recycled, is a misuse. It walks the tree with a stack, without recursion, which LuaJIT's traces would unroll
+local assignIds
 
--- gives each element without an id one from its place in the tree. An id that two elements have is a misuse: clicks and keys would reach only the first.
--- an element is shown once: one that a show had already, or that a show recycled, is a misuse
-local function assignIds(node, path, seen)
-  if node.shown or node.type == nil then
-    ecs.check(false, "An element is shown once, and lives until its panel's next show: a panel makes its elements again at each draw, and keeps none.")
-  end
+do
+  local pending = {}
 
-  node.shown = true
-  local id = node.id or path
-  node.id = id
+  function assignIds(root, seen)
+    root.id = root.id or "root"
+    pending[1] = root
+    local count = 1
 
-  if seen[id] then
-    ecs.check(false, "Two elements of a panel have the id '" .. tostring(id) .. "'. Give each its own id.")
-  end
+    while count > 0 do
+      local node = pending[count]
+      pending[count] = nil
+      count -= 1
 
-  seen[id] = true
-  local children = node.children
+      if node.shown or node.type == nil then
+        ecs.check(false, "An element is shown once, and lives until its panel's next show: a panel makes its elements again at each draw, and keeps none.")
+      end
 
-  if children then
-    for i = 1, #children do
-      local child = children[i]
-      assignIds(child, path .. "." .. (child.place or i), seen)
+      node.shown = true
+      local id = node.id
+
+      if seen[id] then
+        ecs.check(false, "Two elements of a panel have the id '" .. tostring(id) .. "'. Give each its own id.")
+      end
+
+      seen[id] = true
+      local children = node.children
+
+      -- the last child is pushed first, so the first is taken first, as a walk in order takes them
+      if children then
+        for i = #children, 1, -1 do
+          local child = children[i]
+          child.id = child.id or id .. "." .. (child.place or i)
+          count += 1
+          pending[count] = child
+        end
+      end
     end
   end
 end
@@ -4513,6 +4597,18 @@ local function keepScrollOffsets(node, state)
 end
 
 -- lays out the elements in the panel's surface and draws them; call it from the panel's draw
+-- what a show paints: the background, the elements, and the inspector or a tooltip over them
+function inside.show(root, surface, state, width, height)
+  draw.fill(surface, 0, 0, width, height, "background")
+  paint(root, surface, state)
+
+  if inspecting then
+    paintInspector(surface, state, width, height)
+  else
+    paintTooltip(surface, state, width, height)
+  end
+end
+
 function services.show(panel, surface, root)
   local state = panelState(panel)
   local width, height = surface.width / surface.scale, surface.height / surface.scale
@@ -4529,7 +4625,7 @@ function services.show(panel, surface, root)
   showCount += 1
   state.ids = state.ids or {}
   clearTable(state.ids)
-  assignIds(root, "root", state.ids)
+  assignIds(root, state.ids)
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
   state.scrolls = {}
@@ -4581,23 +4677,17 @@ function services.show(panel, surface, root)
   end
 
   -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
-  local last, lastCount = state.calls, state.callCount
+  local last, lastCount, lastClips = state.calls, state.callCount, state.clips
   recording, recorded, recordClip = state.spare or {}, 0, nil
-  state.calls, state.spare = nil, nil
+  inside.clips, inside.clipped, inside.stack.top = state.spareClips or {}, 0, 0
+  state.calls, state.spare, state.clips, state.spareClips = nil, nil, nil, nil
 
-  local ok, message = pcall(function()
-    draw.fill(surface, 0, 0, width, height, "background")
-    paint(root, surface, state)
+  local ok, message = pcall(inside.show, root, surface, state, width, height)
 
-    if inspecting then
-      paintInspector(surface, state, width, height)
-    else
-      paintTooltip(surface, state, width, height)
-    end
-  end)
-
-  local calls, count = recording, recorded
-  recording, recorded, recordClip, recordScroll = nil, 0, nil, nil
+  local calls, count, clips = recording, recorded, inside.clips
+  recording, recorded, recordClip, recordScroll, inside.clips, inside.clipped = nil, 0, nil, nil, nil, 0
+  clearTable(inside.stack)
+  inside.stack.top = 0
 
   if not ok then
     error(message, 0)
@@ -4629,6 +4719,7 @@ function services.show(panel, surface, root)
 
   -- the last show's calls are compared with the next's, and the tables of the one before are reused for the next
   state.calls, state.callCount, state.spare, state.shownScrolls = calls, count, last, state.scrolls
+  state.clips, state.spareClips = clips, lastClips
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
