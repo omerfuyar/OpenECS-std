@@ -988,6 +988,8 @@ static const char *DrawFontFile(void *fontHandle)
     return font->path;
 }
 
+static void DrawMeasure(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight);
+
 static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
 {
     if (text[0] == '\0' || surface->scale <= 0.0f)
@@ -1003,26 +1005,39 @@ static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f3
         return 0.0f;
     }
 
-    int width = 0;
     TTF_Text *drawn = TTF_CreateText(DRAW.engine, opened, text, 0);
 
     if (drawn != nullptr)
     {
         TTF_SetTextColor(drawn, (Uint8)(color >> 16u), (Uint8)(color >> 8u), (Uint8)color, (Uint8)(color >> 24u));
         TTF_DrawSurfaceText(drawn, (int)SDL_roundf(x * surface->scale), (int)SDL_roundf(y * surface->scale), target);
-        TTF_GetTextSize(drawn, &width, nullptr);
         TTF_DestroyText(drawn);
     }
 
     SDL_DestroySurface(target);
-    return (f32)width / surface->scale;
+
+    // the width is the one measure gives, so text drawn after it starts where it would in a line measured whole
+    f32 width = 0.0f;
+    f32 lineHeight = 0.0f;
+    DrawMeasure(font, text, size, surface->scale, &width, &lineHeight);
+    return width;
 }
 
 static void DrawMeasure(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight)
 {
+    // SDL_ttf slants italic glyphs, which widens their ink and not where each starts the next, and it measures the ink;
+    // the same file upright gives the width the text takes, so its words measured one by one add up to the whole
+    DrawFont *measured = font;
+
+    if ((measured->style & TTF_STYLE_ITALIC) != 0)
+    {
+        DrawFont *upright = DrawFindOrAddStyledFont(measured->name, measured->style & ~(TTF_FontStyleFlags)TTF_STYLE_ITALIC);
+        measured = upright != nullptr ? upright : measured;
+    }
+
     // the text is measured at the size it is drawn at, as a font's glyphs do not grow evenly with its size
     scale = scale > 0.0f ? scale : 1.0f;
-    TTF_Font *opened = DrawFindOrOpenSize(font, size * scale);
+    TTF_Font *opened = DrawFindOrOpenSize(measured, size * scale);
     int width = 0;
 
     if (opened != nullptr)
