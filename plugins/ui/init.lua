@@ -1391,6 +1391,8 @@ function elements.tree(nodes, props)
             props.onToggle(item.id, not shown)
           end
         end }, { element("disclosure", { open = shown }) })
+        -- Tab passes over it, as Left and Right close and open the chosen node
+        arrow.untabbed = true
       end
 
       local cells = {
@@ -3771,7 +3773,7 @@ end
 -- the elements that Tab goes through, in the order of the tree: the interactive ones, each list once, in place of its items, and each scroll
 -- element with more than it shows, which the keys scroll
 local function tabOrder(node, list)
-  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node)) then
+  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node) and not node.untabbed) then
     list[#list + 1] = node
   end
 
