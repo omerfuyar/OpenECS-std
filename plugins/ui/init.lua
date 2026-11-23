@@ -1083,91 +1083,154 @@ local function wrapKept(font, text, textSize, width)
   return kept.lines, kept.width
 end
 
--- a span's font: mono for code, else the text's; draw makes bold, italic, underline and struck text from the font itself, and a link is underlined
-local function spanFont(node, span)
-  local name = span.mono and "mono" or node.font or "ui"
-  local style = {}
+local spanFont, layoutSpans
 
-  for _, word in ipairs({ "bold", "italic", "underline", "strike" }) do
-    if span[word] or (word == "underline" and span.link) then
-      style[#style + 1] = word
-    end
+do
+  -- the styled fonts by name, then by the bits of their style; they are made again when ui's fonts are, after a setting changes
+  local STYLE_WORDS = { "bold", "italic", "underline", "strike" }
+  local styledFor, styled = nil, {}
+
+  -- a span's style as bits, from STYLE_WORDS: 1 bold, 2 italic, 4 underline, 8 strike; a link is underlined
+  local function styleBits(span)
+    return (span.bold and 1 or 0) + (span.italic and 2 or 0) + ((span.underline or span.link) and 4 or 0) + (span.strike and 8 or 0)
   end
 
-  local key = name .. "\0" .. table.concat(style, " ")
-  local font = fonts[key]
-
-  if font == nil then
-    font = #style == 0 and fontOf({ font = name }) or draw.styledFont(name, table.concat(style, " ")) or fontOf(node)
-    fonts[key] = font
-  end
-
-  return font
-end
-
--- the lines of a text of spans: each line is runs of one span, at x from the line's start; with a width, it breaks between words as wrap does,
--- and a line after a break leaves out the blanks it would start with
-local function layoutSpans(node, textSize, width)
-  local lines, x, wrapped = { { runs = {}, width = 0 } }, 0, false
-
-  local function add(text, span, blank)
-    local font = spanFont(node, span)
-    local runWidth = measureText(font, text, textSize)
-    local line = lines[#lines]
-
-    if not blank and width and x > 0 and x + runWidth > width then
-      lines[#lines + 1] = { runs = {}, width = 0 }
-      line, x, wrapped = lines[#lines], 0, true
+  -- a span's font: mono for code, else the text's; draw makes bold, italic, underline and struck text from the font itself
+  function spanFont(node, span)
+    if styledFor ~= fonts then
+      styledFor, styled = fonts, {}
     end
 
-    if blank and x == 0 and wrapped then
-      return
+    local name = span.mono and "mono" or node.font or "ui"
+    local bits = styleBits(span)
+
+    if bits == 0 then
+      return fontOf({ font = name })
     end
 
-    local last = line.runs[#line.runs]
+    local byBits = styled[name]
 
-    -- runs of one span in a row are one run, so it is drawn with one call
-    if last and last.span == span then
-      last.text ..= text
-      last.width += runWidth
-    else
-      line.runs[#line.runs + 1] = { x = x, text = text, span = span, width = runWidth }
+    if byBits == nil then
+      byBits = {}
+      styled[name] = byBits
     end
 
-    x += runWidth
+    local font = byBits[bits]
 
-    if not blank then
-      line.width = x
-    end
-  end
+    if font == nil then
+      local words = {}
 
-  for _, span in ipairs(node.spans) do
-    local first = true
-
-    for part in (span.text .. "\n"):gmatch("(.-)\n") do
-      if not first then
-        lines[#lines + 1] = { runs = {}, width = 0 }
-        x, wrapped = 0, false
+      for i, word in ipairs(STYLE_WORDS) do
+        if bits & (1 << (i - 1)) ~= 0 then
+          words[#words + 1] = word
+        end
       end
 
-      first = false
+      font = draw.styledFont(name, table.concat(words, " ")) or fontOf(node)
+      byBits[bits] = font
+    end
 
-      for blanks, word in part:gmatch("(%s*)(%S*)") do
-        if blanks ~= "" then
-          add(blanks, span, true)
+    return font
+  end
+
+  -- the lines of a text of spans: each line is runs of one span, by its index in the spans, at x from the line's start; with a width, it
+  -- breaks between words as wrap does, and a line after a break leaves out the blanks it would start with
+  local function lay(node, textSize, width)
+    local lines, x, broke = { { runs = {}, width = 0 } }, 0, false
+
+    local function add(text, span, index, blank)
+      local font = spanFont(node, span)
+      local runWidth = measureText(font, text, textSize)
+      local line = lines[#lines]
+
+      if not blank and width and x > 0 and x + runWidth > width then
+        lines[#lines + 1] = { runs = {}, width = 0 }
+        line, x, broke = lines[#lines], 0, true
+      end
+
+      if blank and x == 0 and broke then
+        return
+      end
+
+      local last = line.runs[#line.runs]
+
+      -- runs of one span in a row are one run, so it is drawn with one call
+      if last and last.index == index then
+        last.text ..= text
+        last.width += runWidth
+      else
+        line.runs[#line.runs + 1] = { x = x, text = text, index = index, width = runWidth }
+      end
+
+      x += runWidth
+
+      if not blank then
+        line.width = x
+      end
+    end
+
+    for index, span in ipairs(node.spans) do
+      local first = true
+
+      for part in (span.text .. "\n"):gmatch("(.-)\n") do
+        if not first then
+          lines[#lines + 1] = { runs = {}, width = 0 }
+          x, broke = 0, false
         end
 
-        -- a word wider than the width breaks into parts, as in wrap
-        if word ~= "" then
-          for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width) or { word }) do
-            add(wordPart, span, false)
+        first = false
+
+        for blanks, word in part:gmatch("(%s*)(%S*)") do
+          if blanks ~= "" then
+            add(blanks, span, index, true)
+          end
+
+          -- a word wider than the width breaks into parts, as in wrap
+          if word ~= "" then
+            for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width) or { word }) do
+              add(wordPart, span, index, false)
+            end
           end
         end
       end
     end
+
+    return lines
   end
 
-  return lines
+  -- the lines of texts of spans, kept by their font, size, scale, width and the spans' texts and styles, as wrapped texts are: each show
+  -- lays out the same texts again. The lines are shared, so no one changes them
+  local spannedFor, spanned, spannedCount = nil, {}, 0
+  local keyParts = {}
+
+  function layoutSpans(node, textSize, width)
+    if spannedFor ~= fonts then
+      spannedFor, spanned, spannedCount = fonts, {}, 0
+    end
+
+    keyParts[1], keyParts[2], keyParts[3] = textSize * 1024 + textScale, width or "", node.font or ""
+    local parts = 3
+
+    for _, span in ipairs(node.spans) do
+      keyParts[parts + 1], keyParts[parts + 2] = (span.mono and 16 or 0) + styleBits(span), span.text
+      parts += 2
+    end
+
+    local key = table.concat(keyParts, "\0", 1, parts)
+    local kept = spanned[key]
+
+    if kept == nil then
+      if spannedCount >= MEASURED_MOST then
+        spanned, spannedCount = {}, 0
+      end
+
+      kept = lay(node, textSize, width)
+      spanned[key] = kept
+      spannedCount += 1
+    end
+
+    return kept
+  end
 end
 
 -- images read once for each path and scale, so that they are drawn sharp.
@@ -2696,9 +2759,11 @@ local function linkSpans(node)
 
   for _, spanLine in ipairs(node.layout.spanLines or {}) do
     for _, run in ipairs(spanLine.runs) do
-      if run.span.link and not seen[run.span] then
-        seen[run.span] = true
-        spans[#spans + 1] = run.span
+      local span = node.spans[run.index]
+
+      if span.link and not seen[span] then
+        seen[span] = true
+        spans[#spans + 1] = span
       end
     end
   end
@@ -2715,8 +2780,9 @@ function inside.spans()
 
   for i, spanLine in ipairs(box.spanLines) do
     for _, run in ipairs(spanLine.runs) do
-      local color = run.span.color or (run.span.link and "accent") or node.color or "text"
-      draw.text(surface, spanFont(node, run.span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
+      local span = node.spans[run.index]
+      local color = span.color or (span.link and "accent") or node.color or "text"
+      draw.text(surface, spanFont(node, span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
     end
   end
 end
@@ -2746,7 +2812,7 @@ function paint(node, surface, state)
 
     for i, spanLine in ipairs(box.spanLines) do
       for _, run in ipairs(spanLine.runs) do
-        if run.span == span then
+        if node.spans[run.index] == span then
           draw.outline(surface, box.x + run.x - 1, box.y + (i - 1) * line - 1, run.width + 2, line + 2, 1, "accent")
         end
       end
@@ -2881,8 +2947,10 @@ local function linkAt(node, x, y)
     for _, run in ipairs(spanLine.runs) do
       local inside = x and y and x >= box.x + run.x and x < box.x + run.x + run.width and y >= box.y + (i - 1) * line and y < box.y + i * line
 
-      if run.span.link and (inside or not x) then
-        return run.span.link
+      local link = node.spans[run.index].link
+
+      if link and (inside or not x) then
+        return link
       end
     end
   end
