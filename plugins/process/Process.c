@@ -14,8 +14,10 @@
 typedef struct ProcessHandle
 {
     SDL_Process *process;
-    u8 *output; // stb_ds array: what the last read took, kept until the next read
-    u8 *errors; // stb_ds array: what the last readErrors took, kept until the next readErrors
+    u8 *output;   // stb_ds array: what the last read took, kept until the next read
+    u8 *errors;   // stb_ds array: what the last readErrors took, kept until the next readErrors
+    u8 *unsent;   // stb_ds array: what write took that the program's input pipe had no room for yet, sent at each later call
+    bool closing; // closeInput was called while bytes were unsent, so the input closes once they are sent
     bool exited;
     i32 code; // the exit code, once it exited
 } ProcessHandle;
@@ -114,6 +116,54 @@ static SHUSlice ProcessTake(SDL_IOStream *stream, u8 **buffer)
     return cs(*buffer, arrlenu(*buffer));
 }
 
+/// @brief Closes a program's input, which tells a program that reads it to the end that it ended.
+static void ProcessCloseStream(SDL_Process *process)
+{
+    SDL_IOStream *input = SDL_GetProcessInput(process);
+
+    if (input != nullptr)
+    {
+        SDL_CloseIO(input);
+        SDL_SetPointerProperty(SDL_GetProcessProperties(process), SDL_PROP_PROCESS_STDIN_POINTER, nullptr);
+    }
+}
+
+/// @brief Writes into a program's input what its pipe takes now, without waiting, as SDL's stream writes only that.
+/// @return The bytes written; fewer than given when the pipe is full, or when it broke, which retBroken tells.
+static usz ProcessSend(SDL_IOStream *input, const u8 *data, usz size, bool *retBroken)
+{
+    usz written = SDL_WriteIO(input, data, size);
+    *retBroken = written < size && SDL_GetIOStatus(input) == SDL_IO_STATUS_ERROR;
+    return written;
+}
+
+/// @brief Sends the bytes that write kept, as far as the pipe takes them, and closes the input once they are sent if closeInput asked for it.
+/// @return false if the input broke, as when the program ended; the bytes that were not sent are dropped then.
+static bool ProcessSendUnsent(ProcessHandle *handle)
+{
+    SDL_IOStream *input = SDL_GetProcessInput(handle->process);
+    bool broken = false;
+
+    if (input != nullptr && arrlenu(handle->unsent) > 0)
+    {
+        usz written = ProcessSend(input, handle->unsent, arrlenu(handle->unsent), &broken);
+        arrdeln(handle->unsent, 0, written);
+    }
+
+    if (broken)
+    {
+        arrsetlen(handle->unsent, 0);
+    }
+
+    if (handle->closing && arrlenu(handle->unsent) == 0)
+    {
+        ProcessCloseStream(handle->process);
+        handle->closing = false;
+    }
+
+    return !broken;
+}
+
 /// @brief Frees a program's handle; a program that still runs is killed first, so none is left behind.
 static void ProcessDestroy(void *object)
 {
@@ -127,6 +177,7 @@ static void ProcessDestroy(void *object)
     SDL_DestroyProcess(handle->process);
     arrfree(handle->output);
     arrfree(handle->errors);
+    arrfree(handle->unsent);
     SDL_free(handle);
 }
 
@@ -161,11 +212,13 @@ static ProcessHandle *ProcessStart(const ECSValue *command, const char *folder, 
 
 static SHUSlice ProcessRead(ProcessHandle *handle)
 {
+    (void)ProcessSendUnsent(handle);
     return ProcessTake(SDL_GetProcessOutput(handle->process), &handle->output);
 }
 
 static SHUSlice ProcessReadErrors(ProcessHandle *handle)
 {
+    (void)ProcessSendUnsent(handle);
     return ProcessTake(SDL_GetPointerProperty(SDL_GetProcessProperties(handle->process), SDL_PROP_PROCESS_STDERR_POINTER, nullptr), &handle->errors);
 }
 
@@ -174,12 +227,18 @@ static bool ProcessWrite(ProcessHandle *handle, SHUSlice data, const char **retE
     *retError = nullptr;
     SDL_IOStream *input = SDL_GetProcessInput(handle->process);
 
-    if (!ECS_Check(PROCESS.plugin, input != nullptr, "The program's input is closed."))
+    if (!ECS_Check(PROCESS.plugin, input != nullptr && !handle->closing, "The program's input is closed."))
     {
         return false;
     }
 
-    if (SDL_WriteIO(input, data.data, data.size) != data.size)
+    // what the pipe has no room for waits in the handle, after what waits already, and goes at the next calls
+    if (data.size > 0)
+    {
+        SDL_memcpy(arraddnptr(handle->unsent, data.size), data.data, data.size);
+    }
+
+    if (!ProcessSendUnsent(handle))
     {
         *retError = ProcessFail("the input cannot be written");
         return false;
@@ -188,20 +247,17 @@ static bool ProcessWrite(ProcessHandle *handle, SHUSlice data, const char **retE
     return true;
 }
 
-// a program that reads its input to the end, such as sort, needs it closed
+// a program that reads its input to the end, such as sort, needs it closed; bytes that wait are sent first
 static void ProcessCloseInput(ProcessHandle *handle)
 {
-    SDL_IOStream *input = SDL_GetProcessInput(handle->process);
-
-    if (input != nullptr)
-    {
-        SDL_CloseIO(input);
-        SDL_SetPointerProperty(SDL_GetProcessProperties(handle->process), SDL_PROP_PROCESS_STDIN_POINTER, nullptr);
-    }
+    handle->closing = true;
+    (void)ProcessSendUnsent(handle);
 }
 
 static bool ProcessExited(ProcessHandle *handle, i32 *retCode)
 {
+    (void)ProcessSendUnsent(handle);
+
     if (!handle->exited)
     {
         int code = 0;
@@ -243,29 +299,66 @@ static SHUSlice ProcessRun(const ECSValue *command, const char *folder, SHUSlice
         return cs(nullptr, 0);
     }
 
-    // the input goes first, then the program's output and errors are read until it exits
+    // the pipe takes only part of a large input, and the program may wait for its output to be read before it reads more,
+    // so the input goes while the output is read; then the rest of the output is read until the program exits
+    u8 *output = nullptr;
     SDL_IOStream *stream = SDL_GetProcessInput(process);
+    u8 *taken = nullptr;
+    bool broken = false;
 
-    if (stream != nullptr)
+    for (usz sent = 0; stream != nullptr && sent < input.size && !broken;)
     {
-        SDL_WriteIO(stream, input.data, input.size);
-        SDL_CloseIO(stream);
-        SDL_SetPointerProperty(SDL_GetProcessProperties(process), SDL_PROP_PROCESS_STDIN_POINTER, nullptr);
+        usz written = ProcessSend(stream, (const u8 *)input.data + sent, input.size - sent, &broken);
+        sent += written;
+        usz took = ProcessTake(SDL_GetProcessOutput(process), &taken).size;
+
+        if (took > 0)
+        {
+            SDL_memcpy(arraddnptr(output, took), taken, took);
+        }
+
+        if (written == 0 && took == 0)
+        {
+            SDL_Delay(1);
+        }
     }
 
+    arrfree(taken);
+    ProcessCloseStream(process);
     usz size = 0;
     int code = -1;
-    PROCESS.ran = SDL_ReadProcess(process, &size, &code);
+    void *rest = SDL_ReadProcess(process, &size, &code);
     SDL_DestroyProcess(process);
     *retCode = code;
 
-    if (PROCESS.ran == nullptr)
+    if (rest == nullptr)
     {
+        arrfree(output);
         *retError = ProcessFail("the program's output cannot be read");
         return cs(nullptr, 0);
     }
 
-    return cs(PROCESS.ran, size);
+    PROCESS.ran = SDL_malloc(arrlenu(output) + size + 1);
+
+    if (PROCESS.ran == nullptr)
+    {
+        arrfree(output);
+        SDL_free(rest);
+        *retError = ProcessFail("out of memory");
+        return cs(nullptr, 0);
+    }
+
+    if (output != nullptr)
+    {
+        SDL_memcpy(PROCESS.ran, output, arrlenu(output));
+    }
+
+    SDL_memcpy((u8 *)PROCESS.ran + arrlenu(output), rest, size);
+    usz length = arrlenu(output) + size;
+    ((u8 *)PROCESS.ran)[length] = 0;
+    arrfree(output);
+    SDL_free(rest);
+    return cs(PROCESS.ran, length);
 }
 
 static void ProcessFree(void *data)
