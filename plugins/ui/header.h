@@ -87,6 +87,7 @@ struct UiProps
     const char *dialog;          // a path's file dialog: "openFile", "saveFile" or "openFolder"
     const char *pattern;         // the extensions a path's file dialog shows, such as "ttf;otf"
     const char *results;         // a search's list that shows what matches, which Up and Down choose in while the search has the keys
+    const char *folders;         // a dropdown's separator of folders, such as ".": its choices are paths, shown a folder at a time
 };
 
 /// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
@@ -260,6 +261,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "dialog", props->dialog);
     Ui_SetString(table, "pattern", props->pattern);
     Ui_SetString(table, "results", props->results);
+    Ui_SetString(table, "folders", props->folders);
 
     const struct
     {

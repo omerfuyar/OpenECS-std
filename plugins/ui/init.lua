@@ -3334,8 +3334,15 @@ local function hueImage()
   return draw.newImage(1, PICKER.pixels, pixels)
 end
 
+-- the arrow keys' directions, down being positive, as in the surface
+local ARROWS = { Left = { -1, 0 }, Right = { 1, 0 }, Up = { 0, -1 }, Down = { 0, 1 } }
+
+-- how far an arrow key moves in a picker's square or bar, of its length
+local PICKER_STEP = 1 / 32
+
 -- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
--- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange; Return closes it
+-- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange. The arrows move
+-- saturation and value, and with Shift, Up and Down the hue and Left and Right the alpha; each goes to onChange. Return closes it
 local function openColorPicker(panel, state, node)
   -- the popup outlives the element, which the panel's next show recycles, so it keeps a copy
   node = shallowCopy(node)
@@ -3448,6 +3455,20 @@ local function openColorPicker(panel, state, node)
         panel:redraw()
       elseif event.type == "keyDown" and isEnter(event) then
         popup:close()
+      elseif event.type == "keyDown" and ARROWS[event.key] then
+        local dx, dy = ARROWS[event.key][1] * PICKER_STEP, ARROWS[event.key][2] * PICKER_STEP
+
+        if event.shift and dy ~= 0 then
+          hue = clamp(hue + dy, 0, 0.9999)
+        elseif event.shift and node.alpha then
+          alpha = math.floor(clamp(alpha / 255 + dx, 0, 1) * 255 + 0.5)
+        elseif not event.shift then
+          saturation, value = clamp(saturation + dx, 0, 1), clamp(value - dy, 0, 1)
+        end
+
+        call(node.onChange, text())
+        popup:redraw()
+        panel:redraw()
       end
     end,
     closed = function()
@@ -4805,7 +4826,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results count first onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
