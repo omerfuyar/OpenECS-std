@@ -25,14 +25,14 @@ static const SHUFlagChoice BUILD_TYPES[] = {{"Debug", NULL}, {"Release", NULL}, 
 /// @brief What the flags choose.
 static struct
 {
-    int type; // a BuildType
+    int type;                 // a BuildType
     const char *output;       // OpenECS's build folder, such as ../build/Debug/, whose include/ holds the plugin interface
     const char *dependencies; // OpenECS's built dependencies, such as ../.shu/Debug/dependencies/: SDL's and stb's headers in include/, SDL's import libraries in lib/
     const char *compiler;     // OpenECS's compiler, such as gcc, or x86_64-w64-mingw32-clang for Windows
     bool windows;             // the compiler compiles for Windows
     char *cache;              // shuild's cache, such as .shu/Debug/
     char *cmakeCache;         // the C++ libraries' builds, a folder for each compiler, as CMake keeps the compiler it configured with, such as .shu/Debug/cmake/gcc/
-    bool help;            // print the help, and build nothing
+    bool help;                // print the help, and build nothing
 } CONFIG = {BuildType_Debug, NULL, NULL, "gcc", false, NULL, NULL};
 
 /// @brief A library of dependencies/ with many C files, which the build compiles into a static archive that a plugin's library takes.
@@ -139,10 +139,13 @@ static const CMakeLibrary SPIRV_CROSS = {"SPIRV-Cross",
                                          {NULL},
                                          {"libspirv-cross-c.a", "libspirv-cross-hlsl.a", "libspirv-cross-glsl.a", "libspirv-cross-core.a", NULL}};
 
+// the folders of stb's headers and of the glue header for stb_ds, which every standard plugin includes from
+static const char *const STB_FOLDERS[] = {"stb", "other/stb"};
+
 // every standard plugin links nothing but OpenECS and the SDL libraries beside it, and on Windows the system's libraries it uses; the code of its other libraries is compiled into it
 static const PluginNeeds PLUGIN_NEEDS[] = {
-    {"image", {"stb", "nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
-    {"audio", {"dr_libs", "stb", NULL}, NULL, {NULL}, {NULL}, false},
+    {"image", {"nanosvg/src", NULL}, NULL, {NULL}, {NULL}, false},
+    {"audio", {"dr_libs", NULL}, NULL, {NULL}, {NULL}, false},
     {"net", {"SDL_net", "SDL_net/include", NULL}, MBEDTLS_FLAGS, {&MBEDTLS, NULL}, {"ws2_32", "iphlpapi", "crypt32", NULL}, false},
     {"gltf", {"cgltf", "cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
     {"cglm", {"cglm/include", NULL}, NULL, {NULL}, {NULL}, false},
@@ -566,10 +569,16 @@ static void BuildNative(const char *name, const char *root, const char *output)
         SHU_ModuleAddSourceFiles("./");
         SHU_ModuleAddIncludeDirectories(include);
 
-        // a standard plugin also reuses OpenECS's built dependencies, which no other plugin sees: SDL, and stb_ds through OpenECS's glue header stbSDL3.h
-        // (OpenECS DESIGN 1.7, 17.2), as system headers, which keeps their warnings out
+        // a standard plugin shares only SDL with OpenECS, whose headers come from its built dependencies (OpenECS DESIGN 17.2); stb_ds is its own, through
+        // this repository's glue header stbSDL3.h, which sets it to use SDL's allocator. All of them are system headers, which keeps their warnings out
         char *dependencies = SHU_UtilFormat("%s%sinclude", SHU_UtilGetScriptDirectory(), CONFIG.dependencies);
-        SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s", dependencies), SHU_UtilFormat("-isystem %s/stb", dependencies));
+        SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %s", dependencies));
+
+        for (usz i = 0; i < COUNT(STB_FOLDERS); i++)
+        {
+            SHU_CompilerAddFlags(SHU_UtilFormat("-isystem %sdependencies/%s", SHU_UtilGetScriptDirectory(), STB_FOLDERS[i]));
+            SHU_ModuleAddIncludeDirectories(SHU_UtilFormat("%sdependencies/%s", up, STB_FOLDERS[i]));
+        }
 
         // the linker takes what the plugin uses of each library, in the order they are listed
         for (usz i = 0; needs->libraries[i] != NULL; i++)
