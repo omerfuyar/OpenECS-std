@@ -334,7 +334,7 @@ function Files:delete()
   if handlers.delete then
     handlers.delete(path)
   else
-    os.remove(folder .. path)
+    fs.remove(folder .. path)
   end
   listed = {}
   self.selected = nil

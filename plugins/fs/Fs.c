@@ -1,7 +1,7 @@
 // The fs standard plugin: what Lua's io and os libraries cannot do with files and folders (DESIGN 10).
-// It lists folders, tells what a path is, makes folders, copies files and finds the user's folders, with SDL's filesystem functions.
+// It lists folders, tells what a path is, makes and removes folders, copies files and finds the user's folders, with SDL's filesystem functions.
 // It watches folders for changes with inotify on Linux and ReadDirectoryChangesW on Windows, which SDL does not offer, and elsewhere by reading the folders again and again.
-// Lua's os.rename and os.remove move and remove files and folders, so fs does not.
+// Lua's os.rename moves files and folders, so fs does not. os.remove cannot remove a folder on Windows, so fs removes.
 
 #include "OpenECS.h"
 
@@ -207,6 +207,22 @@ static bool FsMakeFolder(const char *path, const char **retError)
     return made;
 }
 
+static bool FsRemove(const char *path, const char **retError)
+{
+    char *fullPath = nullptr;
+    SDL_ClearError();
+    bool removed = ECSPath_GetFull(&fullPath, path) == SHUResult_Ok && SDL_RemovePath(fullPath);
+    *retError = nullptr;
+
+    if (!removed)
+    {
+        FsFail(retError);
+    }
+
+    ECSPath_Free(fullPath);
+    return removed;
+}
+
 static bool FsCopy(const char *source, const char *destination, const char **retError)
 {
     char *fullSource = nullptr;
@@ -380,22 +396,22 @@ static void FsTellEvent(const struct inotify_event *event)
 {
     const char *change = nullptr;
 
-    if (event->mask & (IN_CREATE | IN_MOVED_TO))
+    if (event->mask & (u32)(IN_CREATE | IN_MOVED_TO))
     {
         change = "added";
     }
-    else if (event->mask & (IN_DELETE | IN_MOVED_FROM))
+    else if (event->mask & (u32)(IN_DELETE | IN_MOVED_FROM))
     {
         change = "removed";
     }
-    else if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
+    else if (event->mask & (u32)(IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
     {
         change = "changed";
     }
 
     // inotify dropped changes of some watched folder, or the folder of a watch is gone
     bool overflow = (event->mask & IN_Q_OVERFLOW) != 0;
-    bool gone = (event->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0;
+    bool gone = (event->mask & (u32)(IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0;
 
     // the watches may change while they are told, so they are counted again each time
     for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
@@ -774,6 +790,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"makeFolder", (ECSFunction)FsMakeFolder, "bool(string path, out string error)",
          "Make a folder, and the folders above it that are missing\n"
          "@param path The folder's path; a relative path starts at the executable's folder\n"
+         "@param error Why it failed, or nothing\n"
+         "@return False if it fails"},
+        {"remove", (ECSFunction)FsRemove, "bool(string path, out string error)",
+         "Remove a file, or a folder that is empty\n"
+         "@param path The path; a relative path starts at the executable's folder\n"
          "@param error Why it failed, or nothing\n"
          "@return False if it fails"},
         {"copy", (ECSFunction)FsCopy, "bool(string from, string to, out string error)",
