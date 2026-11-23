@@ -19,8 +19,8 @@
 #define TEXTGRID_FALLBACK_BACKGROUND 0xFF18191C
 
 /// @brief The styles of a cell, as flags.
-#define TEXTGRID_BOLD 1
-#define TEXTGRID_UNDERLINE 2
+#define TEXTGRID_BOLD 1U
+#define TEXTGRID_UNDERLINE 2U
 
 /// @brief One cell of a grid: a character, its colours and its style.
 typedef struct TextGridCell
@@ -512,11 +512,18 @@ static void TextGridSetCursor(void *gridHandle, i32 column, i32 row)
     grid->cursorRow = SDL_clamp(row, 0, grid->rows - 1);
 }
 
+/// @brief Gives the column the cursor shows at: after a row is filled to its end, the cursor waits past it for the next character, which goes on
+/// the next row, and shows on the row's last column.
+static i32 TextGridShownColumn(const TextGrid *grid)
+{
+    return SDL_min(grid->cursorColumn, grid->columns - 1);
+}
+
 static void TextGridGetCursor(void *gridHandle, i32 *retColumn, i32 *retRow)
 {
     TextGrid *grid = gridHandle;
 
-    *retColumn = grid->cursorColumn;
+    *retColumn = TextGridShownColumn(grid);
     *retRow = grid->cursorRow;
 }
 
@@ -703,7 +710,7 @@ static void TextGridDraw(ECSSurface *surface, void *gridHandle, f32 x, f32 y, f3
     if (cursor)
     {
         f32 line = SDL_max(2.0f / scale, cellHeight / 8.0f);
-        TEXTGRID.Fill(surface, x + (f32)grid->cursorColumn * cellWidth, y + (f32)(grid->cursorRow + 1) * cellHeight - line, cellWidth, line, grid->foreground);
+        TEXTGRID.Fill(surface, x + (f32)TextGridShownColumn(grid) * cellWidth, y + (f32)(grid->cursorRow + 1) * cellHeight - line, cellWidth, line, grid->foreground);
     }
 }
 
