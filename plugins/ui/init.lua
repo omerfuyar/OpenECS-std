@@ -1123,9 +1123,47 @@ for name in ("id style width height grow stretch padding gap align background ho
   PROPS[name] = true
 end
 
+-- the tables of elements that a panel's next show left behind, cleared, which new elements are made from, as an arena is reused each
+-- frame: so each draw makes little garbage. An element lives until its panel's next show, which recycles it
+local spare = { nodes = {}, layouts = {}, lists = {} }
+
+-- the last of a list of cleared tables, taken from it, or nil
+function spare.take(list)
+  local count = #list
+  local taken = list[count]
+
+  if taken then
+    list[count] = nil
+  end
+
+  return taken
+end
+
+-- clears an element of a show before the last, with its children and its layout, and keeps their tables for new elements
+function spare.recycle(node)
+  local children, layout = node.children, node.layout
+
+  if children then
+    for i = 1, #children do
+      spare.recycle(children[i])
+    end
+
+    clearTable(children)
+    spare.lists[#spare.lists + 1] = children
+  end
+
+  if layout then
+    clearTable(layout)
+    spare.layouts[#spare.layouts + 1] = layout
+  end
+
+  clearTable(node)
+  spare.nodes[#spare.nodes + 1] = node
+end
+
 -- an element is a copy of its props, so the plugin's table stays as it gave it; room for the fields that ui adds is made at once
 local function element(elementType, props, children)
-  local node = newTable(0, 12)
+  local node = spare.take(spare.nodes) or newTable(0, 12)
 
   for name, value in pairs(props or node) do
     if not PROPS[name] then
@@ -1162,7 +1200,7 @@ local function element(elementType, props, children)
   -- a child that is false is left out, so a list of children may hold `shown and ui.text(...)`; each child keeps its place in the list for its id,
   -- so the children after one that is left out keep theirs
   if children then
-    node.children = {}
+    node.children = spare.take(spare.lists) or {}
 
     for place = 1, #children do
       local child = children[place]
@@ -1590,8 +1628,11 @@ local function choiceElement(elementType, selected, choices, props)
   node.choices = choices or {}
   node.value, node.selected, node.onSelect = node.choices[selected], nil, nil
 
+  -- a dropdown's popup calls it after the panel's next show recycled the element, so it keeps the choices, not the element
+  local kept = node.choices
+
   node.onChange = onSelect and function(choice)
-    for i, each in ipairs(node.choices) do
+    for i, each in ipairs(kept) do
       if each == choice then
         onSelect(i)
         return
@@ -1992,7 +2033,7 @@ function measure(node, state, room)
   local font = fontOf(node)
   local line = lineHeight(font, textSize)
   local boxed = line + 2 * size.paddingY
-  local layout = {}
+  local layout = spare.take(spare.layouts) or {}
   local width, height
   node.layout = layout
 
@@ -2800,6 +2841,10 @@ end
 -- click, Return or Right opens in place, and a first row that goes back to the folder above, as Left and Backspace do; a search
 -- looks in every folder, and shows the whole paths
 local function openDropdown(panel, state, node)
+  -- the popup outlives the element, which the panel's next show recycles, so it keeps a copy
+  node = shallowCopy(node)
+  node.layout = shallowCopy(node.layout)
+
   local all = node.choices
 
   if #all == 0 then
@@ -3292,6 +3337,10 @@ end
 -- opens a colour element's picker in a popup below it: a square of saturation and value, a hue bar beside it, and an alpha bar below it with
 -- alpha = true; a press and a drag change the colour, which the popup shows, and the colour a press ends on goes to onChange; Return closes it
 local function openColorPicker(panel, state, node)
+  -- the popup outlives the element, which the panel's next show recycles, so it keeps a copy
+  node = shallowCopy(node)
+  node.layout = shallowCopy(node.layout)
+
   local red, green, blue, alpha = readColor(node.value)
   red, green, blue, alpha = red or 0, green or 0, blue or 0, alpha or 255
   local hue, saturation, value = rgbToHsv(red / 255, green / 255, blue / 255)
@@ -4401,7 +4450,13 @@ local services = {}
 -- ids that elements leave out come from their places, so they stay the same from one draw to the next
 
 -- gives each element without an id one from its place in the tree. An id that two elements have is a misuse: clicks and keys would reach only the first.
+-- an element is shown once: one that a show had already, or that a show recycled, is a misuse
 local function assignIds(node, path, seen)
+  if node.shown or node.type == nil then
+    ecs.check(false, "An element is shown once, and lives until its panel's next show: a panel makes its elements again at each draw, and keeps none.")
+  end
+
+  node.shown = true
   local id = node.id or path
   node.id = id
 
@@ -4494,6 +4549,7 @@ function services.show(panel, surface, root)
   -- the element under the pointer and the pressed element are found again in the new layout
   state.hover = state.hover and state.pointerX and find(root, state.pointerX, state.pointerY, interactive) or nil
   state.pressed = state.pressed and findById(root, state.pressed.id) or nil
+  local previous = state.root
   state.root = root
 
   -- an element that ui.edit named before it was shown gets the keys now, or never
@@ -4559,6 +4615,11 @@ function services.show(panel, surface, root)
   if edited and edited.type == "field" then
     local rect, scale = cursorRect(edited, state), surface.scale
     panel:setTextInput(true, rect.x * scale, rect.y * scale, rect.width * scale, rect.height * scale)
+  end
+
+  -- the elements of the show before are no one's now, so new elements are made from their tables
+  if previous then
+    spare.recycle(previous)
   end
 end
 
