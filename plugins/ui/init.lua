@@ -1391,8 +1391,6 @@ function elements.tree(nodes, props)
             props.onToggle(item.id, not shown)
           end
         end }, { element("disclosure", { open = shown }) })
-        -- Tab passes over it, as Left and Right close and open the chosen node
-        arrow.untabbed = true
       end
 
       local cells = {
@@ -2690,7 +2688,10 @@ function paint(node, surface, state)
     end
   elseif state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
     draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
-  elseif state.showRing and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
+  elseif state.showRing and state.keyPart == node.id then
+    -- inside the part, as the list's edge would cut a ring around one at the end of a row
+    draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
+  elseif state.showRing and not state.keyPart and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
     draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
   end
 
@@ -3770,11 +3771,15 @@ local function handleTyping(panel, state, event)
   return editField(panel, state, node, event)
 end
 
--- the elements that Tab goes through, in the order of the tree: the interactive ones, each list once, in place of its items, and each scroll
--- element with more than it shows, which the keys scroll
+-- the elements that Tab goes through, in the order of the tree: the interactive ones, each list once, in place of its items and what is in
+-- them, which Left and Right reach, and each scroll element with more than it shows, which the keys scroll
 local function tabOrder(node, list)
-  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node) and not node.untabbed) then
+  if isList(node) or scrollable(node) or (interactive(node) and not isListItem(node)) then
     list[#list + 1] = node
+  end
+
+  if isListItem(node) then
+    return list
   end
 
   for _, child in ipairs(node.children or {}) do
@@ -3820,16 +3825,6 @@ local function moveKeyTarget(panel, state, back)
     index = node.id == state.keyTarget and i or index
   end
 
-  -- a text's links are stops of their own: Tab goes through them before it leaves the text
-  local links = list[index] and list[index].type == "text" and #linkSpans(list[index]) or 0
-  local link = (state.keyLink or 1) + (back and -1 or 1)
-
-  if state.showRing and link >= 1 and link <= links then
-    state.keyLink = link
-    panel:redraw()
-    return true
-  end
-
   if back then
     index = index <= 1 and #list or index - 1
   else
@@ -3839,7 +3834,7 @@ local function moveKeyTarget(panel, state, back)
   local node = list[index]
   stopEditing(panel, state)
   state.keyTarget, state.showRing = node.id, true
-  state.keyLink = (back and node.type == "text") and math.max(#linkSpans(node), 1) or 1
+  state.keyLink, state.keyColumn = 1, 0
 
   if TAKES_TYPING[node.type] then
     startEditing(panel, state, node)
@@ -3894,23 +3889,26 @@ function moveSelection(state, list, step)
   revealItem(state, list, index)
 end
 
--- opens or closes a tree's chosen node; opening an open node chooses its first child, and closing a node that is closed, or has no children, chooses its parent
-local function expandTreeNode(state, list, open)
-  local tree, index = list.tree, list.selected
+-- the parts of a list's chosen item that Left and Right go through: the interactive elements in it, in the order of the tree, such as a tree
+-- node's arrow and marks
+local function rowParts(list, parts)
+  local function collect(node)
+    for _, child in ipairs(node.children or {}) do
+      if interactive(child) then
+        parts[#parts + 1] = child
+      end
 
-  if not index or not tree.ids[index] then
-    return
+      collect(child)
+    end
   end
 
-  local folder = tree.folders[index]
+  local item = list.selected and list.items[list.selected]
 
-  if folder and (folder == "open") ~= open then
-    call(tree.onToggle, tree.ids[index], open)
-  elseif open and folder == "open" and tree.parents[index + 1] == index then
-    moveSelection(state, list, 1)
-  elseif not open and tree.parents[index] then
-    moveSelection(state, list, tree.parents[index] - index)
+  if item then
+    collect(item)
   end
+
+  return parts
 end
 
 -- the list that Up, Down and Return act on: the one that has the keys or holds the element that has them
@@ -3965,8 +3963,9 @@ local function scrollWithKey(state, node, key)
   return true
 end
 
--- handles a key press when no field is edited: Tab moves the keys, Return or Space activates the element that has them, Left and Right change a
--- selector or a slider, and open and close a tree's node, Up and Down choose a list's item, Return activates it, and Escape takes the keys away
+-- handles a key press when no field is edited: Tab moves the keys, Return or Space presses the element that has them, Left and Right change a
+-- selector or a slider, and go through a text's links, Escape takes the keys away. In a list, Up and Down choose an item, Left and Right go
+-- through the parts of the chosen one, Space presses the part, and Return activates the item
 local function handleKeyDown(panel, state, event)
   if event.key == "Tab" then
     return moveKeyTarget(panel, state, event.shift)
@@ -3976,9 +3975,22 @@ local function handleKeyDown(panel, state, event)
   local list = keyList(state)
   local enter = isEnter(event) or event.key == "Space"
   local leftOrRight = event.key == "Left" or event.key == "Right"
+  local links = node and node.type == "text" and #linkSpans(node) or 0
+  local parts = list and node == list and rowParts(list, {})
+  local column = parts and math.min(state.keyColumn or 0, #parts)
 
   if event.key == "Escape" and node then
     state.keyTarget, state.showRing = nil, false
+  elseif parts and leftOrRight and #parts > 0 then
+    state.keyColumn, state.showRing = clamp(column + (event.key == "Right" and 1 or -1), 0, #parts), true
+  elseif parts and event.key == "Space" then
+    if column == 0 then
+      return false
+    end
+
+    activate(panel, state, parts[column], nil)
+  elseif links > 1 and leftOrRight then
+    state.keyLink = clamp((state.keyLink or 1) + (event.key == "Right" and 1 or -1), 1, links)
   elseif node and node.type == "selector" and leftOrRight then
     nudgeSelector(node, event.key == "Right")
   elseif node and node.type == "slider" and leftOrRight then
@@ -3987,8 +3999,6 @@ local function handleKeyDown(panel, state, event)
     activate(panel, state, node, node.type ~= "text" and node.layout.x or nil)
   elseif list and (event.key == "Up" or event.key == "Down") then
     moveSelection(state, list, event.key == "Up" and -1 or 1)
-  elseif list and list.tree and leftOrRight then
-    expandTreeNode(state, list, event.key == "Right")
   elseif not (list and isEnter(event) and activateItem(list)) and not scrollWithKey(state, node, event.key) then
     return false
   end
@@ -4347,7 +4357,7 @@ local function handlePointerDown(panel, state, event, x, y)
   -- the pressed element gets the keys, without a ring, so Tab goes on from it; a press on an item gives the keys to its list
   local target = (node and not isListItem(node)) and node or item and item.list or node or scroll
   state.pressed = node
-  state.keyTarget, state.showRing = target and target.id, false
+  state.keyTarget, state.showRing, state.keyColumn = target and target.id, false, 0
 
   if node and node.isNumber and state.editing ~= node.id then
     -- a press on a number that is not typed in waits: a drag sideways changes the number, and a release without one types in it
@@ -4682,6 +4692,13 @@ function services.show(panel, surface, root)
   local previous = state.root
   state.root = root
 
+  -- the part of the chosen item that Left and Right reached in the list that has the keys, which shows the ring; the column is kept as the
+  -- choice moves, and an item with fewer parts shows it on its last
+  local keyed = (state.keyColumn or 0) > 0 and keyList(state)
+  local parts = keyed and keyed.id == state.keyTarget and rowParts(keyed, {})
+  local part = parts and parts[math.min(state.keyColumn, #parts)]
+  state.keyPart = part and part.id
+
   -- an element that ui.edit named before it was shown gets the keys now, or never
   if state.editAtShow then
     local id = state.editAtShow
@@ -4828,12 +4845,12 @@ function services.edit(panel, id)
   -- the keyboard's target follows, without its ring, as after a click
   if node and TAKES_TYPING[node.type] then
     textScale = state.scale
-    state.keyTarget, state.showRing = node.id, false
+    state.keyTarget, state.showRing, state.keyColumn = node.id, false, 0
     startEditing(panel, state, node)
     panel:redraw()
   elseif node and isList(node) then
     stopEditing(panel, state)
-    state.keyTarget, state.showRing = node.id, false
+    state.keyTarget, state.showRing, state.keyColumn = node.id, false, 0
     panel:redraw()
   end
 end
