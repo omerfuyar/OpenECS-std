@@ -52,10 +52,39 @@ static OPENECS_PRINTF(1, 2) const char *CompressFail(const char *format, ...)
     return error;
 }
 
-/// @brief Makes a value a buffer of the bytes of an stb_ds array, or an empty string if it has none.
-static bool CompressSetBytes(ECSValue *retValue, const u8 *bytes, const char **retError)
+/// @brief Bytes whose size the data gives, which grow with SDL's allocator, as stb_ds would stop the program when memory runs out (DESIGN 1.3).
+typedef struct CompressBytes
 {
-    SHUResult result = arrlenu(bytes) == 0 ? ECSValue_SetString(retValue, "") : ECSValue_SetBuffer(retValue, (SHUSliceView){bytes, arrlenu(bytes)});
+    u8 *data;
+    usz size;
+    usz capacity;
+} CompressBytes;
+
+/// @brief Makes room for at least a number of bytes.
+/// @return false when memory runs out.
+static bool CompressReserve(CompressBytes *bytes, usz capacity)
+{
+    if (capacity <= bytes->capacity)
+    {
+        return true;
+    }
+
+    u8 *grown = SDL_realloc(bytes->data, capacity);
+
+    if (grown == nullptr)
+    {
+        return false;
+    }
+
+    bytes->data = grown;
+    bytes->capacity = capacity;
+    return true;
+}
+
+/// @brief Makes a value a buffer of bytes, or an empty string if there are none.
+static bool CompressSetBytes(ECSValue *retValue, const u8 *bytes, usz size, const char **retError)
+{
+    SHUResult result = size == 0 ? ECSValue_SetString(retValue, "") : ECSValue_SetBuffer(retValue, (SHUSliceView){bytes, size});
 
     if (result != SHUResult_Ok)
     {
@@ -167,7 +196,7 @@ static bool CompressPackZlib(SHUSlice data, CompressFormat format, int level, u8
     return true;
 }
 
-static bool CompressUnpackZlib(SHUSlice data, CompressFormat format, u8 **retData, const char **retError)
+static bool CompressUnpackZlib(SHUSlice data, CompressFormat format, CompressBytes *retData, const char **retError)
 {
     z_stream stream = {.zalloc = CompressZlibAlloc, .zfree = CompressZlibFree};
 
@@ -185,15 +214,17 @@ static bool CompressUnpackZlib(SHUSlice data, CompressFormat format, u8 **retDat
     // the unpacked size is not known, so the buffer grows until the stream ends
     while (status == Z_OK || status == Z_BUF_ERROR)
     {
-        if (used == arrlenu(*retData))
+        if (used == retData->capacity && !CompressReserve(retData, used + SDL_max(used, COMPRESS_GROWTH)))
         {
-            arrsetlen(*retData, used + SDL_max(used, COMPRESS_GROWTH));
+            status = Z_MEM_ERROR;
+            stream.msg = nullptr;
+            break;
         }
 
-        stream.next_out = *retData + used;
-        stream.avail_out = (uInt)SDL_min(arrlenu(*retData) - used, UINT_MAX);
+        stream.next_out = retData->data + used;
+        stream.avail_out = (uInt)SDL_min(retData->capacity - used, UINT_MAX);
         status = inflate(&stream, Z_NO_FLUSH);
-        used = (usz)(stream.next_out - *retData);
+        used = (usz)(stream.next_out - retData->data);
 
         // all the data was read, and there is room, yet the stream goes on
         if (status != Z_STREAM_END && stream.avail_in == 0 && stream.avail_out > 0)
@@ -203,7 +234,7 @@ static bool CompressUnpackZlib(SHUSlice data, CompressFormat format, u8 **retDat
         }
     }
 
-    arrsetlen(*retData, used);
+    retData->size = used;
     inflateEnd(&stream);
 
     if (status != Z_STREAM_END)
@@ -263,7 +294,7 @@ static bool CompressPackZstd(SHUSlice data, int level, u8 **retPacked, const cha
     return true;
 }
 
-static bool CompressUnpackZstd(SHUSlice data, u8 **retData, const char **retError)
+static bool CompressUnpackZstd(SHUSlice data, CompressBytes *retData, const char **retError)
 {
     ZSTD_DCtx *context = ZSTD_createDCtx_advanced(COMPRESS_ZSTD_MEMORY);
 
@@ -276,22 +307,30 @@ static bool CompressUnpackZstd(SHUSlice data, u8 **retData, const char **retErro
     ZSTD_inBuffer input = {data.data, data.size, 0};
     usz used = 0;
     size_t status = 0;
+    bool room = true;
 
     // each frame ends with status 0; the data may hold many frames, and the buffer grows until all are read
     do
     {
-        if (used == arrlenu(*retData))
+        if (used == retData->capacity && !CompressReserve(retData, used + SDL_max(used, COMPRESS_GROWTH)))
         {
-            arrsetlen(*retData, used + SDL_max(used, COMPRESS_GROWTH));
+            room = false;
+            break;
         }
 
-        ZSTD_outBuffer output = {*retData, arrlenu(*retData), used};
+        ZSTD_outBuffer output = {retData->data, retData->capacity, used};
         status = ZSTD_decompressStream(context, &output, &input);
         used = output.pos;
-    } while (!ZSTD_isError(status) && (input.pos < input.size || (status != 0 && used == arrlenu(*retData))));
+    } while (!ZSTD_isError(status) && (input.pos < input.size || (status != 0 && used == retData->capacity)));
 
-    arrsetlen(*retData, used);
+    retData->size = used;
     ZSTD_freeDCtx(context);
+
+    if (!room)
+    {
+        *retError = CompressFail("out of memory");
+        return false;
+    }
 
     if (ZSTD_isError(status) || status != 0)
     {
@@ -322,7 +361,7 @@ static void CompressPack(const char *format, SHUSlice data, int level, ECSValue 
 
     if (done)
     {
-        CompressSetBytes(retPacked, packed, retError);
+        CompressSetBytes(retPacked, packed, arrlenu(packed), retError);
     }
 
     arrfree(packed);
@@ -339,15 +378,15 @@ static void CompressUnpack(const char *format, SHUSlice data, ECSValue *retData,
         return;
     }
 
-    u8 *unpacked = nullptr;
+    CompressBytes unpacked = {0};
     bool done = chosen == CompressFormat_Zstd ? CompressUnpackZstd(data, &unpacked, retError) : CompressUnpackZlib(data, chosen, &unpacked, retError);
 
     if (done)
     {
-        CompressSetBytes(retData, unpacked, retError);
+        CompressSetBytes(retData, unpacked.data, unpacked.size, retError);
     }
 
-    arrfree(unpacked);
+    SDL_free(unpacked.data);
 }
 
 /// @brief Defines a format's pack and unpack functions, which Lua finds in the format's namespace, such as compress.gzip.pack.
@@ -448,24 +487,25 @@ static char *CompressGetEntryName(unzFile archive, unz_file_info64 *retInfo)
 }
 
 /// @brief Reads the archive's current entry, unpacked, and checks it against its checksum.
-static bool CompressReadEntry(unzFile archive, const unz_file_info64 *info, u8 **retData)
+/// @return false when it cannot be read, or memory for the size the archive gives runs out.
+static bool CompressReadEntry(unzFile archive, const unz_file_info64 *info, CompressBytes *retData)
 {
-    if (info->uncompressed_size > SIZE_MAX || unzOpenCurrentFile(archive) != UNZ_OK)
+    if (info->uncompressed_size > SIZE_MAX || !CompressReserve(retData, (usz)info->uncompressed_size) || unzOpenCurrentFile(archive) != UNZ_OK)
     {
         return false;
     }
 
-    arrsetlen(*retData, (usz)info->uncompressed_size);
+    retData->size = (usz)info->uncompressed_size;
     usz used = 0;
     int read = 1;
 
-    while (read > 0 && used < arrlenu(*retData))
+    while (read > 0 && used < retData->size)
     {
-        read = unzReadCurrentFile(archive, *retData + used, (unsigned)SDL_min(arrlenu(*retData) - used, COMPRESS_ZIP_CHUNK));
+        read = unzReadCurrentFile(archive, retData->data + used, (unsigned)SDL_min(retData->size - used, COMPRESS_ZIP_CHUNK));
         used += read > 0 ? (usz)read : 0;
     }
 
-    return unzCloseCurrentFile(archive) == UNZ_OK && read >= 0 && used == arrlenu(*retData);
+    return unzCloseCurrentFile(archive) == UNZ_OK && read >= 0 && used == retData->size;
 }
 
 /// @brief Opens an archive to read.
@@ -557,7 +597,7 @@ static void CompressZipRead(const char *path, const char *name, ECSValue *retDat
     }
 
     unz_file_info64 info = {0};
-    u8 *data = nullptr;
+    CompressBytes data = {0};
 
     if (unzLocateFile(archive, name, 1) != UNZ_OK)
     {
@@ -569,10 +609,10 @@ static void CompressZipRead(const char *path, const char *name, ECSValue *retDat
     }
     else
     {
-        CompressSetBytes(retData, data, retError);
+        CompressSetBytes(retData, data.data, data.size, retError);
     }
 
-    arrfree(data);
+    SDL_free(data.data);
     unzClose(archive);
 }
 
@@ -603,7 +643,7 @@ static bool CompressExtractEntry(unzFile archive, const char *folder, const char
     unz_file_info64 info = {0};
     char *name = CompressGetEntryName(archive, &info);
     char *target = nullptr;
-    u8 *data = nullptr;
+    CompressBytes data = {0};
     bool extracted = false;
 
     if (name == nullptr || !CompressIsInside(name))
@@ -623,7 +663,7 @@ static bool CompressExtractEntry(unzFile archive, const char *folder, const char
         // the folders above the file come first
         const char *separator = SDL_strrchr(target, '/');
         char *parent = SDL_strndup(target, (usz)(separator - target));
-        extracted = parent != nullptr && SDL_CreateDirectory(parent) && CompressReadEntry(archive, &info, &data) && SDL_SaveFile(target, data, arrlenu(data));
+        extracted = parent != nullptr && SDL_CreateDirectory(parent) && CompressReadEntry(archive, &info, &data) && SDL_SaveFile(target, data.data, data.size);
         SDL_free(parent);
     }
 
@@ -632,7 +672,7 @@ static bool CompressExtractEntry(unzFile archive, const char *folder, const char
         *retError = CompressFail("'%s' cannot be extracted to '%s'", name, target);
     }
 
-    arrfree(data);
+    SDL_free(data.data);
     SDL_free(target);
     SDL_free(name);
     return extracted;
@@ -896,7 +936,7 @@ static void CompressTarPack(const ECSValue *files, ECSValue *retArchive, const c
         usz offset = arrlenu(archive);
         arrsetlen(archive, offset + COMPRESS_TAR_BLOCK * 2);
         SDL_memset(archive + offset, 0, COMPRESS_TAR_BLOCK * 2);
-        CompressSetBytes(retArchive, archive, retError);
+        CompressSetBytes(retArchive, archive, arrlenu(archive), retError);
     }
 
     arrfree(archive);
