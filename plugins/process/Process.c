@@ -5,6 +5,11 @@
 
 #include "SDL3/SDL.h"
 
+#if defined(SDL_PLATFORM_WINDOWS)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #define STB_DS_IMPLEMENTATION
 #include "stbSDL3.h"
 
@@ -128,13 +133,43 @@ static void ProcessCloseStream(SDL_Process *process)
     }
 }
 
+#if defined(SDL_PLATFORM_WINDOWS)
+/// @brief How much one write gives a Windows pipe: a pipe that does not wait takes nothing of a write larger than its free room.
+#define PROCESS_PIPE_CHUNK 512
+#endif
+
 /// @brief Writes into a program's input what its pipe takes now, without waiting, as SDL's stream writes only that.
 /// @return The bytes written; fewer than given when the pipe is full, or when it broke, which retBroken tells.
 static usz ProcessSend(SDL_IOStream *input, const u8 *data, usz size, bool *retBroken)
 {
+#if defined(SDL_PLATFORM_WINDOWS)
+    // the pipe's handle takes small writes itself: SDL's stream keeps a small write in its buffer, which it drops when a full pipe takes none of it
+    HANDLE pipe = SDL_GetPointerProperty(SDL_GetIOProperties(input), SDL_PROP_IOSTREAM_WINDOWS_HANDLE_POINTER, nullptr);
+    usz sent = 0;
+    *retBroken = pipe == nullptr;
+
+    while (!*retBroken && sent < size)
+    {
+        DWORD written = 0;
+
+        if (!WriteFile(pipe, data + sent, (DWORD)SDL_min(size - sent, PROCESS_PIPE_CHUNK), &written, nullptr))
+        {
+            *retBroken = true;
+        }
+        else if (written == 0)
+        {
+            break;
+        }
+
+        sent += written;
+    }
+
+    return sent;
+#else
     usz written = SDL_WriteIO(input, data, size);
     *retBroken = written < size && SDL_GetIOStatus(input) == SDL_IO_STATUS_ERROR;
     return written;
+#endif
 }
 
 /// @brief Sends the bytes that write kept, as far as the pipe takes them, and closes the input once they are sent if closeInput asked for it.
