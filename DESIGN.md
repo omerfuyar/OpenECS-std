@@ -425,6 +425,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - **.env:** `KEY=value` lines, which may start with `export`, give a table of texts. A value in double quotes may span lines and has the escapes `\n`, `\r`, `\t`, `\\`, `\"` and `\$`; one in single quotes is taken as it is; a value without quotes ends at a `#` after a blank. Values are taken as written, without expanding `${...}`. A value with a blank or a character that a shell reads otherwise is written in double quotes.
 - **CSV:** a list of rows, each a list of texts, as RFC 4180 says: a field in double quotes holds separators, line breaks and doubled quotes. Rows end with `\n` or `\r\n`. Numbers and booleans are written as texts.
 - A text that holds a zero byte is read as a buffer, a string in Lua.
+- Lists and tables nest at most 512 deep, in what is read and what is written: deeper data fails, so the plugin's recursion cannot overflow the stack.
 - The plugin gives yyjson and tomlc17 SDL's allocator.
 
 ## 18. compress

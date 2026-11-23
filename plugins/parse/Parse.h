@@ -7,6 +7,9 @@
 
 #pragma region Declarations
 
+/// @brief How deep lists and tables may nest in what parse reads and writes; deeper data fails, so the plugin's recursion cannot overflow the stack.
+#define PARSE_MAX_DEPTH 512
+
 /// @brief Keeps why a call fails, until the next call, and gives it.
 OPENECS_PRINTF(1, 2)
 const char *ParseFail(const char *format, ...);
