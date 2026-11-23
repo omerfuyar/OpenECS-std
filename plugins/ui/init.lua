@@ -2069,13 +2069,23 @@ end
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
 -- room is the width a column gives its children, which text that wraps breaks at; nil in a row
 function measure(node, state, room)
+  local layout = node.layout
+
+  -- a row measures a child again at its width; measured at the same room, the child keeps what it measured, and its subtree is not measured again
+  if layout and layout.measured and layout.room == room then
+    return layout.naturalWidth, layout.naturalHeight
+  elseif layout then
+    clearTable(layout)
+  else
+    layout = spare.take(spare.layouts) or {}
+    node.layout = layout
+  end
+
   local textSize = node.size or fontSize()
   local font = fontOf(node)
   local line = lineHeight(font, textSize)
   local boxed = line + 2 * size.paddingY
-  local layout = spare.take(spare.layouts) or {}
   local width, height
-  node.layout = layout
 
   if node.type == "text" and node.spans then
     layout.spanLines = layoutSpans(node, textSize, node.wrap and (node.width or room) or nil)
@@ -2188,6 +2198,7 @@ function measure(node, state, room)
 
   layout.naturalWidth = node.width or width
   layout.naturalHeight = node.height or height
+  layout.measured, layout.room = true, room
   return layout.naturalWidth, layout.naturalHeight
 end
 
