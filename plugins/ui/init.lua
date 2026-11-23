@@ -397,37 +397,102 @@ local function grow(call, left, top, right, bottom)
   return left, top, right, bottom
 end
 
--- the rectangle around the calls that differ between two shows, { left, top, right, bottom }; nil when none differs, and false when
--- some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that changed
--- covers every pixel it changed, old or new, so the pixels outside the rectangle are drawn by the same calls in the same order
-local function changedArea(old, oldCount, new, newCount)
-  local first, most = 1, math.min(oldCount, newCount)
+local changedAreas
 
-  while first <= most and sameCall(old[first], new[first]) do
-    first += 1
+do
+  -- room between two changed rectangles, in layout units, under which they are drawn again as one; and the most rectangles a show draws
+  local AREA_NEAR, AREA_MOST = 16, 4
+
+  -- adds a rectangle to a list of rectangles to draw again: it joins one it is near, and the joined one is checked again; past
+  -- AREA_MOST rectangles, it joins the one whose rectangle around both grows the least
+  local function addArea(areas, left, top, right, bottom)
+    if right <= left or bottom <= top then
+      return
+    end
+
+    local i = 1
+
+    while i <= #areas do
+      local area = areas[i]
+
+      if left - AREA_NEAR < area[3] and right + AREA_NEAR > area[1] and top - AREA_NEAR < area[4] and bottom + AREA_NEAR > area[2] then
+        left, top, right, bottom = math.min(left, area[1]), math.min(top, area[2]), math.max(right, area[3]), math.max(bottom, area[4])
+        table.remove(areas, i)
+        i = 1
+      else
+        i += 1
+      end
+    end
+
+    if #areas < AREA_MOST then
+      areas[#areas + 1] = { left, top, right, bottom }
+      return
+    end
+
+    local best, growth = 1, math.huge
+
+    for k, area in ipairs(areas) do
+      local width = math.max(right, area[3]) - math.min(left, area[1])
+      local height = math.max(bottom, area[4]) - math.min(top, area[2])
+      local grown = width * height - (area[3] - area[1]) * (area[4] - area[2])
+
+      if grown < growth then
+        best, growth = k, grown
+      end
+    end
+
+    local area = table.remove(areas, best)
+    addArea(areas, math.min(left, area[1]), math.min(top, area[2]), math.max(right, area[3]), math.max(bottom, area[4]))
   end
 
-  if first > oldCount and first > newCount then
-    return nil
+  -- the rectangles around the calls that differ between two shows, a list of { left, top, right, bottom }; nil when none differs, and
+  -- false when some differ but change no pixel. The calls the shows start and end with alike are left out: a call between them that
+  -- changed covers every pixel it changed, old or new, so the pixels outside the rectangles are drawn by the same calls in the same order.
+  -- When as many calls are left in both, the calls are compared in pairs and only the pairs that differ are bounded; otherwise one
+  -- rectangle bounds all that are left
+  function changedAreas(old, oldCount, new, newCount)
+    local first, most = 1, math.min(oldCount, newCount)
+
+    while first <= most and sameCall(old[first], new[first]) do
+      first += 1
+    end
+
+    if first > oldCount and first > newCount then
+      return nil
+    end
+
+    local lastOld, lastNew = oldCount, newCount
+
+    while lastOld >= first and lastNew >= first and sameCall(old[lastOld], new[lastNew]) do
+      lastOld, lastNew = lastOld - 1, lastNew - 1
+    end
+
+    local areas = {}
+
+    if lastOld == lastNew then
+      for i = first, lastOld do
+        if not sameCall(old[i], new[i]) then
+          local left, top, right, bottom = grow(old[i], math.huge, math.huge, -math.huge, -math.huge)
+          addArea(areas, grow(new[i], left, top, right, bottom))
+        end
+      end
+
+      return #areas > 0 and areas
+    end
+
+    local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+
+    for i = first, lastOld do
+      left, top, right, bottom = grow(old[i], left, top, right, bottom)
+    end
+
+    for i = first, lastNew do
+      left, top, right, bottom = grow(new[i], left, top, right, bottom)
+    end
+
+    addArea(areas, left, top, right, bottom)
+    return #areas > 0 and areas
   end
-
-  local lastOld, lastNew = oldCount, newCount
-
-  while lastOld >= first and lastNew >= first and sameCall(old[lastOld], new[lastNew]) do
-    lastOld, lastNew = lastOld - 1, lastNew - 1
-  end
-
-  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
-
-  for i = first, lastOld do
-    left, top, right, bottom = grow(old[i], left, top, right, bottom)
-  end
-
-  for i = first, lastNew do
-    left, top, right, bottom = grow(new[i], left, top, right, bottom)
-  end
-
-  return left < right and { left, top, right, bottom } or false
 end
 
 -- a scroll whose offset alone changed moves its pixels, and only what they do not show is drawn again: the strip that comes into view,
@@ -4706,7 +4771,7 @@ function services.show(panel, surface, root)
     state.editAtShow = nil
   end
 
-  -- the show is recorded, then drawn: all of it on a new surface, else only the rectangle around what changed since the last show
+  -- the show is recorded, then drawn: all of it on a new surface, else only the rectangles around what changed since the last show
   local last, lastCount, lastClips = state.calls, state.callCount, state.clips
   recording, recorded, recordClip = state.spare or {}, 0, nil
   inside.clips, inside.clipped, inside.stack.top = state.spareClips or {}, 0, 0
@@ -4726,7 +4791,7 @@ function services.show(panel, surface, root)
   -- a scroll element that only scrolled moves its pixels, and the rest of the surface is compared as usual
   local moved, shift, box = movedScroll(state.shownScrolls, state.scrolls, surface.scale)
   local rects = surface.kept and last and moved and movedAreas(last, lastCount, calls, count, moved, shift, box)
-  local area = surface.kept and last and not rects and changedArea(last, lastCount, calls, count)
+  local areas = surface.kept and last and not rects and changedAreas(last, lastCount, calls, count)
 
   if not surface.kept or not last then
     replay(surface, calls, count, nil)
@@ -4740,9 +4805,11 @@ function services.show(panel, surface, root)
     end
 
     reportChanged(surface, left, top, right, bottom)
-  elseif area then
-    replay(surface, calls, count, area)
-    reportChanged(surface, area[1], area[2], area[3], area[4])
+  elseif areas then
+    for _, area in ipairs(areas) do
+      replay(surface, calls, count, area)
+      reportChanged(surface, area[1], area[2], area[3], area[4])
+    end
   else
     surface:changed(0, 0, 0, 0)
   end
