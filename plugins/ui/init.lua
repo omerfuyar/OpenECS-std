@@ -187,6 +187,7 @@ local drawn = draw -- the draw plugin's functions; draw below records calls whil
 local recording -- the calls of the show that records them, or nil; its tables are reused from the show before the last
 local recorded = 0 -- how many calls the show has recorded
 local recordClip -- the clip of the calls now, { left, top, right, bottom, key = text }, or nil
+local recordScroll -- the scroll element whose children the calls now draw, { id, outer }, or nil
 
 -- room around a call's rectangle, in layout units, for smooth edges and slanted letters
 local CALL_EDGE = 2
@@ -207,7 +208,7 @@ local function record(name, left, top, right, bottom)
     recording[recorded] = call
   end
 
-  call.name, call.clip, call.key = name, clip, nil
+  call.name, call.clip, call.key, call.scroll = name, clip, nil, recordScroll
   call.left, call.top, call.right, call.bottom = left - CALL_EDGE, top - CALL_EDGE, right + CALL_EDGE, bottom + CALL_EDGE
   return call
 end
@@ -292,7 +293,19 @@ function draw.clip(surface, x, y, width, height, body)
   end
 
   local outer = recordClip
-  local clip = { x, y, x + width, y + height, key = string.format("%g,%g,%g,%g", x, y, width, height) }
+  local clip = {
+    x,
+    y,
+    x + width,
+    y + height,
+    key = string.format("%g,%g,%g,%g", x, y, width, height),
+    x = x,
+    y = y,
+    width = width,
+    height = height,
+    outer = outer,
+    scroll = recordScroll,
+  }
 
   if outer then
     clip[1], clip[2], clip[3], clip[4] = math.max(clip[1], outer[1]), math.max(clip[2], outer[2]), math.min(clip[3], outer[3]), math.min(clip[4], outer[4])
@@ -377,6 +390,290 @@ local function changedArea(old, oldCount, new, newCount)
   return left < right and { left, top, right, bottom } or false
 end
 
+-- a scroll whose offset alone changed moves its pixels, and only what they do not show is drawn again: the strip that comes into view,
+-- what changed inside it, and what is drawn over it. Its calls are compared with the offset taken off their position.
+local movedAreas, movedScroll, reportChanged
+
+do
+  -- the argument of each function that is its top; triangles are compared by their bytes, so a moved one differs
+  local TOP_ARGUMENT = { fill = 2, outline = 2, circle = 2, image = 3, text = 4 }
+
+  -- whether a call or clip is drawn inside a scroll element's children, at any depth
+  local function insideScroll(scroll, id)
+    while scroll do
+      if scroll.id == id then
+        return true
+      end
+
+      scroll = scroll.outer
+    end
+
+    return false
+  end
+
+  local function near(a, b)
+    return math.abs(a - b) < 1e-4
+  end
+
+  -- whether two clips are the same, those inside the scroll element moved up by shift
+  local function sameMovedClip(a, b, id, shift)
+    if a == b then
+      return true
+    elseif a == nil or b == nil then
+      return false
+    elseif not insideScroll(b.scroll, id) then
+      return a.key == b.key
+    end
+
+    return a.x == b.x and a.width == b.width and a.height == b.height and near(a.y - shift, b.y) and sameMovedClip(a.outer, b.outer, id, shift)
+  end
+
+  -- whether a call inside the scroll element draws the same as an earlier one, moved up by shift
+  local function sameMovedCall(a, b, id, shift)
+    local top, n = TOP_ARGUMENT[a.name], a.n
+
+    if top == nil or a.name ~= b.name or n ~= b.n or not sameMovedClip(a.clip, b.clip, id, shift) then
+      return false
+    end
+
+    for i = 1, n do
+      if i == top then
+        if not near(a[i] - shift, b[i]) then
+          return false
+        end
+      elseif not rawequal(a[i], b[i]) then
+        return false
+      end
+    end
+
+    return true
+  end
+
+  -- the first and last of the calls drawn inside the scroll element; they follow each other, as its children are drawn at once
+  local function scrollCalls(calls, count, id)
+    local first, last
+
+    for i = 1, count do
+      if insideScroll(calls[i].scroll, id) then
+        first = first or i
+        last = i
+      elseif first then
+        break
+      end
+    end
+
+    return first, last
+  end
+
+  local function overlaps(call, box)
+    return call.left < box[3] and call.right > box[1] and call.top < box[4] and call.bottom > box[2]
+  end
+
+  -- whether a call's clip leaves the whole box
+  local function clipHolds(call, box)
+    local clip = call.clip
+    return clip == nil or (clip[1] <= box[1] and clip[2] <= box[2] and clip[3] >= box[3] and clip[4] >= box[4])
+  end
+
+  -- whether a call fills the whole box with one colour, so moving the box's pixels keeps it as it is
+  local function fillsBox(call, box)
+    return call.name == "fill" and call[1] <= box[1] and call[2] <= box[2] and call[1] + call[3] >= box[3] and call[2] + call[4] >= box[4]
+      and clipHolds(call, box)
+  end
+
+  -- whether a call is an outline around the box, such as a list's border: its sides look the same at every height, so only its top
+  -- and bottom lines move with the pixels
+  local function outlinesBox(call, box)
+    return call.name == "outline" and call[1] == box[1] and call[2] == box[2] and call[1] + call[3] == box[3] and call[2] + call[4] == box[4]
+      and clipHolds(call, box)
+  end
+
+  -- grows a rectangle, { left, top, right, bottom } or nil, to hold another, or a call's moved down by shift, cut to a box if one is given
+  local function boundArea(rect, left, top, right, bottom, box)
+    if box then
+      left, top, right, bottom = math.max(left, box[1]), math.max(top, box[2]), math.min(right, box[3]), math.min(bottom, box[4])
+    end
+
+    if right <= left or bottom <= top then
+      return rect
+    elseif rect == nil then
+      return { left, top, right, bottom }
+    end
+
+    rect[1], rect[2], rect[3], rect[4] = math.min(rect[1], left), math.min(rect[2], top), math.max(rect[3], right), math.max(rect[4], bottom)
+    return rect
+  end
+
+  local function bound(rect, call, shift, box)
+    return boundArea(rect, call.left, call.top + shift, call.right, call.bottom + shift, box)
+  end
+
+  -- where the old and new calls inside the scroll element meet: the items that left the view start the old ones, and those that came
+  -- into view start the new ones, when a long list builds only the items in view
+  local function meet(old, oldFirst, oldLast, new, newFirst, newLast, id, shift)
+    for skip = 0, math.max(oldLast - oldFirst, newLast - newFirst) do
+      if oldFirst + skip <= oldLast and sameMovedCall(old[oldFirst + skip], new[newFirst], id, shift) then
+        return oldFirst + skip, newFirst
+      elseif newFirst + skip <= newLast and sameMovedCall(old[oldFirst], new[newFirst + skip], id, shift) then
+        return oldFirst, newFirst + skip
+      end
+    end
+
+    return oldLast + 1, newLast + 1
+  end
+
+  -- the rectangles to draw again after the pixels of a scroll element's box moved up by shift, or nil when moving them would not do:
+  -- what is under the box must be one colour, and the calls before and after the scroll element's own must be found in both shows
+  function movedAreas(old, oldCount, new, newCount, id, shift, box)
+    local oldFirst, oldLast = scrollCalls(old, oldCount, id)
+    local newFirst, newLast = scrollCalls(new, newCount, id)
+
+    if not oldFirst or not newFirst or oldFirst ~= newFirst then
+      return nil
+    end
+
+    -- an outline around the box is drawn again at its top and bottom lines, where they were drawn and where they moved to
+    local topEdge, bottomEdge
+
+    for i = 1, newFirst - 1 do
+      local call = new[i]
+
+      if not sameCall(old[i], call) then
+        return nil
+      elseif overlaps(call, box) and not fillsBox(call, box) then
+        if not outlinesBox(call, box) then
+          return nil
+        end
+
+        local edge = call[5] + CALL_EDGE
+        topEdge = boundArea(topEdge, box[1], box[2], box[3], box[2] + edge, box)
+        topEdge = boundArea(topEdge, box[1], box[2] - shift, box[3], box[2] + edge - shift, box)
+        bottomEdge = boundArea(bottomEdge, box[1], box[4] - edge, box[3], box[4], box)
+        bottomEdge = boundArea(bottomEdge, box[1], box[4] - edge - shift, box[3], box[4] - shift, box)
+      end
+    end
+
+    -- the strip that comes into view, with room for the smooth edges of what it cuts
+    local strip = shift > 0 and { box[1], box[4] - shift - CALL_EDGE, box[3], box[4] } or { box[1], box[2], box[3], box[2] - shift + CALL_EDGE }
+
+    -- the calls inside that differ: those before the old and new meet, and those between the run that is the same and the calls the two
+    -- end with alike; the old ones where their pixels moved to
+    local oldAt, newAt = meet(old, oldFirst, oldLast, new, newFirst, newLast, id, shift)
+    local leading, trailing
+
+    for i = oldFirst, oldAt - 1 do
+      leading = bound(leading, old[i], -shift, box)
+    end
+
+    for i = newFirst, newAt - 1 do
+      leading = bound(leading, new[i], 0, box)
+    end
+
+    while oldAt <= oldLast and newAt <= newLast and sameMovedCall(old[oldAt], new[newAt], id, shift) do
+      oldAt, newAt = oldAt + 1, newAt + 1
+    end
+
+    local lastOld, lastNew = oldLast, newLast
+
+    while lastOld >= oldAt and lastNew >= newAt and sameMovedCall(old[lastOld], new[lastNew], id, shift) do
+      lastOld, lastNew = lastOld - 1, lastNew - 1
+    end
+
+    for i = oldAt, lastOld do
+      trailing = bound(trailing, old[i], -shift, box)
+    end
+
+    for i = newAt, lastNew do
+      trailing = bound(trailing, new[i], 0, box)
+    end
+
+    -- the calls after it: those that differ, and those over the box, whose pixels moved with it
+    local after, afterOld, afterNew = 1, oldCount - oldLast, newCount - newLast
+    local later, over
+
+    while after <= afterOld and after <= afterNew and sameCall(old[oldLast + after], new[newLast + after]) do
+      after += 1
+    end
+
+    local tailOld, tailNew = oldCount, newCount
+
+    while tailOld >= oldLast + after and tailNew >= newLast + after and sameCall(old[tailOld], new[tailNew]) do
+      tailOld, tailNew = tailOld - 1, tailNew - 1
+    end
+
+    for i = oldLast + 1, oldCount do
+      if i - oldLast >= after and i <= tailOld then
+        later = bound(later, old[i], 0)
+      end
+
+      if overlaps(old[i], box) then
+        over = bound(over, old[i], -shift, box)
+      end
+    end
+
+    for i = newLast + 1, newCount do
+      if i - newLast >= after and i <= tailNew then
+        later = bound(later, new[i], 0)
+      end
+
+      if overlaps(new[i], box) then
+        over = bound(over, new[i], 0, box)
+      end
+    end
+
+    local rects = { strip }
+
+    for _, rect in ipairs({ topEdge or false, bottomEdge or false, leading or false, trailing or false, later or false, over or false }) do
+      if rect then
+        rects[#rects + 1] = rect
+      end
+    end
+
+    return rects
+  end
+
+  -- the scroll element whose offset alone changed since the last show, the only one that changed, by whole pixels, with its box as
+  -- { left, top, right, bottom }; nil when none or more than one changed, or its box moved
+  function movedScroll(before, now, scale)
+    local found
+
+    for id, layout in pairs(now) do
+      local was = before and before[id]
+
+      if was and was.offset ~= layout.offset then
+        if found then
+          return nil
+        end
+
+        found = id
+      end
+    end
+
+    if not found then
+      return nil
+    end
+
+    local layout, was = now[found], before[found]
+    local shift = layout.offset - was.offset
+    local pixels = shift * scale
+
+    if layout.x ~= was.x or layout.y ~= was.y or layout.width ~= was.width or layout.height ~= was.height or math.abs(shift) >= layout.height
+      or math.abs(pixels - math.floor(pixels + 0.5)) > 1e-3 then
+      return nil
+    end
+
+    return found, shift, { layout.x, layout.y, layout.x + layout.width, layout.y + layout.height }
+  end
+
+  -- tells the core the rectangle of the surface that changed, in layout units
+  function reportChanged(surface, left, top, right, bottom)
+    local scale = surface.scale
+    left, top = math.max(0, math.floor(left * scale)), math.max(0, math.floor(top * scale))
+    right, bottom = math.min(surface.width, math.ceil(right * scale)), math.min(surface.height, math.ceil(bottom * scale))
+    surface:changed(left, top, math.max(0, right - left), math.max(0, bottom - top))
+  end
+end
+
 -- what a replay draws: drawn.clip takes a function, so the replay's functions read it here, made once, and not from closures made each show
 local replaying = { surface = nil, calls = nil, count = 0, area = nil, from = 1, to = 0 }
 
@@ -407,23 +704,31 @@ local function replayGroup()
   end
 end
 
--- makes the recorded calls, each group of calls with the same clip inside it
+-- makes the recorded calls, each group of calls with the same clip inside it; a group that does not reach the area is passed over
 local function replayCalls()
-  local surface, calls, count = replaying.surface, replaying.calls, replaying.count
+  local surface, calls, count, area = replaying.surface, replaying.calls, replaying.count, replaying.area
   local i = 1
 
   while i <= count do
     local clip, last = calls[i].clip, i
+    local reaches = not area
 
-    while last < count and calls[last + 1].clip == clip do
+    while true do
+      local call = calls[last]
+      reaches = reaches or (call.left < area[3] and call.right > area[1] and call.top < area[4] and call.bottom > area[2])
+
+      if last >= count or calls[last + 1].clip ~= clip then
+        break
+      end
+
       last += 1
     end
 
     replaying.from, replaying.to = i, last
 
-    if clip then
+    if reaches and clip then
       drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], replayGroup)
-    else
+    elseif reaches then
       replayGroup()
     end
 
@@ -2192,11 +2497,16 @@ local function paintScroll(node, surface, state)
   local box = node.layout
 
   draw.clip(surface, box.x, box.y, box.width, box.height, function()
+    local outer = recordScroll
+    recordScroll = recording and { id = node.id, outer = outer }
+
     for _, child in ipairs(node.children) do
       if child.layout.y + child.layout.height > box.y and child.layout.y < box.y + box.height then
         paint(child, surface, state)
       end
     end
+
+    recordScroll = outer
   end)
 
   if overflows(node) then
@@ -4114,6 +4424,7 @@ end
 local function keepScrollOffsets(node, state)
   if node.type == "scroll" then
     state.scroll[node.id] = node.layout.offset
+    state.scrolls[node.id] = node.layout
   end
 
   if node.items then
@@ -4145,6 +4456,7 @@ function services.show(panel, surface, root)
   assignIds(root, "root", state.ids)
   measure(root, state, width)
   arrange(root, 0, 0, width, height, state)
+  state.scrolls = {}
   keepScrollOffsets(root, state)
   state.height = height
 
@@ -4208,28 +4520,38 @@ function services.show(panel, surface, root)
   end)
 
   local calls, count = recording, recorded
-  recording, recorded, recordClip = nil, 0, nil
+  recording, recorded, recordClip, recordScroll = nil, 0, nil, nil
 
   if not ok then
     error(message, 0)
   end
 
-  local area = surface.kept and last and changedArea(last, lastCount, calls, count)
+  -- a scroll element that only scrolled moves its pixels, and the rest of the surface is compared as usual
+  local moved, shift, box = movedScroll(state.shownScrolls, state.scrolls, surface.scale)
+  local rects = surface.kept and last and moved and movedAreas(last, lastCount, calls, count, moved, shift, box)
+  local area = surface.kept and last and not rects and changedArea(last, lastCount, calls, count)
 
   if not surface.kept or not last then
     replay(surface, calls, count, nil)
+  elseif rects and box then
+    drawn.move(surface, box[1], box[2], box[3] - box[1], box[4] - box[2], 0, -shift)
+    local left, top, right, bottom = box[1], box[2], box[3], box[4]
+
+    for _, rect in ipairs(rects) do
+      replay(surface, calls, count, rect)
+      left, top, right, bottom = math.min(left, rect[1]), math.min(top, rect[2]), math.max(right, rect[3]), math.max(bottom, rect[4])
+    end
+
+    reportChanged(surface, left, top, right, bottom)
   elseif area then
     replay(surface, calls, count, area)
-    local scale = surface.scale
-    local left, top = math.max(0, math.floor(area[1] * scale)), math.max(0, math.floor(area[2] * scale))
-    local right, bottom = math.min(surface.width, math.ceil(area[3] * scale)), math.min(surface.height, math.ceil(area[4] * scale))
-    surface:changed(left, top, math.max(0, right - left), math.max(0, bottom - top))
+    reportChanged(surface, area[1], area[2], area[3], area[4])
   else
     surface:changed(0, 0, 0, 0)
   end
 
   -- the last show's calls are compared with the next's, and the tables of the one before are reused for the next
-  state.calls, state.callCount, state.spare = calls, count, last
+  state.calls, state.callCount, state.spare, state.shownScrolls = calls, count, last, state.scrolls
 
   -- an input method shows its candidates at the edited field's cursor
   local edited = state.editing and findById(root, state.editing)
