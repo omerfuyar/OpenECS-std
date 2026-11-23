@@ -4805,7 +4805,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results count first onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
