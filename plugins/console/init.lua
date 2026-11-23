@@ -28,6 +28,7 @@ local COLORS = { warn = "#e5c07b", error = "#e06c75" }
 ---@field onClick fun()
 
 local entries = {} ---@type console.Entry[]
+local added = 0 -- grows with each add, so a panel knows when its filtered entries are old
 local panels = {} ---@type table<ecs.Panel, table>
 local folder = "" -- the folder that the files that entries name are in
 
@@ -157,6 +158,7 @@ function add(text, level, links)
     local file, number = text:match("([%w_%-./\\]+%.%a+):(%d+)")
     entries[#entries + 1] = { text = text, level = level, time = time, count = 1, file = file, line = tonumber(number), links = links }
   end
+  added += 1
   while #entries > LIMIT do
     table.remove(entries, 1)
   end
@@ -253,16 +255,36 @@ function Console.create(panel, saved)
   return state
 end
 
-function Console:draw(surface)
-  local counts = { info = 0, warn = 0, error = 0 }
-  local items, shown, numbers, selected = {}, {}, {}, nil
+-- the entries that the panel's toggles and search show, with their numbers, and how many each level has; they are kept until an entry is
+-- added, the entries are cleared, or the search or a toggle changes, as a draw that only a hover asks for filters the same entries
+function Console:filter()
+  local hidden = self.hidden
+  local key = (hidden.info and "i" or "") .. (hidden.warn and "w" or "") .. (hidden.error and "e" or "") .. "\0" .. (self.search or "")
+  local kept = self.filtered
+
+  if kept and kept.entries == entries and kept.added == added and kept.key == key then
+    return kept
+  end
+
+  kept = { entries = entries, added = added, key = key, shown = {}, numbers = {}, places = {}, counts = { info = 0, warn = 0, error = 0 } }
+  local shown, counts = kept.shown, kept.counts
+
   for i, entry in ipairs(entries) do
     counts[entry.level] = (counts[entry.level] or 0) + entry.count
-    if not self.hidden[entry.level] and ui.matches(self.search or "", entry.text) then
-      shown[#shown + 1], numbers[#shown + 1] = entry, i
-      selected = entry == self.chosen and #shown or selected
+    if not hidden[entry.level] and ui.matches(self.search or "", entry.text) then
+      shown[#shown + 1], kept.numbers[#shown + 1] = entry, i
+      kept.places[entry] = #shown
     end
   end
+
+  self.filtered = kept
+  return kept
+end
+
+function Console:draw(surface)
+  local filtered = self:filter()
+  local counts, shown, numbers = filtered.counts, filtered.shown, filtered.numbers
+  local items, selected = {}, self.chosen and filtered.places[self.chosen]
   -- a long console builds only the entries in view
   local first, last = ui.range(self.panel, "entries", #shown)
   for index = first, last do
