@@ -2118,20 +2118,28 @@ local function measureWrapped(node, state, rowRoom)
   return widest, height
 end
 
+-- the width that an element's children, or its wrapped text, take: its own; but an element of width 0 that grows starts from no width, and its
+-- share of a row is the room it is measured in again (measureRowWidths)
+local function innerWidthOf(node, room)
+  local grows = node.grow == true or (node.grow or 0) > 0
+  return (node.width == 0 and grows and room) or node.width or room
+end
+
 -- the size of a container's children, along and across its direction
 local function measureChildren(node, state, room)
   local along, across = 0, 0
+  local width = innerWidthOf(node, room)
 
   -- a row with wrap = true in a column breaks its children into lines at the column's width
-  if horizontal(node) and node.wrap and (node.width or room) then
-    return measureWrapped(node, state, (node.width or room) - 2 * paddingOf(node))
+  if horizontal(node) and node.wrap and width then
+    return measureWrapped(node, state, width - 2 * paddingOf(node))
   end
 
   -- a column's children may take its width less its padding, and a scroll element's less its scroll bar too; a row's take what they need
   local inner = nil
 
-  if not horizontal(node) and (node.width or room) then
-    inner = (node.width or room) - 2 * paddingOf(node) - (node.type == "scroll" and size.scrollbarWidth + 4 or 0)
+  if not horizontal(node) and width then
+    inner = width - 2 * paddingOf(node) - (node.type == "scroll" and size.scrollbarWidth + 4 or 0)
   end
 
   for _, child in ipairs(node.children) do
@@ -2145,7 +2153,7 @@ local function measureChildren(node, state, room)
   end
 
   local gaps = math.max(0, #node.children - 1) * (node.gap or 0)
-  local rowRoom = horizontal(node) and (node.width or room) and (node.width or room) - 2 * paddingOf(node) - gaps
+  local rowRoom = horizontal(node) and width and width - 2 * paddingOf(node) - gaps
 
   if rowRoom then
     along, across = measureRowWidths(node, state, rowRoom, along)
@@ -2161,7 +2169,10 @@ function measureRowWidths(node, state, rowRoom, along)
   local fixed, open, widths = 0, {}, {}
 
   for _, child in ipairs(node.children) do
-    if not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
+    if child.width == 0 and (child.grow == true or (child.grow or 0) > 0) then
+      -- it starts from no width, and is measured again at its share
+      widths[child] = 0
+    elseif not child.width and ((child.type == "text" and child.wrap) or (CONTAINERS[child.type] and not horizontal(child))) then
       open[#open + 1] = child
       widths[child] = child.layout.naturalWidth
     else
@@ -2198,7 +2209,8 @@ function measureRowWidths(node, state, rowRoom, along)
     grows += (child.grow == true and 1 or child.grow or 0)
   end
 
-  along, across = 0, 0
+  local across = 0
+  along = 0
 
   for _, child in ipairs(node.children) do
     local width = widths[child]
@@ -2246,8 +2258,8 @@ function measure(node, state, room)
     for _, spanLine in ipairs(layout.spanLines) do
       width = math.max(width, spanLine.width)
     end
-  elseif node.type == "text" and node.wrap and (node.width or room) then
-    layout.lines, width = wrapKept(font, node.text, textSize, node.width or room)
+  elseif node.type == "text" and node.wrap and innerWidthOf(node, room) then
+    layout.lines, width = wrapKept(font, node.text, textSize, innerWidthOf(node, room))
     height = #layout.lines * line
   elseif node.type == "text" and node.text:find("\n") then
     -- a text of many lines without wrap keeps its own lines, each cut with an ellipsis when it is drawn
@@ -2589,7 +2601,7 @@ function inside.tabs()
     local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.width
 
     if over and choice ~= node.value then
-      draw.fill(surface, rect.x, box.y, rect.width, box.height - 1, "hover")
+      draw.rounded(surface, rect.x, box.y, rect.width, box.height - 1, size.radius, "hover")
     end
 
     if choice == node.value then
@@ -2790,10 +2802,13 @@ local function paintScroll(node, surface, state)
   inside.clip(surface, box.x, box.y, box.width, box.height, inside.scroll, node, state)
 
   if overflows(node) then
+    -- no track: a pill in the bar's width, as editors draw it
     local start, length = thumb(node)
     local x = box.x + box.width - size.scrollbarWidth
-    draw.fill(surface, x, box.y, size.scrollbarWidth, box.height, "field")
-    draw.fill(surface, x + 1, start + 1, size.scrollbarWidth - 2, length - 2, state.dragging == node.id and "accent" or "button")
+    local width = size.scrollbarWidth - 2
+    local over = state.hover == node and (state.pointerX or 0) >= x
+    local color = state.dragging == node.id and "accent" or over and "buttonHover" or "button"
+    draw.rounded(surface, x + 1, start + 1, width, length - 2, width / 2, color)
   end
 end
 
@@ -2831,6 +2846,12 @@ function inside.spans()
   end
 end
 
+-- the corners of an element's background, border and ring: those of controls, but an element as wide as its surface, such as a bar or a view's
+-- root, meets the panel's edges and stays square
+local function cornerOf(node, state)
+  return (state.root and node.layout.width >= state.root.layout.width) and 0 or size.radius
+end
+
 -- draws an element and its children; it reads the interaction state, and changes none of it
 function paint(node, surface, state)
   local box = node.layout
@@ -2841,12 +2862,14 @@ function paint(node, surface, state)
   local pressed = state.pressed == node
   local background = hover and node.hoverBackground or node.background
 
+  local corner = cornerOf(node, state)
+
   if background then
-    draw.fill(surface, box.x, box.y, box.width, box.height, background)
+    draw.rounded(surface, box.x, box.y, box.width, box.height, corner, background)
   end
 
   if node.border then
-    draw.outline(surface, box.x, box.y, box.width, box.height, 1, node.border)
+    draw.roundedOutline(surface, box.x, box.y, box.width, box.height, corner, 1, node.border)
   end
 
   -- the element that Tab gave the keys shows a ring, which fields and key elements show as their outline; a list shows it on its chosen item
@@ -2857,17 +2880,17 @@ function paint(node, surface, state)
     for i, spanLine in ipairs(box.spanLines) do
       for _, run in ipairs(spanLine.runs) do
         if node.spans[run.index] == span then
-          draw.outline(surface, box.x + run.x - 1, box.y + (i - 1) * line - 1, run.width + 2, line + 2, 1, "accent")
+          draw.roundedOutline(surface, box.x + run.x - 1, box.y + (i - 1) * line - 1, run.width + 2, line + 2, size.radius, 1, "accent")
         end
       end
     end
   elseif state.showRing and state.keyTarget == node.id and not TAKES_TYPING[node.type] and not (node.items and node.items[node.selected]) then
-    draw.outline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, 2, "accent")
+    draw.roundedOutline(surface, box.x - 2, box.y - 2, box.width + 4, box.height + 4, corner > 0 and corner + 2 or 0, 2, "accent")
   elseif state.showRing and state.keyPart == node.id then
     -- inside the part, as the list's edge would cut a ring around one at the end of a row
-    draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
+    draw.roundedOutline(surface, box.x, box.y, box.width, box.height, corner, 2, "accent")
   elseif state.showRing and not state.keyPart and node.list and state.keyTarget == node.list.id and node.itemIndex == node.list.selected then
-    draw.outline(surface, box.x, box.y, box.width, box.height, 2, "accent")
+    draw.roundedOutline(surface, box.x, box.y, box.width, box.height, corner, 2, "accent")
   end
 
   if node.type == "text" and box.spanLines then

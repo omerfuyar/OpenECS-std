@@ -169,7 +169,7 @@ function Keys:bindingRow(binding)
   return ui.row({ id = "row:" .. id, padding = 6, gap = 12 }, {
     ui.column({ width = 0, grow = 3, gap = 2 }, {
       ui.text(title, { color = changed and "accent" or nil }),
-      ui.text(note, { style = STYLES.note }),
+      ui.text(note, { style = STYLES.note, wrap = true }),
     }),
     ui.row({ width = 0, grow = 2, gap = 6 }, {
       func ~= false and ui.key(binding.key, {
@@ -389,11 +389,11 @@ ecs.service.register({
   open = { sig = "void()", doc = "Open the key list", fn = open },
 })
 
--- its key after the prefix, and its entry in the tool's menu
+-- its key after the prefix, and its entry in the title bar's menu Tools
 ecs.key.bind("prefix", "K", "keys.open")
 ecs.app.addMenuEntry("keys.open")
 
--- the list of the keys after the prefix: while the core waits for one, a popup over the focused panel lists them with what they do now,
+-- the list of the keys after the prefix: while the core waits for one, a popup at the bottom right of the focused panel's OS window lists them with what they do now,
 -- in sections, from the core's event ecs.prefix (OpenECS DESIGN 7.5)
 local draw = require("draw")
 
@@ -565,13 +565,20 @@ local function showPrefixKeys(value)
   local boxHeight = y + padding
   local radius = ecs.setting.get("ui.radius") or 3
 
-  -- the popup's margin stays clear, so the list stands off the panel's corner
+  -- the popup's margin stays clear, so the list stands off the window's edges; it opens below its anchor, which is one popup above the
+  -- window's bottom right corner, in the panel's surface pixels
+  local place, scale = panel.place, ecs.setting.get("ecs.scale") or 1
   local popup
   popup = panel:openPopup({
     type = "tooltip",
-    anchor = { x = 0, y = 0, width = 0, height = 0 },
-    width = boxWidth + margin,
-    height = boxHeight + margin,
+    anchor = {
+      x = math.max(-place.x, place.windowWidth - place.x - (boxWidth + 2 * margin) * scale),
+      y = math.max(-place.y, place.windowHeight - place.y - (boxHeight + 2 * margin) * scale),
+      width = 0,
+      height = 0,
+    },
+    width = boxWidth + 2 * margin,
+    height = boxHeight + 2 * margin,
     draw = function(surface)
       draw.rounded(surface, margin, margin, boxWidth, boxHeight, radius + 1, "overlay")
       draw.roundedOutline(surface, margin, margin, boxWidth, boxHeight, radius + 1, 1, "frame")

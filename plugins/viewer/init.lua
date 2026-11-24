@@ -132,7 +132,7 @@ function Viewer:draw(surface)
       end
       children[#children + 1] = ui.scroll({ id = "text" }, items)
     else
-      children[#children + 1] = ui.text("The viewer shows images, sounds and texts.", { style = STYLES.note })
+      children[#children + 1] = ui.text("The viewer shows images, sounds and texts.", { style = STYLES.note, wrap = true })
     end
   end
   ui.show(self.panel, surface, ui.column({ padding = 8, gap = 6 }, children))

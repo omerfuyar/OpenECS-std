@@ -278,7 +278,8 @@ function Settings:settingRow(setting)
     -- both columns start from no width and share the row, so every row's control has the same place
     ui.column({ width = 0, grow = 3, gap = 2 }, {
       ui.text(setting.name, { color = changed and "accent" or nil }),
-      ui.text(setting.description, { style = STYLES.note }),
+      -- the description wraps within its column, so it never runs under the control
+      ui.text(setting.description, { style = STYLES.note, wrap = true }),
     }),
     ui.row({ width = 0, grow = 2, gap = 6 }, { self:control(setting), reset }),
   })
@@ -490,7 +491,7 @@ ecs.service.register({
   },
 })
 
--- its key after the prefix, and its entry in the tool's menu
+-- its key after the prefix, and its entry in the title bar's menu Tools
 ecs.key.bind("prefix", ",", "settings.open")
 ecs.app.addMenuEntry("settings.open")
 
