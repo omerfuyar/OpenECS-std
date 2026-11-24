@@ -113,7 +113,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `fontFile`                                 | Give the file a font is read from, for plugins that draw text in other ways, such as gpu (15). A setting that names another file changes it. |
   | `clip`                                     | Draw only inside a rectangle while a function runs.                                                                                        |
 
-- `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font draw ships with in its `fonts/` folder, Roboto Mono, under the SIL Open Font License, which is beside it.
+- `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Its default is JetBrains Mono, the core's own font (OpenECS DESIGN 17.1), so `"ui"` and `"mono"` are the same font until the user chooses another for either; a terminal or a code view keeps its columns when the user gives the interface a proportional font.
 - A font is opened at each size asked for, and kept; a change of `ecs.font`, which draw hears through the core's event `ecs.settingChanged`, or of `draw.monoFont` opens the fonts again.
 - Their signatures are in the plugin's code and its definition files (OpenECS DESIGN 10.10).
 
