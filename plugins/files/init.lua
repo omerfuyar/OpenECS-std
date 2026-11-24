@@ -452,7 +452,7 @@ local function icon(path, dir)
     return ui.image(folder .. path, { width = ICON, height = ICON })
   end
   local label = type(given) == "table" and given.label or dir and "DIR" or ending ~= "" and ending:upper():sub(1, 4) or "FILE"
-  local color = type(given) == "table" and given.color or dir and "accent" or "tabShown"
+  local color = type(given) == "table" and given.color or dir and "accent" or "button"
   return ui.column({ width = ICON, height = ICON, background = color, align = "center", padding = 4 }, {
     ui.space(),
     ui.text(label, { size = 12, color = dir and "background" or "text" }),

@@ -34,11 +34,12 @@
 
 ---ui's own styles, which ui.styles gives.
 ---@class ui.Styles
----@field view ui.Style A view's root: room around it and between its parts, on the background.
+---@field view ui.Style A view's root: room around it and between its parts, on the panel's colour.
 ---@field item ui.Style A row of a list: room around it and between its parts.
 ---@field title ui.Style A view's title.
 ---@field heading ui.Style A heading among items, in the accent.
 ---@field note ui.Style A note, dimmed and small.
+---@field bar ui.Style A row of tools along a panel's top, a header of the panel's own controls, on the tab row's colour.
 
 ---The properties every element takes.
 ---@class ui.Props
@@ -58,6 +59,7 @@
 ---@field size? number The font size of its text, in layout units.
 ---@field font? string A font name of draw, such as "ui" or "mono".
 ---@field tooltip? string A text that shows when the pointer rests on it.
+---@field keys? string The key combination that does what it does, such as "Ctrl+S", which its tooltip names after its text, dimmed.
 ---@field onMenu? fun(x: number, y: number) A release of the right button on it gives the place, in layout units, such as to open ui.menu there; Lua only.
 ---@field onDrop? fun(dataType: string, value: any, x: number, y: number) Data dropped on it, which the panel accepts, gives its type, its value and the place, in layout units; Lua only.
 ---@field selectable? boolean false keeps a list's child, such as a heading, from being an item.

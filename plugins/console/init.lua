@@ -184,7 +184,7 @@ end
 -- An entry's box: its time, the place it names as a link, and its count, above its text, framed in its level's colour.
 local function entryBox(i, entry, chosen)
   local color = COLORS[entry.level]
-  return ui.column({ id = "entry" .. i, padding = 4, gap = 2, background = chosen and "selected" or "tabRow", border = color or "tabShown" }, {
+  return ui.column({ id = "entry" .. i, padding = 4, gap = 2, background = chosen and "selected" or "tabRow", border = color or "frame" }, {
     ui.row({ gap = 8 }, {
       ui.text(entry.time, { style = STYLES.note }),
       entry.file and ui.text({ { text = entry.file .. ":" .. (entry.line or 1), link = "open" } }, {
@@ -319,10 +319,11 @@ function Console:draw(surface)
     entries = {}
     redraw()
   end })
-  ui.show(self.panel, surface, ui.column({ padding = 8, gap = 6 }, {
-    ui.row({ gap = 8, align = "center", wrap = true }, header),
+  -- the toggles, the search and the buttons are a bar along the top, over the entries
+  ui.show(self.panel, surface, ui.column({}, {
+    ui.row({ style = STYLES.bar, gap = 8, align = "center", wrap = true }, header),
     -- a click chooses an entry, a double click goes to what it is about, and a right click opens its menu
-    ui.list({ id = "entries", gap = 4, grow = 1, count = #shown, first = first, selected = selected, onSelect = function(index)
+    ui.list({ id = "entries", padding = 8, gap = 4, grow = 1, count = #shown, first = first, selected = selected, onSelect = function(index)
       self.chosen = shown[index]
     end, onActivate = function(index)
       self:activate(shown[index])

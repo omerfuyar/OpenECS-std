@@ -252,41 +252,41 @@ end
 
 function Profiler:describe()
   local measuring = ecs.setting.get("ecs.profile") == true
-  local children = {
-    ui.text("Profiler", { style = STYLES.title }),
-    ui.row({ gap = 12, align = "center" }, {
-      ui.toggle(measuring, {
-        id = "measure",
-        look = "switch",
-        label = "Measure",
-        tooltip = "Turns the setting ecs.profile on or off; measuring costs a little time",
-        onChange = function(on)
-          local ok, message = ecs.setting.set("ecs.profile", on)
+  -- its switches and buttons are a bar along the top, over what it shows
+  local bar = ui.row({ style = STYLES.bar, gap = 12, align = "center" }, {
+    ui.toggle(measuring, {
+      id = "measure",
+      look = "switch",
+      label = "Measure",
+      tooltip = "Turns the setting ecs.profile on or off; measuring costs a little time",
+      onChange = function(on)
+        local ok, message = ecs.setting.set("ecs.profile", on)
 
-          if not ok then
-            ecs.log.warn(message or "The setting ecs.profile cannot be set.")
-          end
-        end,
-      }),
-      ui.toggle(self.paused, {
-        id = "pause",
-        label = "Pause",
-        tooltip = "Keeps the numbers that show, to read or copy them",
-        onChange = function(on)
-          self.paused = on
-        end,
-      }),
-      ui.button("Copy report", {
-        id = "copy",
-        tooltip = "Copies the whole profile as text",
-        onClick = function()
-          if self.profile then
-            ecs.clipboard.setText(report(self.profile))
-          end
-        end,
-      }),
+        if not ok then
+          ecs.log.warn(message or "The setting ecs.profile cannot be set.")
+        end
+      end,
     }),
-  }
+    ui.toggle(self.paused, {
+      id = "pause",
+      label = "Pause",
+      tooltip = "Keeps the numbers that show, to read or copy them",
+      onChange = function(on)
+        self.paused = on
+      end,
+    }),
+    ui.button("Copy report", {
+      id = "copy",
+      tooltip = "Copies the whole profile as text",
+      onClick = function()
+        if self.profile then
+          ecs.clipboard.setText(report(self.profile))
+        end
+      end,
+    }),
+  })
+
+  local children = {}
 
   if not self.profile then
     local hint = measuring and "Measuring; the first numbers show within a second." or "Turn Measure on to see where the time goes."
@@ -303,7 +303,7 @@ function Profiler:describe()
     children[#children + 1] = self:chosenTable()
   end
 
-  return ui.column({ style = STYLES.view }, children)
+  return ui.column({}, { bar, ui.column({ style = STYLES.view, grow = 1 }, children) })
 end
 
 -- the panel reads the profile on a timer, not in each draw, so its own drawing stays small
