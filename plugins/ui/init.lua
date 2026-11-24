@@ -28,6 +28,7 @@ local SIZES = {
   { "checkSize",      14, "Size of a toggle's box, and of a slider's knob" },
   { "fieldWidth",     120, "Width of a field or slider that is not stretched" },
   { "scrollbarWidth", 8,  "Width of a scroll bar" },
+  { "radius",         3,  "Radius of the corners of buttons, fields, check boxes and popups; 0 makes them square" },
   { "thumbMin",       24, "Shortest length of a scroll bar's thumb" },
   { "wheelStep",      48, "Distance a wheel step scrolls" },
 }
@@ -239,6 +240,24 @@ function draw.outline(surface, x, y, width, height, thickness, color)
 
   local call = record("outline", x, y, x + width, y + height)
   call[1], call[2], call[3], call[4], call[5], call[6], call.n = x, y, width, height, thickness, color, 6
+end
+
+function draw.rounded(surface, x, y, width, height, radius, color)
+  if not recording then
+    return drawn.rounded(surface, x, y, width, height, radius, color)
+  end
+
+  local call = record("rounded", x, y, x + width, y + height)
+  call[1], call[2], call[3], call[4], call[5], call[6], call.n = x, y, width, height, radius, color, 6
+end
+
+function draw.roundedOutline(surface, x, y, width, height, radius, thickness, color)
+  if not recording then
+    return drawn.roundedOutline(surface, x, y, width, height, radius, thickness, color)
+  end
+
+  local call = record("roundedOutline", x, y, x + width, y + height)
+  call[1], call[2], call[3], call[4], call[5], call[6], call[7], call.n = x, y, width, height, radius, thickness, color, 7
 end
 
 function draw.circle(surface, x, y, radius, thickness, color)
@@ -801,6 +820,10 @@ local function replayGroup()
         drawn.outline(surface, call[1], call[2], call[3], call[4], call[5], call[6])
       elseif name == "circle" then
         drawn.circle(surface, call[1], call[2], call[3], call[4], call[5])
+      elseif name == "rounded" then
+        drawn.rounded(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+      elseif name == "roundedOutline" then
+        drawn.roundedOutline(surface, call[1], call[2], call[3], call[4], call[5], call[6], call[7])
       elseif name == "image" then
         drawn.image(surface, call[1], call[2], call[3], call[4], call[5])
       else
@@ -2536,10 +2559,16 @@ local function paintSelector(node, surface, state, hover)
   local font, textSize = fontOf(node), node.size or fontSize()
   local textY = box.y + (box.height - lineHeight(font, textSize)) / 2
 
+  draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, "button")
+
   for i, rect in ipairs(choiceRects(node)) do
     local choice = node.choices[i]
     local over = hover and (state.pointerX or 0) >= rect.x and (state.pointerX or 0) < rect.x + rect.width
-    draw.fill(surface, rect.x, box.y, rect.width, box.height, choice == node.value and "selected" or over and "buttonHover" or "button")
+
+    if choice == node.value or over then
+      draw.rounded(surface, rect.x, box.y, rect.width, box.height, size.radius, choice == node.value and "selected" or "buttonHover")
+    end
+
     local shown = ellipsize(font, tostring(choice), textSize, rect.width - 2 * size.paddingX)
     local width = measureText(font, shown, textSize)
     draw.text(surface, font, shown, rect.x + (rect.width - width) / 2, textY, textSize, node.color or "text")
@@ -2586,13 +2615,13 @@ local function paintToggle(node, surface, hover)
   local labelX = box.x + check
 
   if node.look == "switch" then
-    draw.fill(surface, box.x, checkY, 2 * check, check, node.on and "accent" or "field")
-    draw.outline(surface, box.x, checkY, 2 * check, check, 1, hover and "accent" or "frame")
-    draw.fill(surface, box.x + (node.on and check or 0) + 3, checkY + 3, check - 6, check - 6, "text")
+    draw.rounded(surface, box.x, checkY, 2 * check, check, check / 2, node.on and "accent" or "field")
+    draw.roundedOutline(surface, box.x, checkY, 2 * check, check, check / 2, 1, hover and "accent" or "frame")
+    draw.circle(surface, box.x + (node.on and check or 0) + check / 2, checkY + check / 2, check / 2 - 3, 0, "text")
     labelX = box.x + 2 * check
   else
-    draw.fill(surface, box.x, checkY, check, check, node.on and "accent" or "field")
-    draw.outline(surface, box.x, checkY, check, check, 1, hover and "accent" or "frame")
+    draw.rounded(surface, box.x, checkY, check, check, size.radius, node.on and "accent" or "field")
+    draw.roundedOutline(surface, box.x, checkY, check, check, size.radius, 1, hover and "accent" or "frame")
 
     -- a check mark, in the colour of the box when off, so it reads on the accent in both themes; it is triangles, which a show records
     if node.on then
@@ -2659,13 +2688,13 @@ end
 local function paintTyped(node, surface, state)
   local box = node.layout
   local editing = state.editing == node.id
-  draw.fill(surface, box.x, box.y, box.width, box.height, "field")
+  draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, "field")
 
   inside.clip(surface, box.x + 1, box.y + 1, box.width - 2, box.height - 2, inside.typed, node, state)
 
   -- a number field marks a typed text that is not a number
   local valid = node.valid ~= false and not (editing and node.isNumber and readNumber(state.typed) == nil)
-  draw.outline(surface, box.x, box.y, box.width, box.height, 1, not valid and INVALID_COLOR or editing and "accent" or "frame")
+  draw.roundedOutline(surface, box.x, box.y, box.width, box.height, size.radius, 1, not valid and INVALID_COLOR or editing and "accent" or "frame")
 end
 
 -- down when open, right when closed, and up with up
@@ -2851,13 +2880,13 @@ function paint(node, surface, state)
   elseif node.type == "text" then
     draw.text(surface, font, ellipsize(font, node.text, textSize, box.width), box.x, textY, textSize, node.color or "text")
   elseif node.type == "button" then
-    draw.fill(surface, box.x, box.y, box.width, box.height, pressed and "accent" or hover and "buttonHover" or "button")
+    draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, pressed and "accent" or hover and "buttonHover" or "button")
     local shown = ellipsize(font, node.label, textSize, box.width - 2 * size.paddingX)
     local width = measureText(font, shown, textSize)
     draw.text(surface, font, shown, box.x + (box.width - width) / 2, textY, textSize, node.color or "text")
   elseif node.type == "color" then
     -- the swatch shows a colour with alpha over a light and a dark half, so its alpha shows
-    draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "buttonHover" or "button")
+    draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, (pressed or hover) and "buttonHover" or "button")
     local inset = size.paddingY
     local width, height = box.width - 2 * inset, box.height - 2 * inset
     draw.fill(surface, box.x + inset, box.y + inset, width / 2, height, "#FFFFFF")
@@ -2865,7 +2894,7 @@ function paint(node, surface, state)
     draw.fill(surface, box.x + inset, box.y + inset, width, height, node.value)
     draw.outline(surface, box.x + inset, box.y + inset, width, height, 1, "textDim")
   elseif node.type == "dropdown" then
-    draw.fill(surface, box.x, box.y, box.width, box.height, (pressed or hover) and "buttonHover" or "button")
+    draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, (pressed or hover) and "buttonHover" or "button")
     local room = box.width - 3 * size.paddingX - line / 2
     draw.text(surface, font, ellipsize(font, tostring(node.value or ""), textSize, room), box.x + size.paddingX, textY, textSize, node.color or "text")
     arrow(surface, box.x + box.width - size.paddingX - line / 4, box.y + box.height / 2, line / 4, "textDim")
@@ -2881,8 +2910,8 @@ function paint(node, surface, state)
     local span = node.max - node.min
     local value = state.sliding == node.id and state.slid or node.value
     local knobX = box.x + radius + (span > 0 and (value - node.min) / span or 0) * (box.width - 2 * radius)
-    draw.fill(surface, box.x + radius, centerY - 2, box.width - 2 * radius, 4, "field")
-    draw.fill(surface, box.x + radius, centerY - 2, knobX - box.x - radius, 4, "accent")
+    draw.rounded(surface, box.x + radius, centerY - 2, box.width - 2 * radius, 4, 2, "field")
+    draw.rounded(surface, box.x + radius, centerY - 2, knobX - box.x - radius, 4, 2, "accent")
     draw.circle(surface, knobX, centerY, radius, 0, (hover or state.sliding == node.id) and "accent" or "text")
   elseif TAKES_TYPING[node.type] then
     paintTyped(node, surface, state)
@@ -3236,7 +3265,7 @@ local function openDropdown(panel, state, node)
       scale = surface.scale
       local h = height()
       local half = lineHeight(font, textSize) / 4
-      draw.fill(surface, 0, 0, width, h, "overlay")
+      draw.rounded(surface, 0, 0, width, h, size.radius + 1, "overlay")
 
       if typed ~= "" then
         draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
@@ -3247,7 +3276,7 @@ local function openDropdown(panel, state, node)
         local x, room = size.paddingX, width - 2 * size.paddingX
 
         if i == hover then
-          draw.fill(surface, 0, y, width, rowHeight, "selected")
+          draw.rounded(surface, 2, y, width - 4, rowHeight, size.radius, "selected")
         end
 
         if row.back then
@@ -3262,7 +3291,7 @@ local function openDropdown(panel, state, node)
         draw.text(surface, font, ellipsize(font, row.label, textSize, room), x, y + size.paddingY, textSize, color)
       end
 
-      draw.outline(surface, 0, 0, width, h, 1, "frame")
+      draw.roundedOutline(surface, 0, 0, width, h, size.radius + 1, 1, "frame")
     end,
     event = function(event)
       if event.type == "pointerMove" then
@@ -3430,14 +3459,14 @@ local function openMenu(panel, x, y, entries)
     height = height,
     draw = function(surface)
       scale = surface.scale
-      draw.fill(surface, 0, 0, width, height, "overlay")
+      draw.rounded(surface, 0, 0, width, height, size.radius + 1, "overlay")
 
       for i, entry in ipairs(shown) do
         if entry.line then
           draw.fill(surface, size.paddingX, tops[i] + size.paddingY, width - 2 * size.paddingX, 1, "frame")
         else
           if i == hover then
-            draw.fill(surface, 0, tops[i], width, rowHeight, "selected")
+            draw.rounded(surface, 2, tops[i], width - 4, rowHeight, size.radius, "selected")
           end
 
           local color = (entry.enabled == false or entry.back) and "textDim" or "text"
@@ -3459,7 +3488,7 @@ local function openMenu(panel, x, y, entries)
         end
       end
 
-      draw.outline(surface, 0, 0, width, height, 1, "frame")
+      draw.roundedOutline(surface, 0, 0, width, height, size.radius + 1, 1, "frame")
     end,
     event = function(event)
       if event.type == "pointerMove" then
@@ -3617,7 +3646,7 @@ local function openColorPicker(panel, state, node)
     height = height,
     draw = function(surface)
       scale = surface.scale
-      draw.fill(surface, 0, 0, width, height, "overlay")
+      draw.rounded(surface, 0, 0, width, height, size.radius + 1, "overlay")
 
       -- the square's image is made again when the hue changes
       if squareHue ~= hue then
@@ -3660,7 +3689,7 @@ local function openColorPicker(panel, state, node)
 
       -- the colour's text, as onChange will get it
       draw.text(surface, font, text(), PICKER.gap, height - PICKER.gap - line, textSize, "text")
-      draw.outline(surface, 0, 0, width, height, 1, "frame")
+      draw.roundedOutline(surface, 0, 0, width, height, size.radius + 1, 1, "frame")
     end,
     event = function(event)
       if event.type == "pointerDown" and event.button == 1 then
@@ -4240,8 +4269,8 @@ local function paintTooltip(surface, state, width, height)
     y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
   end
 
-  draw.fill(surface, x, y, boxWidth, boxHeight, "overlay")
-  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "frame")
+  draw.rounded(surface, x, y, boxWidth, boxHeight, size.radius + 1, "overlay")
+  draw.roundedOutline(surface, x, y, boxWidth, boxHeight, size.radius + 1, 1, "frame")
 
   for i, text in ipairs(lines) do
     draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, i == keysLine and "textDim" or "text")
@@ -4341,8 +4370,8 @@ local function paintInspector(surface, state, width, height)
     y = math.max(0, state.pointerY - 6 - boxHeight)
   end
 
-  draw.fill(surface, x, y, boxWidth, boxHeight, "overlay")
-  draw.outline(surface, x, y, boxWidth, boxHeight, 1, "accent")
+  draw.rounded(surface, x, y, boxWidth, boxHeight, size.radius + 1, "overlay")
+  draw.roundedOutline(surface, x, y, boxWidth, boxHeight, size.radius + 1, 1, "accent")
 
   for i, text in ipairs(lines) do
     draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, "text")

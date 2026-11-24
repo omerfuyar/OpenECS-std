@@ -252,6 +252,10 @@ function services.open()
 end
 
 ecs.service.register({
-  open = { sig = "void()", doc = "Open panels", fn = services.open },
+  open = { sig = "void()", doc = "Open the panel list", fn = services.open },
 })
+
+-- its key after the prefix, and its entry in the tool's menu
+ecs.key.bind("prefix", ".", "panels.open")
+ecs.app.addMenuEntry("panels.open")
 
