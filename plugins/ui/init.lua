@@ -1310,7 +1310,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first last "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1521,18 +1521,29 @@ end
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
 -- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
 -- and onToggle(id, open) its new state; a node's marks are short texts at the end of its row, such as an eye and a lock, each on or off,
--- and a click on one gives onMark(id, mark, on) its new state without choosing the node
+-- and a click on one gives onMark(id, mark, on) its new state without choosing the node;
+-- a long tree builds only the rows from first to last, the shown nodes' numbers that ui.range gives, as a long list does
 function elements.tree(nodes, props)
   props = props or {}
   ecs.check(props.id, "A tree needs an id, which keeps its offset.")
   local open, rows = props.open or {}, {}
   local ids, parents, folders = {}, {}, {}
+  local first, last = props.first or 1, props.last or math.huge
 
   local function add(list, depth, parent)
     for _, item in ipairs(list) do
       local folder = item.children ~= nil
       local shown = folder and open[item.id] == true
-      local index = #rows + 1
+      local index = #ids + 1
+      ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
+
+      if index < first or index > last then
+        if shown then
+          add(item.children, depth + 1, index)
+        end
+
+        continue
+      end
 
       -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
       local arrow = elements.space({ width = size.checkSize, grow = 0 })
@@ -1559,6 +1570,7 @@ function elements.tree(nodes, props)
           local cell = elements.row({
             id = props.id .. ":" .. tostring(item.id) .. ":" .. tostring(mark.id),
             tooltip = mark.tooltip,
+            keys = mark.keys,
             onClick = function()
               if props.onMark then
                 props.onMark(item.id, mark.id, not mark.on)
@@ -1571,8 +1583,7 @@ function elements.tree(nodes, props)
         end
       end
 
-      rows[index] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, cells)
-      ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
+      rows[#rows + 1] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, cells)
 
       if shown then
         add(item.children, depth + 1, index)
@@ -1584,7 +1595,11 @@ function elements.tree(nodes, props)
 
   -- the list works with indexes, and the tree with ids
   local listProps = shallowCopy(props)
-  listProps.open, listProps.onToggle, listProps.selected, listProps.onMark = nil, nil, nil, nil
+  listProps.open, listProps.onToggle, listProps.selected, listProps.onMark, listProps.last = nil, nil, nil, nil, nil
+
+  if props.first or props.last then
+    listProps.count, listProps.first = #ids, math.min(first, #ids + 1)
+  end
 
   local indexOf, selected = {}, {}
 
@@ -5073,6 +5088,13 @@ function services.reveal(panel, scrollId, childId)
 
   if not child and scroll and scroll.tree then
     for index, id in ipairs(scroll.tree.ids) do
+      -- a node of a long tree that is not built is scrolled to by its number
+      if id == childId and not scroll.items[index] then
+        revealItem(state, scroll, index)
+        panel:redraw()
+        return
+      end
+
       child = child or (id == childId and scroll.items[index]) or nil
     end
   end
@@ -5157,7 +5179,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first last onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
