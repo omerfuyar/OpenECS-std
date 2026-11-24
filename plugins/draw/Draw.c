@@ -14,7 +14,6 @@
 #pragma region Source Only
 
 /// @brief The monospace font draw ships with, in its folder.
-#define DRAW_MONO_FONT "fonts/RobotoMono-Regular.ttf"
 
 /// @brief A font file opened at one size, in pixels.
 typedef struct DrawFontSize
@@ -790,20 +789,13 @@ static void DrawDrawImage(ECSSurface *surface, void *imageHandle, f32 x, f32 y, 
 
 #pragma region Text
 
-/// @brief Finds the file of a font name: "ui" is the core's font, "mono" the setting draw.monoFont, or the font draw ships with when it is empty, and anything else a path. A relative path starts at the executable's folder.
+/// @brief Finds the file of a font name: "ui" is the core's font, "mono" the setting draw.monoFont, and anything else a path. A relative path starts at the executable's folder.
 /// @return The path, to free with SDL_free, or nullptr if out of memory.
 static char *DrawFontPath(const char *name)
 {
     const char *file = SDL_strcmp(name, "ui") == 0 ? ECSValue_GetString(ECSSetting_Get("ecs.font"), "") : SDL_strcmp(name, "mono") == 0 ? ECSValue_GetString(ECSSetting_Get("draw.monoFont"), "")
                                                                                                                                         : name;
-    bool shipped = SDL_strcmp(name, "mono") == 0 && file[0] == '\0';
     char *path = nullptr;
-
-    if (shipped)
-    {
-        return SDL_asprintf(&path, "%s%s", ECSPlugin_GetFolder(DRAW.plugin), DRAW_MONO_FONT) < 0 ? nullptr : path;
-    }
-
     return ECSPath_GetFull(&path, file) ? nullptr : path;
 }
 
@@ -1162,8 +1154,8 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSSettingDesc monoFont = {
         .name = "monoFont",
         .type = ECSSettingType_Path,
-        .description = "Monospace TrueType font, draw.font(\"mono\"); empty for the one draw ships with",
-        .defaultString = "",
+        .description = "Monospace TrueType font, draw.font(\"mono\"); a relative path starts at the executable's folder",
+        .defaultString = "resources/JetBrainsMono-Regular.ttf",
         .Changed = DrawFontsChanged,
     };
 

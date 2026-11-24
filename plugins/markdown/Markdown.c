@@ -857,10 +857,10 @@ static void MarkdownDescribeBlock(MarkdownReader *reader, ECSValue *description,
     }
     else if (SDL_strcmp(type, "codeBlock") == 0)
     {
-        // a code block keeps its lines, in the mono font on the colour of tabs; its last new line ends it
+        // a code block keeps its lines, in the mono font on the colour of fields; its last new line ends it
         ECSValue *props = MarkdownDescribe(reader, description, "column");
         MarkdownSetInteger(reader, props, "padding", 8);
-        MarkdownSetText(reader, props, "background", "tab", 3);
+        MarkdownSetText(reader, props, "background", "field", 5);
         MarkdownSetBool(reader, props, "stretch", true);
 
         const char *text = ECSValue_GetString(ECSValue_GetTableField(node, "text"), "");

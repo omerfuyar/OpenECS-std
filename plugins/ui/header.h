@@ -57,13 +57,14 @@ struct UiProps
     f64 padding;                 // room inside a container's edges
     f64 gap;                     // room between a container's children
     const char *align;           // where a container puts children that do not stretch: "start", "center" or "end"
-    const char *background;      // a colour, such as "#202226", or a theme colour, such as "tabRow"
+    const char *background;      // a colour, such as "#202226", or a theme colour, such as "panel"
     const char *hoverBackground; // the background while the pointer is over it
     const char *border;          // the colour of a line around it
     const char *color;           // the colour of its text
     f64 size;                    // the font size of its text
     const char *font;            // a font name of draw, such as "ui" or "mono"
     const char *tooltip;         // a text that shows when the pointer rests on it
+    const char *keys;            // the key combination that does what it does, such as "Ctrl+S", which its tooltip names
     UiFlag selectable;           // UI_FALSE for a list's child that is not an item, such as a heading
     UiFlag clickable;            // a column or row that is clicked like a button; UI_CLICKED takes the click
     const char *title;           // a group's title
@@ -93,11 +94,12 @@ struct UiProps
 /// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
 typedef struct UiStyles
 {
-    UiProps view;    // a view's root: room around it and between its parts, on the background
+    UiProps view;    // a view's root: room around it and between its parts, on the panel's colour
     UiProps item;    // a row of a list: room around it and between its parts
     UiProps title;   // a view's title
     UiProps heading; // a heading among items, in the accent
     UiProps note;    // a note, dimmed and small
+    UiProps bar;     // a row of tools along a panel's top, a header of its own controls
 } UiStyles;
 
 /// @brief How many texts, such as colours, ui's own styles hold, and how long each may be; the Ui keeps copies of them.
@@ -253,6 +255,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "color", props->color);
     Ui_SetString(table, "font", props->font);
     Ui_SetString(table, "tooltip", props->tooltip);
+    Ui_SetString(table, "keys", props->keys);
     Ui_SetString(table, "title", props->title);
     Ui_SetString(table, "label", props->label);
     Ui_SetString(table, "placeholder", props->placeholder);
@@ -359,7 +362,7 @@ static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
     {
         const char *name;
         UiProps *props;
-    } own[] = {{"view", &retUi->styles.view}, {"item", &retUi->styles.item}, {"title", &retUi->styles.title}, {"heading", &retUi->styles.heading}, {"note", &retUi->styles.note}};
+    } own[] = {{"view", &retUi->styles.view}, {"item", &retUi->styles.item}, {"title", &retUi->styles.title}, {"heading", &retUi->styles.heading}, {"note", &retUi->styles.note}, {"bar", &retUi->styles.bar}};
     usz texts = 0;
 
     for (usz i = 0; i < UI__COUNT(own); i++)
@@ -385,6 +388,7 @@ static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
         props->padding = ECSValue_GetNumber(ECSValue_GetTableField(style, "padding"), 0.0);
         props->gap = ECSValue_GetNumber(ECSValue_GetTableField(style, "gap"), 0.0);
         props->size = ECSValue_GetNumber(ECSValue_GetTableField(style, "size"), 0.0);
+        props->stretch = ECSValue_GetBool(ECSValue_GetTableField(style, "stretch"), false) ? UI_TRUE : UI_UNSET;
     }
 
     return SHUResult_Ok;

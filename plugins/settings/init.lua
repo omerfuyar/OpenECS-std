@@ -475,7 +475,7 @@ services.next = forWindow(function(window)
 end)
 
 ecs.service.register({
-  open = { sig = "void()", doc = "Open settings", fn = services.open },
+  open = { sig = "void()", doc = "Open the settings", fn = services.open },
   previous = {
     sig = "void(handle<ecs.panel> panel)",
     doc = "Change the chosen setting one step back\n"
@@ -489,6 +489,10 @@ ecs.service.register({
     fn = services.next,
   },
 })
+
+-- its key after the prefix, and its entry in the tool's menu
+ecs.key.bind("prefix", ",", "settings.open")
+ecs.app.addMenuEntry("settings.open")
 
 -- default keys for the window; presets and the user's settings can change them
 for service, key in pairs({ previous = "Left", next = "Right" }) do

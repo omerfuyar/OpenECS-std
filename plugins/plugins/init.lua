@@ -237,5 +237,9 @@ function services.open()
 end
 
 ecs.service.register({
-  open = { sig = "void()", doc = "Enable or disable plugins", fn = services.open },
+  open = { sig = "void()", doc = "Open the plugin list", fn = services.open },
 })
+
+-- its key after the prefix, and its entry in the tool's menu
+ecs.key.bind("prefix", ";", "plugins.open")
+ecs.app.addMenuEntry("plugins.open")

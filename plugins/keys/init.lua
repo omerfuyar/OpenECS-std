@@ -388,3 +388,212 @@ end
 ecs.service.register({
   open = { sig = "void()", doc = "Open the key list", fn = open },
 })
+
+-- its key after the prefix, and its entry in the tool's menu
+ecs.key.bind("prefix", "K", "keys.open")
+ecs.app.addMenuEntry("keys.open")
+
+-- the list of the keys after the prefix: while the core waits for one, a popup over the focused panel lists them with what they do now,
+-- in sections, from the core's event ecs.prefix (OpenECS DESIGN 7.5)
+local draw = require("draw")
+
+local PREFIX_SECTIONS = { "Navigation", "Panel", "Layout", "Session", "More" }
+
+-- the sections of the core's functions, by the start of their names; the core's other functions act on the panel, and the plugins' are More
+local SECTION_STARTS = {
+  { "ecs.layout.focus", 1 },
+  { "ecs.layout.moveToWorkspace", 1 },
+  { "ecs.layout.move", 1 },
+  { "ecs.layout.nextTab", 1 },
+  { "ecs.workspace.", 1 },
+  { "ecs.layout.closeGroup", 3 },
+  { "ecs.layout.lock", 3 },
+  { "ecs.layout.reset", 3 },
+  { "ecs.session.", 4 },
+  { "ecs.app.", 4 },
+}
+
+-- functions that share a line when they run on the four arrows with the same modifiers, and those of each workspace, from the first's key to the last's
+local ARROW_FAMILIES = { { "ecs.layout.focus", "Focus to panel" }, { "ecs.layout.move", "Move panel to" } }
+local ARROWS = { "Left", "Right", "Up", "Down" }
+local WORKSPACE_FAMILIES = { { "ecs.workspace.switch", "Switch to workspace" }, { "ecs.layout.moveToWorkspace", "Move panel to workspace" } }
+
+local prefixPopup
+
+local function sectionOf(name)
+  for _, start in ipairs(SECTION_STARTS) do
+    if name:sub(1, #start[1]) == start[1] then
+      return start[2]
+    end
+  end
+
+  return name:sub(1, 4) == "ecs." and 2 or 5
+end
+
+-- a key's modifiers, as written, and its name: "Shift+Left" gives "Shift+" and "Left", and "Ctrl++" gives "Ctrl+" and "+"
+local function splitKey(key)
+  local last = key:sub(1, -2):match(".*()%+")
+  return last and key:sub(1, last) or "", last and key:sub(last + 1) or key
+end
+
+-- folds a key into one line with its arrow family: "Shift+Arrows"; or nil
+local function foldArrows(keys, index, listed)
+  local modifiers = splitKey(keys[index].key)
+
+  for _, family in ipairs(ARROW_FAMILIES) do
+    local members = {}
+
+    for i, arrow in ipairs(ARROWS) do
+      for j, entry in ipairs(keys) do
+        if not listed[j] and entry["function"] == family[1] .. arrow and entry.key:lower() == (modifiers .. arrow):lower() then
+          members[i] = j
+        end
+      end
+    end
+
+    if #members == 4 and (members[1] == index or members[2] == index or members[3] == index or members[4] == index) then
+      for _, j in ipairs(members) do
+        listed[j] = true
+      end
+
+      return modifiers .. "Arrows", family[2]
+    end
+  end
+end
+
+-- folds a workspace family's keys into one line: "1...0", or "Shift+1...0"
+local function foldWorkspaces(keys, start, listed)
+  local first, last
+
+  for i, entry in ipairs(keys) do
+    local number = entry["function"]:sub(1, #start) == start and tonumber(entry["function"]:sub(#start + 1))
+
+    if number then
+      listed[i] = true
+      first = (not first or number < first.number) and { number = number, key = entry.key } or first
+      last = (not last or number > last.number) and { number = number, key = entry.key } or last
+    end
+  end
+
+  if first.number == last.number then
+    return first.key
+  end
+
+  local modifiers, name = splitKey(last.key)
+  return first.key .. "..." .. (first.key:sub(1, #modifiers) == modifiers and name or last.key)
+end
+
+-- the list's lines: a heading for each section that has keys, then each key with what it does, and Escape last
+local function prefixLines(keys)
+  local lines, listed = {}, {}
+
+  for section, heading in ipairs(PREFIX_SECTIONS) do
+    local start = #lines
+    lines[#lines + 1] = { heading = heading }
+
+    for i, entry in ipairs(keys) do
+      local name = entry["function"]
+
+      if not listed[i] and sectionOf(name) == section then
+        local key, text
+
+        for _, family in ipairs(WORKSPACE_FAMILIES) do
+          if not key and name:sub(1, #family[1]) == family[1] then
+            key, text = foldWorkspaces(keys, family[1], listed), family[2]
+          end
+        end
+
+        if not key then
+          key, text = foldArrows(keys, i, listed)
+        end
+
+        listed[i] = true
+        lines[#lines + 1] = { key = key or entry.key, text = text or entry.text }
+      end
+    end
+
+    if #lines == start + 1 then
+      lines[#lines] = nil
+    end
+  end
+
+  lines[#lines + 1] = { key = "Escape", text = "Cancel" }
+  return lines
+end
+
+local function showPrefixKeys(value)
+  if prefixPopup then
+    prefixPopup:close()
+    prefixPopup = nil
+  end
+
+  local panel = value.waiting and value.panel and ecs.layout.findPanel(value.panel)
+
+  if not panel then
+    return
+  end
+
+  local font = draw.font("ui")
+  local size = ecs.setting.get("ecs.fontSize") or 13
+  local lines = prefixLines(value.keys or {})
+  local margin, padding, gap = 12, 12, 16
+  local keyWidth, textWidth, lineHeight = 0, 0, 0
+
+  for _, line in ipairs(lines) do
+    local width, height = draw.measure(font, line.heading or line.text, size, 1)
+    lineHeight = math.max(lineHeight, height)
+
+    if line.heading then
+      textWidth = math.max(textWidth, width)
+    else
+      keyWidth = math.max(keyWidth, (draw.measure(font, line.key, size, 1)))
+      textWidth = math.max(textWidth, width)
+    end
+  end
+
+  -- a heading has room above it, apart from the first
+  local step, above = lineHeight + 3, 6
+  local tops, y = {}, padding
+
+  for i, line in ipairs(lines) do
+    y = y + ((line.heading and i > 1) and above or 0)
+    tops[i] = y
+    y = y + step
+  end
+
+  local boxWidth = 2 * padding + keyWidth + gap + textWidth
+  local boxHeight = y + padding
+  local radius = ecs.setting.get("ui.radius") or 3
+
+  -- the popup's margin stays clear, so the list stands off the panel's corner
+  local popup
+  popup = panel:openPopup({
+    type = "tooltip",
+    anchor = { x = 0, y = 0, width = 0, height = 0 },
+    width = boxWidth + margin,
+    height = boxHeight + margin,
+    draw = function(surface)
+      draw.rounded(surface, margin, margin, boxWidth, boxHeight, radius + 1, "overlay")
+      draw.roundedOutline(surface, margin, margin, boxWidth, boxHeight, radius + 1, 1, "frame")
+
+      for i, line in ipairs(lines) do
+        local y = margin + tops[i]
+
+        if line.heading then
+          draw.text(surface, font, line.heading, margin + padding, y, size, "textDim")
+        else
+          draw.text(surface, font, line.key, margin + padding, y, size, "accent")
+          draw.text(surface, font, line.text, margin + padding + keyWidth + gap, y, size, "text")
+        end
+      end
+    end,
+    closed = function()
+      prefixPopup = prefixPopup ~= popup and prefixPopup or nil
+    end,
+  })
+  prefixPopup = popup
+end
+
+ecs.event.subscribe("ecs.prefix", function(_, value)
+  showPrefixKeys(value)
+end)

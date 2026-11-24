@@ -113,7 +113,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `fontFile`                                 | Give the file a font is read from, for plugins that draw text in other ways, such as gpu (15). A setting that names another file changes it. |
   | `clip`                                     | Draw only inside a rectangle while a function runs.                                                                                        |
 
-- `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Empty, its default, means the font draw ships with in its `fonts/` folder, Roboto Mono, under the SIL Open Font License, which is beside it.
+- `"mono"` is the setting `draw.monoFont`: a monospace TrueType file, whose relative path starts at the executable's folder. Its default is JetBrains Mono, the core's own font (OpenECS DESIGN 17.1), so `"ui"` and `"mono"` are the same font until the user chooses another for either; a terminal or a code view keeps its columns when the user gives the interface a proportional font.
 - A font is opened at each size asked for, and kept; a change of `ecs.font`, which draw hears through the core's event `ecs.settingChanged`, or of `draw.monoFont` opens the fonts again.
 - Their signatures are in the plugin's code and its definition files (OpenECS DESIGN 10.10).
 
@@ -180,7 +180,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `image(path, props)`                  | An image file, at its size, read with image (6) at the surface's scale and drawn with draw. With a `width` or a `height`, it fits inside them, keeping its shape, in their middle.                                                                                                                                  |
   | `space(props)`                        | Empty room, which grows.                                                                                                                                                                                                     |
 
-- Properties of every element: `id`, `style`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours), `color`, `size` and `font` (for text: a font name of draw), and `tooltip`, a text. A column or a row with `onClick` is clicked like a button.
+- Properties of every element: `id`, `style`, `width` and `height` (a fixed size), `grow` (a share of the room left along its parent's direction), `stretch` (whether it takes its parent's whole cross size), `padding`, `gap` and `align` (`"start"`, `"center"` or `"end"`, for containers), `background`, `hoverBackground` and `border` (colours), `color`, `size` and `font` (for text: a font name of draw), `tooltip`, a text, and `keys`, the key combination that does what the element does, such as `"Ctrl+S"`, which its tooltip names after its text, dimmed; an element with `keys` and no tooltip shows its keys alone. A column or a row with `onClick` is clicked like a button.
 - A style is a table of the props of an element's look, kept in a variable so elements share it: `width`, `height`, `grow`, `stretch`, `padding`, `gap`, `align`, `background`, `hoverBackground`, `border`, `color`, `size` and `font`. An element's `style` prop takes one, and the element takes each of its props that the element does not give itself. A style's own `style` is the style it builds on. A prop that is not of the look is a misuse.
 - ui keeps no styles of other plugins: a style belongs to the code that made it, as any table does, such as `local CARD = { padding = 8, border = "accent" }`, and a module shares it between plugins.
 - ui has its own styles, which the first-party views (12, 13, 14, 19) and ui itself use, so views look alike. `ui.styles()` gives copies of them, so a plugin that changes one changes only its own:
@@ -192,6 +192,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   | `title`   | A view's title.                                  |
   | `heading` | A heading among items, in the accent.            |
   | `note`    | A note, dimmed and small.                        |
+  | `bar`     | A row of tools along a panel's top, a header of the panel's own controls, on `tabRow`. |
 
 - A tooltip shows below the pointer when the pointer rests on its element for half a second, wrapped to a width. Each move starts the half second again. It goes when the pointer leaves the element, at a press or a key, and after five seconds, since a panel hears nothing when the pointer leaves it. It is drawn inside the panel. `ui.tooltip(panel)` gives the id of the element whose tooltip shows, or nil.
 - A right click is for a menu. An element with `onMenu(x, y)` gets the place of a right button's release on it, in layout units, the innermost one under the pointer. A list, a table and a tree give `onMenu(item, x, y)` the item under the pointer as their `onSelect` does, or nil beside their items; a right press on an item that is not chosen chooses it alone first, so the menu is about it. Only Lua has `onMenu`.
@@ -226,8 +227,9 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
   - A described list, table or tree keeps `onActivate`, and a table `onSort`, only when its props ask with `onActivate = true` or `onSort = true`, since a list with `onActivate` behaves differently (see above); `UI_ACTIVATED(id)` gives the activated item's or row's number, `UI_ACTIVATED_NODE(id, nodes)` a tree's node's id, and `UI_SORTED(id)` the column. A described field with `valid = UI_FALSE` keeps Return from giving its text, as an `onSubmit` that gives false does. `UI_SUBMITTED(id)` says whether Return was pressed in a number field.
   - A style in C is a `UiProps` that holds only look props, often a `static const` one, and `.style` points to it. `Ui_Init` copies ui's own styles into the `Ui`, as `ui.styles.note` and the others.
   - `Ui_Init(&ui, plugin)` looks up ui's functions, from the plugin's `Init`, and `Ui_Event(&ui, panel, event)` gives a panel's event to ui. c3_ui shows the same controls in Lua and in C (OpenECS-examples).
-- Positions are in layout units, and colours are the theme's unless an element names others. ui fills the surface with the theme's background first.
-- Its sizes are its settings, in layout units, so the user can change them: `ui.paddingX`, `ui.paddingY`, `ui.checkSize`, `ui.fieldWidth`, `ui.scrollbarWidth`, `ui.thumbMin` and `ui.wheelStep`.
+- Positions are in layout units, and colours are the theme's unless an element names others, each in its job (OpenECS DESIGN 12.4). ui fills the surface with `panel` first. Buttons, selectors, dropdowns and the colour's swatch are `button`, `buttonHover` under the pointer and `accent` while pressed or chosen. Fields, number fields, key elements, check boxes, and the tracks of sliders and scroll bars are `field`, with a line of `frame`, or of `accent` while the field has the keys. A chosen item is `selected`, and an item under the pointer `hover`. A table's header, a tab's line and a `bar` are `tabRow`. Separators, the lines of groups, lists, tables and trees, and a scroll bar's thumb, which is `button`, show the parts apart. Corners are square, so rows and fields line up.
+- Its sizes are its settings, in layout units, so the user can change them: `ui.paddingX`, `ui.paddingY`, `ui.checkSize`, `ui.fieldWidth`, `ui.scrollbarWidth`, `ui.thumbMin`, `ui.wheelStep` and `ui.radius`.
+- Controls have rounded corners of `ui.radius`, 3 by default, as the core's menus and groups do (OpenECS DESIGN 6.9): buttons, fields, check boxes, dropdowns, selectors, colour swatches and tooltips; popups and their highlighted rows too, with one unit more for popups. A switch is a pill, and 0 makes every corner square.
 
 ## 6. image
 
@@ -319,7 +321,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 ## 12. The settings window
 
-- The first-party Lua plugin `settings` is built with ui (5). The core's settings file loads it in every tool (OpenECS DESIGN 12.3), and binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), which opens the window as a panel of type `settings.window`, or shows the one that is open.
+- The first-party Lua plugin `settings` is built with ui (5). The core's settings file loads it in every tool (OpenECS DESIGN 12.3). It binds `,` after the prefix to `settings.open` (OpenECS DESIGN 7.8), and adds it to the tool's menu (OpenECS DESIGN 6.8); `settings.open` opens the window as a panel of type `settings.window`, or shows the one that is open.
 - The window lists every declared setting under a title for its owner: the core's first, then each plugin's, each by name. A row shows the setting's name and description on its left, and a control with its value in effect on its right. The two sides share the row's width, so the controls line up and grow with the window.
 - The control depends on the type: a switch for a `bool`, a dropdown for a `choice`, a key element for a `key`, a colour element (5) beside a field for a `color`, whose picker has alpha when the value has, a path element (5), whose button opens the file dialog, for a `path`, and a field for the other types.
 - A setting that the user's settings file sets shows its name in the accent, and a Reset button beside its control, whose tooltip shows the value below the user's. The button sets the setting to nil (OpenECS DESIGN 12.2), so the preset's, the theme's or the default value applies again. A `list` or a `table` shows as a Lua table, such as `{ 1, 2 }`.
@@ -337,7 +339,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The panel type `launcher.list` lists the presets, then the saved sessions (OpenECS DESIGN 13.7). Presets whose tool has a last session come first, the most recently used first; the others follow by name. Sessions are listed newest first.
 - An entry shows the tool's name. A session's entry also shows the file's name and when it was saved.
 - The panel reads both lists when it is created and each time it is shown again.
-- Every tool loads the plugin, as the core's settings file names it (OpenECS DESIGN 12.3). `launcher.open` opens the list in any tool, or gives an open one the focus, so the user can go to another tool; the core binds it to the prefix and `/`.
+- Every tool loads the plugin, as the core's settings file names it (OpenECS DESIGN 12.3). `launcher.open` opens the list in any tool, or gives an open one the focus, so the user can go to another tool; the plugin binds it to `/` after the prefix and adds it to the tool's menu (OpenECS DESIGN 7.8, 6.8).
 - Up and Down choose an entry, and Return opens it, as the list handles them (5). A click on an entry opens it, and the wheel scrolls the list.
 - A search (5) above the list shows only the entries whose tool's name, file or time matches it; Up and Down choose among them while it has the keys, and Return opens the chosen one.
 - The panel's saved state is the chosen entry, by its type, `preset` or `session`, and its name, so the launcher chooses it again at the next start.
@@ -347,7 +349,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 14. The panel list
 
 - It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
-- The core's settings file loads it for every tool, and binds `panels.open` to Alt+W, then `.` (OpenECS DESIGN 12.3).
+- The core's settings file loads it for every tool (OpenECS DESIGN 12.3). It binds `panels.open` to `.` after the prefix and adds it to the tool's menu (OpenECS DESIGN 7.8, 6.8).
 - It reads the list with `ecs.panel.listTypes()` (OpenECS DESIGN 4.1), each time it is opened or shown, and on `ecs.pluginsChanged`, and leaves out its own type. The types are grouped by plugin, in a section of the plugin's name, which a click on its heading closes or opens, under the plugin's description; each row shows the type's title and name.
 - `panels.open` opens the list, or focuses it if it is open. The panel that had the focus is where a chosen type opens: in its group, or where the core puts new panels if it has closed.
 - A click on a row, or Return on the chosen one, opens a panel of the type. Up and Down choose a row, as the list handles them (5).
@@ -443,7 +445,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 19. The plugin list
 
 - It shows every plugin in the plugin folders, loaded or not, so the user enables and disables plugins while the tool runs (OpenECS DESIGN 9.10). The first-party Lua plugin `plugins` gives the panel type `plugins.list`, titled "Plugins".
-- The core's settings file loads it for every tool, and binds `plugins.open` to Alt+W, then `;` (OpenECS DESIGN 12.3).
+- The core's settings file loads it for every tool (OpenECS DESIGN 12.3). It binds `plugins.open` to `;` after the prefix and adds it to the tool's menu (OpenECS DESIGN 7.8, 6.8).
 - It reads the list with `ecs.plugins.list()` each time it is opened or shown, and again on `ecs.pluginsChanged`. It leaves out itself and the plugins it needs, through others too, as disabling them would close the list. The plugins are sorted by name; each row shows the name, the version, whether the plugin is enabled, disabled or failed, the description, and the plugins it depends on. An enabled plugin that an enabled plugin needs is faded.
 - A click on a row, or Return on the chosen one, disables an enabled plugin, unless an enabled plugin needs it (OpenECS DESIGN 9.10), and enables any other, with the plugins it needs.
 - A search (5) above the list shows only the plugins whose name, description, version, state or dependencies match it; Up and Down choose among them while it has the keys, and Return enables or disables the chosen one.
@@ -507,7 +509,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - The `markdown` plugin reads Markdown as GitHub writes it, with tables, struck text, task lists and bare links, for notes and help panels. It is a native plugin: md4c is compiled into it (1).
 - `markdown.parse(text)` gives the document as a tree: each node is a table with its `type` and, for a node that holds others, its `children`. Blocks are `heading` with its `level`, `paragraph`, `quote`, `list` with `ordered`, `start` and `tight`, `item` with `checked` for a task, `codeBlock` with its `language` and `text`, `html` with its `text`, `rule`, `table`, `row` with `head`, and `cell` with its `align`. Parts of a line are `text` and `code` with their `text`, `emphasis`, `strong`, `strike`, `link` and `image` with their `url` and `title`, and `break`. Entities such as `&amp;` become their characters.
-- `markdown.elements(text)` gives a description of ui's elements (5), which `ui.showDescription` shows: a column of wrapped texts for paragraphs and headings, larger by level; rows of a mark and the item's blocks for lists; a dimmed, indented column for a quote; the mono font on the colour of tabs for code; rows of equal cells for a table, under a head on the colour of the tab row; and a separator for a rule. A paragraph is a text of spans, so emphasis, struck text, code and links keep their style; a heading's spans are larger. A panel puts the description in a scroll element, to scroll what does not fit, and takes the clicked links with `ui.take(panel, "", "onLink")`.
+- `markdown.elements(text)` gives a description of ui's elements (5), which `ui.showDescription` shows: a column of wrapped texts for paragraphs and headings, larger by level; rows of a mark and the item's blocks for lists; a dimmed, indented column for a quote; the mono font on the colour of fields for code; rows of equal cells for a table, under a head on the colour of the tab row; and a separator for a rule. A paragraph is a text of spans, so emphasis, struck text, code and links keep their style; a heading's spans are larger. A panel puts the description in a scroll element, to scroll what does not fit, and takes the clicked links with `ui.take(panel, "", "onLink")`.
 
 ## 27. syntax
 
@@ -581,7 +583,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 32. The profiler
 
 - The first-party Lua plugin `profiler` shows where the main thread's time goes, as the core measures it while the setting `ecs.profile` is on (OpenECS DESIGN 3.5). Its panel type is `profiler.view`, titled "Profiler". It is built with ui (5).
-- The core's settings file loads it for every tool, and binds `profiler.open` to Alt+W, then `F` (OpenECS DESIGN 12.3). `profiler.open` opens the panel, or focuses it if it is open.
+- The core's settings file loads it for every tool (OpenECS DESIGN 12.3). It binds `profiler.open` to `F` after the prefix and adds it to the tool's menu (OpenECS DESIGN 7.8, 6.8). `profiler.open` opens the panel, or focuses it if it is open.
 - Its Measure switch turns `ecs.profile` on and off with `ecs.setting.set`. While it is off, the panel says how to turn it on.
 - The panel reads `ecs.profile.get()` every half second, not in each draw, so its own drawing stays small. Its Pause toggle keeps the numbers that show, to read or copy them.
 - A line sums up the last passes that drew a frame: how many, and their average and longest time without the wait.
@@ -592,12 +594,14 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 ## 33. The key list
 
 - The first-party Lua plugin `keys` shows every key binding of the tool, and changes them in the user's settings, with `ecs.key.list`, `ecs.key.set` and `ecs.key.functions` (OpenECS DESIGN 7.8). Its panel type is `keys.list`, titled "Keys". It is built with ui (5).
-- The core's settings file loads it for every tool, binds `keys.open` to Alt+W, then `K`, and puts it in the tool's menu (OpenECS DESIGN 12.3). `keys.open` opens the list, or focuses it if it is open.
+- The core's settings file loads it for every tool (OpenECS DESIGN 12.3). It binds `keys.open` to `K` after the prefix and adds it to the tool's menu (OpenECS DESIGN 7.8, 6.8). `keys.open` opens the list, or focuses it if it is open.
 - The bindings that run show in a section for each scope: Everywhere, for the whole tool; After the prefix; then each panel type, by its title. A row shows the function's description and name, and its key as a key element (5): a click on it, then a key press, gives the function that key instead. A binding that removes a key shows as Removed.
 - A new key binds the function in the user's settings, and the old key is taken away: the user's own binding goes with nil, and a key that a layer below still binds to the function is removed with false. Remove takes a key away the same way. A row that the user's settings give shows its title in the accent, and a Reset button, which takes the user's binding away, so the preset's or the default applies again.
 - Add a key, above the sections, binds a key for a function, chosen in a dropdown of every function that a key can run, in folders by their names' dots, in a scope chosen in another.
 - A search (5) shows only the rows whose key, function, description or scope matches it, with their sections open.
 - The list reads the bindings again when it is shown, on `ecs.pluginsChanged`, when `ecs.prefix` changes, and after each change it makes. The panel's saved state is the scopes whose sections are closed.
+- The plugin also shows the keys after the prefix while the core waits for one, from the core's event `ecs.prefix` (OpenECS DESIGN 7.5, 8.4): a popup of type tooltip over the focused panel's top left corner, drawn with draw (2), which closes when the core waits no more. It lists each key and what it does now, in sections: Navigation (focus, move, tabs and workspaces), Panel (the core's other functions on the focused panel), Layout (closing a group, locking it and resetting the layout), Session (saving and opening sessions, the tool's menu and quitting) and More (the plugins' functions). A section without keys has no heading, and Escape, Cancel ends the list.
+- Keys of one kind share a line. The keys that switch workspaces show the first workspace's key to the last one's: `1...0`, and the keys that move the focused panel to a workspace the same way: `Shift+1...0`. Focus and move show `Arrows` and `Shift+Arrows` when their four functions are on the four arrows with the same modifiers.
 
 ---
 
