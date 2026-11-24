@@ -387,6 +387,6 @@ ecs.service.register({
   open = { sig = "void()", doc = "Open the profiler", fn = open },
 })
 
--- its key after the prefix, and its entry in the tool's menu
+-- its key after the prefix, and its entry in the title bar's menu Tools
 ecs.key.bind("prefix", "F", "profiler.open")
 ecs.app.addMenuEntry("profiler.open")

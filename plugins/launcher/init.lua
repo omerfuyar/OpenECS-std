@@ -215,7 +215,7 @@ ecs.service.register({
   open = { sig = "void()", doc = "Open the launcher", fn = services.open },
 })
 
--- its key after the prefix, and its entry in the tool's menu
+-- its key after the prefix, and its entry in the title bar's menu Tools
 ecs.key.bind("prefix", "/", "launcher.open")
 ecs.app.addMenuEntry("launcher.open")
 

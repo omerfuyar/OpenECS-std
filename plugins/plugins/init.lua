@@ -130,7 +130,7 @@ function Plugins:view()
 
   return ui.column({ style = STYLES.view }, {
     ui.text("Plugins", { style = STYLES.title }),
-    ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note }),
+    ui.text("Return enables or disables the chosen plugin. A faded plugin stays enabled, as an enabled plugin needs it.", { style = STYLES.note, wrap = true }),
     ui.search(self.query, {
       placeholder = "Search plugins",
       results = "list",
@@ -240,6 +240,6 @@ ecs.service.register({
   open = { sig = "void()", doc = "Open the plugin list", fn = services.open },
 })
 
--- its key after the prefix, and its entry in the tool's menu
+-- its key after the prefix, and its entry in the title bar's menu Tools
 ecs.key.bind("prefix", ";", "plugins.open")
 ecs.app.addMenuEntry("plugins.open")
