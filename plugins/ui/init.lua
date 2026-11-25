@@ -981,9 +981,10 @@ local function prefix(text, count)
   return text:sub(1, at - 1)
 end
 
--- the text that fits a width, ended with an ellipsis when it is cut
-local function ellipsize(font, text, textSize, width)
-  if measureText(font, text, textSize) <= width then
+-- the text that fits a width, ended with an ellipsis when it is cut; with cut, it ends with one even when it fits, as the last line that a
+-- text with maxLines shows of more
+local function ellipsize(font, text, textSize, width, cut)
+  if not cut and measureText(font, text, textSize) <= width then
     return text
   end
 
@@ -1330,7 +1331,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1864,6 +1865,13 @@ function elements.text(text, props)
     node.text = tostring(text)
   end
 
+  -- a text with maxLines wraps, and shows at most that many lines
+  ecs.check(node.maxLines == nil or (type(node.maxLines) == "number" and node.maxLines >= 1), "A text's maxLines is a number of lines, 1 or more.")
+
+  if node.maxLines then
+    node.maxLines, node.wrap = math.floor(node.maxLines), true
+  end
+
   -- a wrapMark is drawn where spans break, so a plain text that has one is one span
   if node.wrapMark and not node.spans then
     node.spans = { { text = node.text } }
@@ -2339,6 +2347,34 @@ function measureRowWidths(node, state, rowRoom, along)
   return along, across
 end
 
+-- the first count of a text's lines, as a text with maxLines shows them, at most width wide: a text's last line ends with an ellipsis, and a
+-- last line of spans keeps in cut where its runs end, and is as wide as they are with the ellipsis that inside.runs draws after them. The
+-- lines are shared, so the shown ones are kept on them by count, and no one changes them
+function inside.cutLines(lines, count, font, textSize, width)
+  if #lines <= count then
+    return lines
+  end
+
+  lines.cuts = lines.cuts or {}
+  local shown = lines.cuts[count]
+
+  if shown == nil then
+    shown = table.move(lines, 1, count, 1, {})
+    local last = shown[count]
+
+    if type(last) == "string" then
+      shown[count] = ellipsize(font, (last:gsub("%s+$", "")), textSize, width or math.huge, true)
+    else
+      local dots = measureText(font, "…", textSize)
+      shown[count] = { runs = last.runs, width = math.min(last.width + dots, width or math.huge), wrapped = last.wrapped, cut = last.width }
+    end
+
+    lines.cuts[count] = shown
+  end
+
+  return shown
+end
+
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
 -- room is the width a column gives its children, which text that wraps breaks at; nil in a row
 function measure(node, state, room)
@@ -2362,6 +2398,11 @@ function measure(node, state, room)
 
   if node.type == "text" and node.spans then
     layout.spanLines = layoutSpans(node, textSize, node.wrap and (node.width or room) or nil)
+
+    if node.maxLines then
+      layout.spanLines = inside.cutLines(layout.spanLines, node.maxLines, font, textSize, node.wrap and (node.width or room) or nil)
+    end
+
     width, height = 0, #layout.spanLines * line
 
     for _, spanLine in ipairs(layout.spanLines) do
@@ -2369,6 +2410,16 @@ function measure(node, state, room)
     end
   elseif node.type == "text" and node.wrap and innerWidthOf(node, room) then
     layout.lines, width = wrapKept(font, node.text, textSize, innerWidthOf(node, room))
+
+    -- a text with maxLines shows its first lines, and is as wide as the widest of them
+    if node.maxLines and #layout.lines > node.maxLines then
+      layout.lines, width = inside.cutLines(layout.lines, node.maxLines, font, textSize, innerWidthOf(node, room)), 0
+
+      for _, text in ipairs(layout.lines) do
+        width = math.max(width, measureText(font, text, textSize))
+      end
+    end
+
     height = #layout.lines * line
   elseif node.type == "text" and node.text:find("\n") then
     -- a text of many lines without wrap keeps its own lines, each cut with an ellipsis when it is drawn
@@ -2377,6 +2428,11 @@ function measure(node, state, room)
 
     for text in (node.text .. "\n"):gmatch("(.-)\n") do
       layout.lines[#layout.lines + 1] = text
+    end
+
+    layout.lines = node.maxLines and inside.cutLines(layout.lines, node.maxLines, font, textSize, room) or layout.lines
+
+    for _, text in ipairs(layout.lines) do
       width = math.max(width, measureText(font, text, textSize))
     end
 
@@ -3053,12 +3109,27 @@ function inside.runs(node, surface, x, y)
       draw.text(surface, fontOf(node), node.wrapMark, x, y + (i - 1) * line, textSize, "textDim")
     end
 
+    -- the last line that a text with maxLines shows of more ends with an ellipsis: its runs stop where one still fits, and a word that
+    -- crosses there is cut with it
+    local stop = spanLine.cut and math.min(spanLine.cut, node.layout.width - measureText(fontOf(node), "…", textSize))
+    local dotsX = spanLine.cut
+
     for _, run in ipairs(spanLine.runs) do
       local span = node.spans[run.index]
       local color = span.color or (span.link and "accent") or node.color or "text"
       local runX, runY = x + run.x, y + (i - 1) * line
 
-      if span.icon then
+      if stop and run.x + run.width > stop then
+        if not run.picture and run.x < stop then
+          draw.text(surface, spanFont(node, span), ellipsize(spanFont(node, span), (run.text:gsub("%s+$", "")), textSize, node.layout.width - run.x, true), runX, runY,
+            textSize, color)
+          dotsX = nil
+        else
+          dotsX = math.min(dotsX, run.x)
+        end
+
+        break
+      elseif span.icon then
         draw.icon(surface, span.icon, runX, runY, run.width, color)
       elseif span.image then
         local picture = loadImageCached(span.image, textScale)
@@ -3071,6 +3142,10 @@ function inside.runs(node, surface, x, y)
       else
         draw.text(surface, spanFont(node, span), run.text, runX, runY, textSize, color)
       end
+    end
+
+    if dotsX then
+      draw.text(surface, fontOf(node), "…", x + dotsX, y + (i - 1) * line, textSize, node.color or "text")
     end
   end
 end
@@ -5409,7 +5484,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -5728,7 +5803,7 @@ ecs.service.register({
   text = {
     sig = "value<ui.Element>(value<ui.Text> text, value<ui.TextProps?> props)",
     doc = "A line of text, or of spans in their own styles\n"
-        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true\n"
+        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true; with maxLines, it wraps and shows at most that many lines, the last ending with an ellipsis when more follow\n"
         .. "@param props The text's properties (ui.TextProps)\n"
         .. "@return The text element",
     fn = elements.text,
