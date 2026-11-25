@@ -3380,6 +3380,16 @@ local function openDropdown(panel, state, node)
   -- the rows below the search's: { label, choice } for a choice, { label, folder } for a folder, and { label, back = true }
   local rows = {}
   local popup
+  -- a popup no taller than the room above or below the dropdown in its window, whichever is larger: it shows `limit` rows from
+  -- after `skip`, and the wheel and the keys scroll it
+  local skip, limit = 0, math.huge
+  local place = panel.place
+
+  if place and place.windowHeight > 0 then
+    local below = place.windowHeight - place.y - (box.y + box.height) * scale
+    local above = place.y + box.y * scale
+    limit = math.max(1, math.floor(math.max(below, above) / scale / rowHeight))
+  end
 
   -- the folder that holds a path, "" for the top, and the path's last part
   local function split(path)
@@ -3459,13 +3469,25 @@ local function openDropdown(panel, state, node)
   end
 
   local function height()
-    return rowHeight * math.max(1, #rows + top())
+    return rowHeight * math.max(1, math.min(#rows + top(), limit))
+  end
+
+  -- the rows below the search's that show, and a skip that keeps the hovered one among them
+  local function room()
+    return math.max(1, limit - top())
+  end
+
+  local function keepHover()
+    skip = clamp(skip, math.max(0, hover - room()), math.max(0, hover - 1))
+    skip = clamp(skip, 0, math.max(0, #rows - room()))
   end
 
   -- shows the rows again, hovering the first that is not the way back, or the given one
   local function refill(hovered)
     fill()
     hover = hovered or ((rows[1] and rows[1].back and rows[2]) and 2 or 1)
+    skip = 0
+    keepHover()
     popup:setSize(width, height())
     popup:redraw()
   end
@@ -3501,7 +3523,7 @@ local function openDropdown(panel, state, node)
 
   local function rowAt(y)
     local index = math.floor(y / scale / rowHeight) + 1 - top()
-    return rows[index] ~= nil and index or nil
+    return index >= 1 and index <= room() and rows[index + skip] ~= nil and index + skip or nil
   end
 
   -- the chosen one's folder is open first, with it hovered
@@ -3516,6 +3538,8 @@ local function openDropdown(panel, state, node)
       hover = i
     end
   end
+
+  keepHover()
 
   local message
   popup, message = panel:openPopup({
@@ -3532,8 +3556,9 @@ local function openDropdown(panel, state, node)
         draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
       end
 
-      for i, row in ipairs(rows) do
-        local y = (i - 1 + top()) * rowHeight
+      for i = skip + 1, math.min(#rows, skip + room()) do
+        local row = rows[i]
+        local y = (i - 1 - skip + top()) * rowHeight
         local x, room = size.paddingX, width - 2 * size.paddingX
 
         if i == hover then
@@ -3567,8 +3592,13 @@ local function openDropdown(panel, state, node)
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
         if #rows > 0 then
           hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #rows)
+          keepHover()
           popup:redraw()
         end
+      elseif event.type == "wheel" and #rows > room() then
+        skip = clamp(skip - (event.scrollY > 0 and 1 or event.scrollY < 0 and -1 or 0) * 3, 0, #rows - room())
+        hover = clamp(hover, skip + 1, skip + room())
+        popup:redraw()
       elseif event.type == "keyDown" and isEnter(event) then
         if rows[hover] ~= nil then
           choose(hover)
