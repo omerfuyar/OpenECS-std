@@ -71,6 +71,7 @@ struct UiProps
     const char *title;           // a group's title
     UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
     const char *wrapMark;        // what a text that wraps shows, dimmed, at the start of each line after a break, such as "↪ "; its lines start after it
+    i32 maxLines;                // the most lines a text shows: it wraps, and its last shown line ends with an ellipsis when more follow
     UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
     const char *placeholder;     // the text an empty field shows, dimmed, until it is typed in
@@ -277,7 +278,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     {
         const char *name;
         f64 number;
-    } numbers[] = {{"width", props->width}, {"height", props->height}, {"padding", props->padding}, {"gap", props->gap}, {"size", props->size}, {"step", props->step}, {"selected", props->selected}, {"count", props->count}, {"first", props->first}};
+    } numbers[] = {{"width", props->width}, {"height", props->height}, {"padding", props->padding}, {"gap", props->gap}, {"size", props->size}, {"step", props->step}, {"selected", props->selected}, {"count", props->count}, {"first", props->first}, {"maxLines", props->maxLines}};
 
     for (usz i = 0; i < UI__COUNT(numbers); i++)
     {
