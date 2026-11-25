@@ -137,8 +137,6 @@
 ---@field id string
 ---@field open? table<any, boolean> The open nodes, by id.
 ---@field selected? any The chosen node's id, or a list of the chosen ones' ids, each highlighted; Up and Down move from the first.
----@field first? integer The number of a long tree's first shown node to build, from 1, as ui.range gives it for the number of shown nodes.
----@field last? integer The number of the last shown node to build; the others take their room without being built.
 ---@field onSelect? fun(id: any, how: "toggle"|"range"|nil, between: any[]?) As a list's, with ids; between holds the shown nodes from the first chosen one to it.
 ---@field onActivate? fun(id: any)
 ---@field onMenu? fun(id: any, x: number, y: number) A right click gives the node's id, or nil beside the nodes, and the place.
