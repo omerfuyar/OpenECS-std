@@ -2,7 +2,7 @@
 -- may name a file and a line, such as "components/coin.lua:12", and a click on it runs the command of the setting
 -- console.editor, which opens the file there in the user's code editor. An entry equal to the one before it stacks on it.
 -- Each entry has a source, such as what a tool's program prints or a plugin whose log line it is: the core's event ecs.logged
--- brings the log's lines from the level of the setting console.logLevel up, and each panel's checkboxes show some sources only.
+-- brings every line of the log. Each panel's Show dropdown shows the entries from a level up, and its checkboxes some sources only.
 
 local ecs = require("ecs")
 local ui = require("ui")
@@ -10,13 +10,15 @@ local process = require("process")
 
 local STYLES = ui.styles()
 local LIMIT = 2000
-local LEVELS = { "info", "warn", "error" }
-local NAMES = { info = "Info", warn = "Warnings", error = "Errors" }
-local COLORS = { warn = "warning", error = "error" }
+-- the levels that the Show dropdown offers, from the highest, each showing the entries of its level and the levels above
+local LEVELS = { "error", "warn", "info", "debug" }
+local NAMES = { "Errors", "Warnings and up", "Info and up", "Everything" }
+local RANKS = { error = 1, warn = 2, info = 3, debug = 4 }
+local COLORS = { debug = "textDim", warn = "warning", error = "error" }
 
 ---@class console.Entry
 ---@field text string what was added, which may hold many lines
----@field level string info, warn or error
+---@field level string debug, info, warn or error
 ---@field source string where it comes from: what the plugin that added it says, such as "game", or the plugin whose log line it is
 ---@field time string when it was added last, as hours, minutes and seconds
 ---@field count integer how many times it was added in a row
@@ -35,30 +37,11 @@ local added = 0 -- grows with each add, so a panel knows when its filtered entri
 local panels = {} ---@type table<ecs.Panel, table>
 local folder = "" -- the folder that the files that entries name are in
 local DEFAULT_SOURCE = "output" -- the source of an entry whose adder names none
--- the lowest level of the log's lines that the console takes, from none to every line
-local LOG_LEVELS = { "off", "error", "warn", "info", "debug" }
-local LOG_NAMES = { "None", "Errors", "Warnings", "Info", "Debug" }
-
-ecs.setting.declare({
-  name = "clearOnRun",
-  type = "bool",
-  description = "Whether the console clears when the tool starts a run of its program, such as a game that plays",
-  default = true,
-})
-
 ecs.setting.declare({
   name = "editor",
   type = "string",
   description = "The command that opens a file at a line in a code editor; {file} and {line} stand for them",
   default = "code --goto {file}:{line}",
-})
-
-ecs.setting.declare({
-  name = "logLevel",
-  type = "choice",
-  choices = LOG_LEVELS,
-  description = "The lowest level of the log's lines that the console shows, each with its plugin as its source; off for none",
-  default = "warn",
 })
 
 local warned = false -- the user was told that the code editor did not start
@@ -163,7 +146,7 @@ end
 function add(text, level, links, source, time)
   text = tostring(text):gsub("\r?\n$", "")
   links = type(links) == "table" and #links > 0 and links or nil
-  level = level ~= "" and level or "info"
+  level = RANKS[level] and level or "info"
   source = source and source ~= "" and source or DEFAULT_SOURCE
   time = time or tostring(os.date("%H:%M:%S"))
   local last = entries[#entries]
@@ -181,18 +164,10 @@ function add(text, level, links, source, time)
   redraw()
 end
 
--- the log's lines, from the level of the setting console.logLevel up; a debug line shows as info, and its plugin is its source
-local RANKS = { error = 2, warn = 3, info = 4, debug = 5 }
-
+-- every line of the log, which the core's setting ecs.log chooses, with its plugin as its source; the Show dropdown hides the
+-- lower levels
 ecs.event.subscribe("ecs.logged", function(_, line)
-  local wanted = ecs.setting.get("console.logLevel")
-  local rank = RANKS[line.level]
-  for i, name in ipairs(LOG_LEVELS) do
-    if name == wanted and rank and rank <= i then
-      add(line.message, line.level == "debug" and "info" or line.level, nil, line.plugin, (line.time:gsub("%.%d+$", "")))
-      return
-    end
-  end
+  add(line.message, line.level, nil, line.plugin, (line.time:gsub("%.%d+$", "")))
 end)
 
 -- The links that the plugin that added an entry gave, in a row.
@@ -278,9 +253,9 @@ function Console:menu(entry, x, y)
 end
 
 function Console.create(panel, saved)
-  local state = setmetatable({ panel = panel, follow = true, hidden = {}, hiddenSources = {} }, Console)
-  if type(saved) == "table" and type(saved.hidden) == "table" then
-    state.hidden = saved.hidden
+  local state = setmetatable({ panel = panel, follow = true, show = "info", hiddenSources = {} }, Console)
+  if type(saved) == "table" and RANKS[saved.show] then
+    state.show = saved.show
   end
   if type(saved) == "table" and type(saved.hiddenSources) == "table" then
     state.hiddenSources = saved.hiddenSources
@@ -289,12 +264,12 @@ function Console.create(panel, saved)
   return state
 end
 
--- the entries that the panel's toggles, checkboxes and search show, with their numbers, how many each level has, and the sources in order
--- of their first entry, with how many each has; they are kept until an entry is
--- added, the entries are cleared, or the search or a toggle changes, as a draw that only a hover asks for filters the same entries
+-- the entries that the panel's Show dropdown, checkboxes and search show, with their numbers, how many each level has, and the sources
+-- in order of their first entry, with how many each has; they are kept until an entry is added, the entries are cleared, or the
+-- search, the level or a checkbox changes, as a draw that only a hover asks for filters the same entries
 function Console:filter()
-  local hidden = self.hidden
-  local key = (hidden.info and "i" or "") .. (hidden.warn and "w" or "") .. (hidden.error and "e" or "") .. "\0" .. (self.search or "")
+  local rank = RANKS[self.show]
+  local key = self.show .. "\0" .. (self.search or "")
   for source in pairs(self.hiddenSources) do
     key = key .. "\0" .. source
   end
@@ -304,7 +279,7 @@ function Console:filter()
     return kept
   end
 
-  kept = { entries = entries, added = added, key = key, shown = {}, numbers = {}, places = {}, counts = { info = 0, warn = 0, error = 0 }, sources = {}, bySource = {} }
+  kept = { entries = entries, added = added, key = key, shown = {}, numbers = {}, places = {}, counts = { debug = 0, info = 0, warn = 0, error = 0 }, sources = {}, bySource = {} }
   local shown, counts, sources, bySource = kept.shown, kept.counts, kept.sources, kept.bySource
 
   for i, entry in ipairs(entries) do
@@ -313,7 +288,7 @@ function Console:filter()
       sources[#sources + 1], bySource[entry.source] = entry.source, 0
     end
     bySource[entry.source] += entry.count
-    if not hidden[entry.level] and not self.hiddenSources[entry.source] and ui.matches(self.search or "", entry.text) then
+    if RANKS[entry.level] <= rank and not self.hiddenSources[entry.source] and ui.matches(self.search or "", entry.text) then
       shown[#shown + 1], kept.numbers[#shown + 1] = entry, i
       kept.places[entry] = #shown
     end
@@ -336,32 +311,29 @@ function Console:draw(surface)
   if #shown == 0 then
     items[1] = ui.text(#entries == 0 and "Nothing was printed yet." or "The filters hide every entry.", { style = STYLES.note, selectable = false })
   end
-  -- the levels' toggles filter the entries, and show how many each has
-  local header = {}
-  for _, level in ipairs(LEVELS) do
-    header[#header + 1] = ui.toggle(not self.hidden[level], {
-      id = "show:" .. level, label = ("%s %d"):format(NAMES[level], counts[level] or 0), tooltip = "Show the entries of this level",
-      onChange = function(on)
-        self.hidden[level] = not on or nil
-      end,
-    })
-  end
   -- the search shows only the entries that hold each word typed
+  local header = {}
   header[#header + 1] = ui.search(self.search or "", { width = 200, placeholder = "Search entries", onChange = function(text)
     self.search = text ~= "" and text or nil
   end })
   header[#header + 1] = ui.space()
-  header[#header + 1] = ui.toggle(ecs.setting.get("console.clearOnRun") == true, {
-    id = "clearOnRun", label = "Clear on run", tooltip = "Clear the console when the tool starts a run, such as a game that plays",
-    onChange = function(on)
-      ecs.setting.set("console.clearOnRun", on)
+  -- the Show dropdown shows the entries from a level up, and how many each choice shows
+  local choices, total = {}, 0
+  for i, level in ipairs(LEVELS) do
+    total += counts[level] or 0
+    choices[i] = ("%s (%d)"):format(NAMES[i], total)
+  end
+  header[#header + 1] = ui.text("Show", { style = STYLES.note })
+  header[#header + 1] = ui.dropdown(RANKS[self.show], choices, {
+    id = "show", width = 170, tooltip = "Show the entries of this level and the levels above", onSelect = function(choice)
+      self.show = LEVELS[choice]
     end,
   })
   header[#header + 1] = ui.button("Clear", { id = "clear", tooltip = "Take out every entry", onClick = function()
     entries = {}
     redraw()
   end })
-  -- a checkbox for each source shows its entries or hides them, and the level of the log's lines that the console takes is next to them
+  -- a checkbox for each source shows its entries or hides them
   local sources = { ui.text("Sources", { style = STYLES.note }) }
   for _, source in ipairs(filtered.sources) do
     sources[#sources + 1] = ui.toggle(not self.hiddenSources[source], {
@@ -374,20 +346,7 @@ function Console:draw(surface)
   if #filtered.sources == 0 then
     sources[#sources + 1] = ui.text("none yet", { style = STYLES.note })
   end
-  local logLevel = 1
-  for i, name in ipairs(LOG_LEVELS) do
-    if name == ecs.setting.get("console.logLevel") then
-      logLevel = i
-    end
-  end
-  sources[#sources + 1] = ui.space()
-  sources[#sources + 1] = ui.text("Log", { style = STYLES.note })
-  sources[#sources + 1] = ui.dropdown(logLevel, LOG_NAMES, {
-    id = "log", width = 110, tooltip = "The lowest level of the log's lines that the console shows, from here on", onSelect = function(choice)
-      ecs.setting.set("console.logLevel", LOG_LEVELS[choice])
-    end,
-  })
-  -- the toggles, the search and the buttons are a bar along the top, over the sources and the entries
+  -- the search, the Show dropdown and Clear are a bar along the top, over the sources and the entries
   ui.show(self.panel, surface, ui.column({}, {
     ui.row({ style = STYLES.bar, gap = 8, align = "center", wrap = true }, header),
     ui.row({ style = STYLES.bar, gap = 8, align = "center", wrap = true }, sources),
@@ -412,10 +371,10 @@ function Console:event(event)
   ui.event(self.panel, event)
 end
 
--- the levels and sources it hides, and how many entries show and are built, and each source's count, which a test reads
+-- the level it shows from, the sources it hides, and how many entries show and are built, and each source's count, which a test reads
 function Console:saveState()
   local filtered = self:filter()
-  return { hidden = self.hidden, hiddenSources = self.hiddenSources, shown = self.shown, built = self.built, chosen = self.chosen and self.chosen.text or nil,
+  return { show = self.show, hiddenSources = self.hiddenSources, shown = self.shown, built = self.built, chosen = self.chosen and self.chosen.text or nil,
     sources = filtered.bySource }
 end
 
@@ -435,18 +394,12 @@ ecs.panel.registerType({
 })
 
 ecs.service.register({
-  add = { sig = "void(string text, string level, value links, string source)", doc = "Add an entry to the console, which stacks on the last one when it is equal, from the same source\n@param text The entry's text, which may hold many lines\n@param level info, warn or error\n@param links Lua only, or nil: more links after the place it names, each a table of its text, tooltip and onClick (console.Link)\n@param source Where it comes from, such as \"game\", which the console's checkboxes show or hide; \"output\" when empty or nil", fn = function(text, level, links, source)
+  add = { sig = "void(string text, string level, value links, string source)", doc = "Add an entry to the console, which stacks on the last one when it is equal, from the same source\n@param text The entry's text, which may hold many lines\n@param level debug, info, warn or error; info when it is none of them\n@param links Lua only, or nil: more links after the place it names, each a table of its text, tooltip and onClick (console.Link)\n@param source Where it comes from, such as \"game\", which the console's checkboxes show or hide; \"output\" when empty or nil", fn = function(text, level, links, source)
     add(text, level, links, source)
   end },
   clear = { sig = "void()", doc = "Clear the console", fn = function()
     entries = {}
     redraw()
-  end },
-  run = { sig = "void()", doc = "Say that the tool starts a run of its program, such as a game that plays: the console clears when the setting console.clearOnRun is on", fn = function()
-    if ecs.setting.get("console.clearOnRun") == true then
-      entries = {}
-      redraw()
-    end
   end },
   entries = { sig = "value()", doc = "The console's entries\n@return The entries, each a table of its text, level, time, count, and the file and line it names (console.Entry)", fn = function()
     return entries
