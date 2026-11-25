@@ -163,6 +163,7 @@
 
 ---@class ui.TextProps: ui.Props
 ---@field wrap? boolean Breaks into lines at the width of its column, or its own width.
+---@field wrapMark? string What a text that wraps shows, in "textDim", at the start of each line after a break, such as "↪ "; those lines start after it. A new line of the text's own is not marked.
 ---@field onLink? fun(link: string) A click on a span with a link, or Return while the text has the keys, gives the link.
 
 ---A part of a text in its own style, or a picture a line high: an icon, or an image. draw makes bold, italic, underline and struck text from

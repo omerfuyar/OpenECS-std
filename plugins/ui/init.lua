@@ -1155,21 +1155,29 @@ do
   end
 
   -- the lines of a text of spans: each line is runs of one span, by its index in the spans, at x from the line's start; with a width, it
-  -- breaks between words as wrap does, and a line after a break leaves out the blanks it would start with
+  -- breaks between words as wrap does, and a line after a break leaves out the blanks it would start with. With a wrapMark, a line after a
+  -- break is marked wrapped and starts after the mark's width, where the mark is drawn
   local function lay(node, textSize, width)
     local lines, x, broke = { { runs = {}, width = 0 } }, 0, false
+    local indent = node.wrapMark and width and measureText(fontOf(node), node.wrapMark, textSize) or 0
+
+    -- a line after a break, which starts after the mark
+    local function breakLine()
+      lines[#lines + 1] = { runs = {}, width = indent, wrapped = indent > 0 or nil }
+      x, broke = indent, true
+      return lines[#lines]
+    end
 
     local function add(text, span, index, blank)
       local font = spanFont(node, span)
       local runWidth = measureText(font, text, textSize)
       local line = lines[#lines]
 
-      if not blank and width and x > 0 and x + runWidth > width then
-        lines[#lines + 1] = { runs = {}, width = 0 }
-        line, x, broke = lines[#lines], 0, true
+      if not blank and width and #line.runs > 0 and x + runWidth > width then
+        line = breakLine()
       end
 
-      if blank and x == 0 and broke then
+      if blank and #line.runs == 0 and broke then
         return
       end
 
@@ -1198,9 +1206,8 @@ do
         local side = lineHeight(spanFont(node, span), textSize)
         local line = lines[#lines]
 
-        if width and x > 0 and x + side > width then
-          lines[#lines + 1] = { runs = {}, width = 0 }
-          line, x, broke = lines[#lines], 0, true
+        if width and #line.runs > 0 and x + side > width then
+          line = breakLine()
         end
 
         line.runs[#line.runs + 1] = { x = x, text = "", index = index, width = side, picture = true }
@@ -1223,7 +1230,7 @@ do
 
           -- a word wider than the width breaks into parts, as in wrap
           if word ~= "" then
-            for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width) or { word }) do
+            for _, wordPart in ipairs(width and wordParts(spanFont(node, span), word, textSize, width - indent) or { word }) do
               add(wordPart, span, index, false)
             end
           end
@@ -1244,8 +1251,8 @@ do
       spannedFor, spanned, spannedCount = fonts, {}, 0
     end
 
-    keyParts[1], keyParts[2], keyParts[3] = textSize * 1024 + textScale, width or "", node.font or ""
-    local parts = 3
+    keyParts[1], keyParts[2], keyParts[3], keyParts[4] = textSize * 1024 + textScale, width or "", node.font or "", node.wrapMark or ""
+    local parts = 4
 
     for _, span in ipairs(node.spans) do
       keyParts[parts + 1] = (span.mono and 16 or 0) + styleBits(span)
@@ -1323,7 +1330,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1855,6 +1862,11 @@ function elements.text(text, props)
     node.text = table.concat(plain)
   else
     node.text = tostring(text)
+  end
+
+  -- a wrapMark is drawn where spans break, so a plain text that has one is one span
+  if node.wrapMark and not node.spans then
+    node.spans = { { text = node.text } }
   end
 
   return node
@@ -3030,6 +3042,11 @@ function inside.runs(node, surface, x, y)
   local line = lineHeight(fontOf(node), textSize)
 
   for i, spanLine in ipairs(node.layout.spanLines) do
+    -- a line after a break starts with the text's wrapMark, dimmed
+    if spanLine.wrapped then
+      draw.text(surface, fontOf(node), node.wrapMark, x, y + (i - 1) * line, textSize, "textDim")
+    end
+
     for _, run in ipairs(spanLine.runs) do
       local span = node.spans[run.index]
       local color = span.color or (span.link and "accent") or node.color or "text"
@@ -5386,7 +5403,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
