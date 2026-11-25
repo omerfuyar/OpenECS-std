@@ -353,12 +353,13 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 
 - It shows every panel type of the tool's plugins, so the user finds what each plugin offers and opens it. The first-party Lua plugin `panels` gives the panel type `panels.list`, titled "Panels".
 - The core's settings file loads it for every tool (OpenECS DESIGN 12.3). It binds `panels.open` to `.` after the prefix and adds it to the title bar's menu Tools (OpenECS DESIGN 7.8, 6.8).
-- It reads the list with `ecs.panel.listTypes()` (OpenECS DESIGN 4.1), each time it is opened or shown, and on `ecs.pluginsChanged`, and leaves out its own type. The types are grouped by plugin, in a section of the plugin's name, which a click on its heading closes or opens, under the plugin's description; each row shows the type's title and name.
+- It reads the list with `ecs.panel.listTypes()` (OpenECS DESIGN 4.1), each time it is opened or shown, and on `ecs.pluginsChanged`, and leaves out its own type `panels.list`. The types are grouped by plugin, in a section of the plugin's name, which a click on its heading closes or opens, under the plugin's description; each row shows the type's title and name.
 - `panels.open` opens the list, or focuses it if it is open. The panel that had the focus is where a chosen type opens: in its group, or where the core puts new panels if it has closed.
 - A click on a row, or Return on the chosen one, opens a panel of the type. Up and Down choose a row, as the list handles them (5).
 - A search (5) above the list shows only the types whose title, name, plugin or plugin's description matches it, with their sections open; Up and Down choose among them while it has the keys, and Return opens the chosen one.
 - The panel's saved state is the chosen type and the plugins whose sections are closed.
 - It is built with ui (5): the types are a list of sections, whose `onActivate` opens the type.
+- The plugin also gives the panel type `panels.blank`, titled "Blank", which holds a place in the layout, such as a split's other side, until a panel goes there. It has no state and no keys. It draws with ui (5): the theme's `panel` colour, and in its middle a hint in `textDim`, "Open a panel here from the panel list.", which wraps. The list shows it with the other types.
 
 ## 15. gpu
 
