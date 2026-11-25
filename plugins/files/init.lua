@@ -176,14 +176,14 @@ function Files:reveal(path)
   local full = folder .. path
   local started, err
   if package.config:sub(1, 1) == "\\" then
-    started, err = process.start({ "explorer", "/select," .. full:gsub("/", "\\") }, "")
+    started, err = process.start({ "explorer", "/select," .. full:gsub("/", "\\") }, "", {})
   else
     local out, code = process.run({ "dbus-send", "--session", "--print-reply", "--dest=org.freedesktop.FileManager1", "--type=method_call",
-      "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems", "array:string:file://" .. full, "string:" }, "", "")
+      "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowItems", "array:string:file://" .. full, "string:" }, "", {}, "")
     if out and code == 0 then
       return
     end
-    started, err = process.start({ "xdg-open", full:match("^(.*/)[^/]*$") or folder }, "")
+    started, err = process.start({ "xdg-open", full:match("^(.*/)[^/]*$") or folder }, "", {})
   end
   if not started then
     self:say(false, "The file manager did not open: " .. tostring(err))

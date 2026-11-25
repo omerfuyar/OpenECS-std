@@ -74,10 +74,68 @@ static const char **ProcessArguments(const ECSValue *command, const char **retEr
     return arguments;
 }
 
-/// @brief Creates a program's process: its arguments, its folder unless it is empty, and how its input and output go.
-static SDL_Process *ProcessCreate(const char **arguments, const char *folder, bool input, bool errorsToOutput)
+/// @brief Makes the environment of a program: the tool's, with each NAME=VALUE text of a list set in it. A list that holds something else is a misuse.
+/// @return The environment, to destroy with SDL_DestroyEnvironment; nullptr for an empty list, which keeps the tool's, and with retValid false when
+/// it is not made, with why in retError when memory runs out.
+static SDL_Environment *ProcessEnvironment(const ECSValue *environment, bool *retValid, const char **retError)
+{
+    usz count = ECSValue_GetListCount(environment);
+    *retValid = true;
+
+    for (usz i = 0; *retValid && i < count; i++)
+    {
+        const ECSValue *item = ECSValue_GetListItem(environment, i);
+        const char *text = ECSValue_GetString(item, "");
+        *retValid = ECSValue_GetType(item) == ECSValueType_String && text[0] != '=' && SDL_strchr(text, '=') != nullptr;
+    }
+
+    if (!ECS_Check(PROCESS.plugin, *retValid, "The environment is a list of texts, each NAME=VALUE."))
+    {
+        return nullptr;
+    }
+
+    if (count == 0)
+    {
+        return nullptr;
+    }
+
+    SDL_Environment *made = SDL_CreateEnvironment(true);
+
+    for (usz i = 0; made != nullptr && i < count; i++)
+    {
+        const char *text = ECSValue_GetString(ECSValue_GetListItem(environment, i), "");
+        const char *equals = SDL_strchr(text, '=');
+        char *name = SDL_strndup(text, (size_t)(equals - text));
+
+        if (name == nullptr || !SDL_SetEnvironmentVariable(made, name, equals + 1, true))
+        {
+            SDL_DestroyEnvironment(made);
+            made = nullptr;
+        }
+
+        SDL_free(name);
+    }
+
+    if (made == nullptr)
+    {
+        *retValid = false;
+        ECS_Fail(PROCESS.plugin, retError, "out of memory");
+    }
+
+    return made;
+}
+
+/// @brief Creates a program's process: its arguments, its folder unless it is empty, its environment unless it is nullptr, and how its input and
+/// output go.
+static SDL_Process *ProcessCreate(const char **arguments, const char *folder, SDL_Environment *environment, bool input, bool errorsToOutput)
 {
     SDL_PropertiesID properties = SDL_CreateProperties();
+
+    if (environment != nullptr)
+    {
+        SDL_SetPointerProperty(properties, SDL_PROP_PROCESS_CREATE_ENVIRONMENT_POINTER, environment);
+    }
+
     SDL_SetPointerProperty(properties, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)arguments);
     SDL_SetNumberProperty(properties, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, input ? SDL_PROCESS_STDIO_APP : SDL_PROCESS_STDIO_NULL);
     SDL_SetNumberProperty(properties, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
@@ -216,13 +274,16 @@ static void ProcessDestroy(void *object)
     SDL_free(handle);
 }
 
-static ProcessHandle *ProcessStart(const ECSValue *command, const char *folder, const char **retError)
+static ProcessHandle *ProcessStart(const ECSValue *command, const char *folder, const ECSValue *environment, const char **retError)
 {
     *retError = nullptr;
-    const char **arguments = ProcessArguments(command, retError);
+    bool valid = false;
+    SDL_Environment *variables = ProcessEnvironment(environment, &valid, retError);
+    const char **arguments = valid ? ProcessArguments(command, retError) : nullptr;
 
     if (arguments == nullptr)
     {
+        SDL_DestroyEnvironment(variables);
         return nullptr;
     }
 
@@ -230,10 +291,11 @@ static ProcessHandle *ProcessStart(const ECSValue *command, const char *folder, 
 
     if (handle != nullptr)
     {
-        handle->process = ProcessCreate(arguments, folder, true, false);
+        handle->process = ProcessCreate(arguments, folder, variables, true, false);
     }
 
     SDL_free((void *)arguments);
+    SDL_DestroyEnvironment(variables);
 
     if (handle == nullptr || handle->process == nullptr)
     {
@@ -312,21 +374,25 @@ static void ProcessKill(ProcessHandle *handle, bool force)
     }
 }
 
-static SHUSlice ProcessRun(const ECSValue *command, const char *folder, SHUSlice input, i32 *retCode, const char **retError)
+static SHUSlice ProcessRun(const ECSValue *command, const char *folder, const ECSValue *environment, SHUSlice input, i32 *retCode, const char **retError)
 {
     *retCode = -1;
     *retError = nullptr;
     SDL_free(PROCESS.ran);
     PROCESS.ran = nullptr;
-    const char **arguments = ProcessArguments(command, retError);
+    bool valid = false;
+    SDL_Environment *variables = ProcessEnvironment(environment, &valid, retError);
+    const char **arguments = valid ? ProcessArguments(command, retError) : nullptr;
 
     if (arguments == nullptr)
     {
+        SDL_DestroyEnvironment(variables);
         return cs(nullptr, 0);
     }
 
-    SDL_Process *process = ProcessCreate(arguments, folder, input.size > 0, true);
+    SDL_Process *process = ProcessCreate(arguments, folder, variables, input.size > 0, true);
     SDL_free((void *)arguments);
+    SDL_DestroyEnvironment(variables);
 
     if (process == nullptr)
     {
@@ -419,10 +485,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
-        {"start", (ECSFunction)ProcessStart, "handle<process.process>(value<string[]> command, string folder, out string error)",
+        {"start", (ECSFunction)ProcessStart, "handle<process.process>(value<string[]> command, string folder, value<string[]> environment, out string error)",
          "Start a program; it runs beside the tool, and its output and errors wait until they are read\n"
          "@param command The program, found on PATH unless it is a path, then its arguments, such as { \"git\", \"status\" }\n"
          "@param folder The folder it runs in; empty for the tool's\n"
+         "@param environment Variables set for it, each NAME=VALUE, beside the tool's own; empty for the tool's alone\n"
          "@param error Why it cannot start; nothing if it starts\n"
          "@return The program; nothing if it cannot start. A program whose handle is gone is killed"},
         {"read", (ECSFunction)ProcessRead, "buffer(handle<process.process> process)",
@@ -451,10 +518,11 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "Ask the program to stop, or stop it at once\n"
          "@param process The program\n"
          "@param force true to stop it at once, false to ask it"},
-        {"run", (ECSFunction)ProcessRun, "buffer(value<string[]> command, string folder, buffer input, out int code, out string error)",
+        {"run", (ECSFunction)ProcessRun, "buffer(value<string[]> command, string folder, value<string[]> environment, buffer input, out int code, out string error)",
          "Run a program to its end and give its output and errors together; the tool waits for it, so it suits short programs\n"
          "@param command The program, found on PATH unless it is a path, then its arguments\n"
          "@param folder The folder it runs in; empty for the tool's\n"
+         "@param environment Variables set for it, each NAME=VALUE, beside the tool's own; empty for the tool's alone\n"
          "@param input What the program reads as its input, which is closed after it; empty for none\n"
          "@param code Its exit code; -1 if it cannot start\n"
          "@param error Why it cannot run; nothing if it ran\n"
