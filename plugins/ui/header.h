@@ -70,6 +70,7 @@ struct UiProps
     UiFlag clickable;            // a column or row that is clicked like a button; UI_CLICKED takes the click
     const char *title;           // a group's title
     UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
+    const char *wrapMark;        // what a text that wraps shows, dimmed, at the start of each line after a break, such as "↪ "; its lines start after it
     UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
     const char *placeholder;     // the text an empty field shows, dimmed, until it is typed in
@@ -270,6 +271,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "pattern", props->pattern);
     Ui_SetString(table, "results", props->results);
     Ui_SetString(table, "folders", props->folders);
+    Ui_SetString(table, "wrapMark", props->wrapMark);
 
     const struct
     {
