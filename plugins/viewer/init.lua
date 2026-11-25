@@ -96,7 +96,7 @@ function Viewer:draw(surface)
   else
     children[#children + 1] = ui.text(("%s, %d bytes"):format(self.path, self.size or 0), { style = STYLES.note, wrap = true })
     if self.error then
-      children[#children + 1] = ui.text(self.error, { color = "#e06c75", wrap = true })
+      children[#children + 1] = ui.text(self.error, { color = "error", wrap = true })
     elseif self.kind == "image" then
       -- The image fills the panel: a big one whole, and a small one by a whole number of times, at most 16.
       local w, h = self.imageWidth or 0, self.imageHeight or 0

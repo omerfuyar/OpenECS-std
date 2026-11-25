@@ -536,7 +536,7 @@ function Files:draw(surface)
       })
     end
     if self.message then
-      children[#children + 1] = ui.text(tostring(self.message), { color = "#e06c75", wrap = true })
+      children[#children + 1] = ui.text(tostring(self.message), { color = "error", wrap = true })
     end
     children[#children + 1] = ui.row({ gap = 6, align = "center" }, {
       ui.selector(self.view == "grid" and 2 or 1, { "Tree", "Grid" }, {

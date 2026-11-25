@@ -70,9 +70,6 @@ local styles = {
   bar = { padding = 4, gap = 4, background = "tabRow", stretch = true },
 }
 
--- the colour of a field whose text is not valid
-local INVALID_COLOR = "#E0505A"
-
 -- how long, in seconds, the pointer rests on an element before its tooltip shows, and how long the tooltip stays;
 -- a panel hears nothing when the pointer leaves it, so a tooltip goes by itself too
 local TOOLTIP_DELAY, TOOLTIP_TIME = 0.5, 5
@@ -2811,7 +2808,7 @@ local function paintTyped(node, surface, state)
 
   -- a number field marks a typed text that is not a number
   local valid = node.valid ~= false and not (editing and node.isNumber and readNumber(state.typed) == nil)
-  draw.roundedOutline(surface, box.x, box.y, box.width, box.height, size.radius, 1, not valid and INVALID_COLOR or editing and "accent" or "frame")
+  draw.roundedOutline(surface, box.x, box.y, box.width, box.height, size.radius, 1, not valid and "error" or editing and "accent" or "frame")
 end
 
 -- down when open, right when closed, and up with up

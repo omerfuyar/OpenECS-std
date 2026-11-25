@@ -12,7 +12,7 @@ local STYLES = ui.styles()
 local LIMIT = 2000
 local LEVELS = { "info", "warn", "error" }
 local NAMES = { info = "Info", warn = "Warnings", error = "Errors" }
-local COLORS = { warn = "#e5c07b", error = "#e06c75" }
+local COLORS = { warn = "warning", error = "error" }
 
 ---@class console.Entry
 ---@field text string what was added, which may hold many lines
