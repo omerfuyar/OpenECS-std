@@ -70,6 +70,7 @@ typedef struct NetConnection
 typedef struct NetServer
 {
     NET_Server *server;      // nullptr once its handle is gone
+    u16 port;                // the port it listens on, also when 0 asked for a free one
     mbedtls_ssl_config *tls; // nullptr for plain TCP
     mbedtls_x509_crt certificate;
     mbedtls_pk_context key;
@@ -623,45 +624,62 @@ static void NetClose(void *connectionHandle)
 
 #pragma region Servers
 
-/// @brief Resolves the IPv4 address that stands for every address of this computer, 0.0.0.0, for SDL_net, which listens on every family of
-/// addresses at once and fails if one is missing, such as IPv6.
+/// @brief Resolves a host's name or address, waiting up to a second.
 /// @return The address, to let go of with NET_UnrefAddress, or nullptr if it does not resolve.
-static NET_Address *NetResolveAnyIpv4(void)
+static NET_Address *NetResolveNow(const char *host)
 {
-    NET_Address *any = NET_ResolveHostname("0.0.0.0");
+    NET_Address *address = NET_ResolveHostname(host);
 
-    if (any != nullptr && NET_WaitUntilResolved(any, 1000) != NET_SUCCESS)
+    if (address != nullptr && NET_WaitUntilResolved(address, 1000) != NET_SUCCESS)
     {
-        NET_UnrefAddress(any);
+        NET_UnrefAddress(address);
         return nullptr;
     }
 
-    return any;
+    return address;
 }
 
-/// @brief Waits for TCP connections on a port of every address, with SDL_net; IPv4 alone when that fails.
-/// @return The server, or nullptr with why in retError.
-static NET_Server *NetCreateServer(i32 port, const char **retError)
+/// @brief Waits for TCP connections on a port of one address, or of every address for an empty host, with SDL_net, which listens on every
+/// family of addresses at once and fails if one is missing, such as IPv6; then on 0.0.0.0, every IPv4 address, alone.
+/// @param reuse Whether the port may be taken while an old connection of it closes; never while probing, since Windows then shares a port that
+/// another program listens on.
+/// @return The server, or nullptr with why in SDL_GetError.
+static NET_Server *NetCreateServer(const char *host, u16 port, bool reuse)
 {
-    u16 number = (u16)SDL_clamp(port, 0, 65535);
-    NET_Server *server = NET_CreateServer(nullptr, number, 0);
-    NET_Address *any = server == nullptr ? NetResolveAnyIpv4() : nullptr;
+    SDL_PropertiesID properties = SDL_CreateProperties();
+    (void)SDL_SetBooleanProperty(properties, NET_PROP_SERVER_REUSEADDR_BOOLEAN, reuse);
+    NET_Address *address = host[0] == '\0' ? nullptr : NetResolveNow(host);
+    NET_Server *server = nullptr;
 
-    if (any != nullptr)
+    if (host[0] == '\0' || address != nullptr)
     {
-        server = NET_CreateServer(any, number, 0);
-        NET_UnrefAddress(any);
+        server = NET_CreateServer(address, port, properties);
+    }
+    else
+    {
+        SDL_SetError("the host '%s' does not resolve", host);
     }
 
-    if (server == nullptr)
+    if (server == nullptr && host[0] == '\0')
     {
-        ECS_Fail(NET.plugin, retError, "Cannot listen on port %d: %s", port, SDL_GetError());
+        address = NetResolveNow("0.0.0.0");
+        server = address == nullptr ? nullptr : NET_CreateServer(address, port, properties);
     }
 
+    if (address != nullptr)
+    {
+        NET_UnrefAddress(address);
+    }
+
+    SDL_DestroyProperties(properties);
     return server;
 }
 
-static void *NetListen(i32 port, const char **retError)
+// SDL_net does not tell which port the system chose for port 0, so the plugin chooses: it tries ports of the range that IANA leaves for this,
+// 49152 to 65535, at random, until one is free
+#define NET_FREE_PORT_TRIES 64
+
+static void *NetListen(const char *host, i32 port, const char **retError)
 {
     *retError = nullptr;
 
@@ -681,15 +699,33 @@ static void *NetListen(i32 port, const char **retError)
     mbedtls_x509_crt_init(&server->certificate);
     mbedtls_pk_init(&server->key);
     server->users = 1;
-    server->server = NetCreateServer(port, retError);
+
+    for (i32 attempt = 0; attempt < (port == 0 ? NET_FREE_PORT_TRIES : 1) && server->server == nullptr; attempt++)
+    {
+        server->port = port == 0 ? (u16)(49152 + SDL_rand(16384)) : (u16)port;
+        server->server = NetCreateServer(host, server->port, port != 0);
+    }
 
     if (server->server == nullptr)
     {
+        if (port == 0)
+        {
+            ECS_Fail(NET.plugin, retError, "Cannot listen on a free port: %s", SDL_GetError());
+        }
+        else
+        {
+            ECS_Fail(NET.plugin, retError, "Cannot listen on port %d: %s", (int)port, SDL_GetError());
+        }
         NetReleaseServer(server);
         return nullptr;
     }
 
     return server;
+}
+
+static i32 NetServerPort(void *serverHandle)
+{
+    return ((NetServer *)serverHandle)->port;
 }
 
 /// @brief Gives a server the configuration of TLS, with a certificate and its key from PEM files, whose relative paths start at the executable's folder.
@@ -717,7 +753,7 @@ static bool NetAddServerTls(NetServer *server, const char *certificatePath, cons
 }
 
 // a TLS server shows its certificate to the clients, and proves it with the certificate's key
-static void *NetListenTls(i32 port, const char *certificate, const char *key, const char **retError)
+static void *NetListenTls(const char *host, i32 port, const char *certificate, const char *key, const char **retError)
 {
     *retError = nullptr;
     char *certificatePath = nullptr;
@@ -729,7 +765,7 @@ static void *NetListenTls(i32 port, const char *certificate, const char *key, co
         ECS_Fail(NET.plugin, retError, "out of memory");
     }
 
-    NetServer *server = found && NetTlsStart(retError) ? NetListen(port, retError) : nullptr;
+    NetServer *server = found && NetTlsStart(retError) ? NetListen(host, port, retError) : nullptr;
 
     if (server != nullptr && !NetAddServerTls(server, certificatePath, keyPath))
     {
@@ -817,7 +853,7 @@ static void *NetOpenUdp(i32 port, const char **retError)
     // as for a server, IPv4 alone is tried when a family of addresses is missing
     u16 number = (u16)port;
     udp->socket = NET_CreateDatagramSocket(nullptr, number, 0);
-    NET_Address *any = udp->socket == nullptr ? NetResolveAnyIpv4() : nullptr;
+    NET_Address *any = udp->socket == nullptr ? NetResolveNow("0.0.0.0") : nullptr;
 
     if (any != nullptr)
     {
@@ -1058,18 +1094,24 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"close", (ECSFunction)NetClose, "void(handle<net.connection> connection)",
          "Close a connection\n"
          "@param connection The connection; its status is -1 after"},
-        {"listen", (ECSFunction)NetListen, "handle<net.server>(int port, out string error)",
-         "Wait for TCP connections on a port of every address of this computer\n"
-         "@param port The port, from 0 to 65535; 0 picks a free one\n"
+        {"listen", (ECSFunction)NetListen, "handle<net.server>(string host, int port, out string error)",
+         "Wait for TCP connections on a port of one address of this computer, or of every address\n"
+         "@param host The address to listen on, such as 127.0.0.1 for this computer's programs only; empty for every address\n"
+         "@param port The port, from 0 to 65535; 0 picks a free one, which port tells\n"
          "@param error Why it cannot listen; nothing if it does\n"
          "@return The server, or nothing if it cannot listen"},
-        {"listenTLS", (ECSFunction)NetListenTls, "handle<net.server>(int port, string certificate, string key, out string error)",
-         "Wait for TLS connections on a port, with a certificate and its key from PEM files\n"
-         "@param port The port, from 0 to 65535; 0 picks a free one\n"
+        {"listenTLS", (ECSFunction)NetListenTls, "handle<net.server>(string host, int port, string certificate, string key, out string error)",
+         "Wait for TLS connections on a port of one address of this computer, or of every address, with a certificate and its key from PEM files\n"
+         "@param host The address to listen on, such as 127.0.0.1 for this computer's programs only; empty for every address\n"
+         "@param port The port, from 0 to 65535; 0 picks a free one, which port tells\n"
          "@param certificate The path of the certificate's PEM file; a relative path starts at the executable's folder\n"
          "@param key The path of the private key's PEM file; a relative path starts at the executable's folder\n"
          "@param error Why it cannot listen; nothing if it does\n"
          "@return The server, or nothing if it cannot listen or cannot read the certificate or key"},
+        {"port", (ECSFunction)NetServerPort, "int(handle<net.server> server)",
+         "Tell the port a server listens on, also the one that port 0 picked\n"
+         "@param server The server, as listen or listenTLS gives it\n"
+         "@return The port"},
         {"trust", (ECSFunction)NetTrust, "bool(string path, out string error)",
          "Trust the certificates of a PEM file too, beside the system's, for later TLS connections\n"
          "@param path The path of the PEM file; a relative path starts at the executable's folder\n"
@@ -1123,6 +1165,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         {"connection", "receive", "receive"},
         {"connection", "close", "close"},
         {"server", "accept", "accept"},
+        {"server", "port", "port"},
         {"udp", "sendTo", "sendTo"},
         {"udp", "receiveFrom", "receiveFrom"},
     };

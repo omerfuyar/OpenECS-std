@@ -129,13 +129,13 @@ local function openFile(file, line)
   local program = command[1] and resolve(command[1])
   if program then
     command[1] = program
-    if process.start(command, "") then
+    if process.start(command, "", {}) then
       return
     end
   end
   -- Without the code editor, the system opens the file with the program that it has for such files.
   local opener = isWindows and { "cmd", "/c", "start", "", file } or { "xdg-open", file }
-  local started, err = process.start(opener, "")
+  local started, err = process.start(opener, "", {})
   if not warned then
     warned = true
     add(("The code editor did not start: %s. The setting console.editor names its command."):format(tostring(command[1])), "warn")
