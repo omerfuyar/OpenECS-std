@@ -700,7 +700,7 @@ static void *NetListen(const char *host, i32 port, const char **retError)
     mbedtls_pk_init(&server->key);
     server->users = 1;
 
-    for (i32 try = 0; try < (port == 0 ? NET_FREE_PORT_TRIES : 1) && server->server == nullptr; try ++)
+    for (i32 attempt = 0; attempt < (port == 0 ? NET_FREE_PORT_TRIES : 1) && server->server == nullptr; attempt++)
     {
         server->port = port == 0 ? (u16)(49152 + SDL_rand(16384)) : (u16)port;
         server->server = NetCreateServer(host, server->port, port != 0);
