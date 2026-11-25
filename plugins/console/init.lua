@@ -2,7 +2,8 @@
 -- may name a file and a line, such as "components/coin.lua:12", and a click on it runs the command of the setting
 -- console.editor, which opens the file there in the user's code editor. An entry equal to the one before it stacks on it.
 -- Each entry has a source, such as what a tool's program prints or a plugin whose log line it is: the core's event ecs.logged
--- brings every line of the log. Each panel's Show dropdown shows the entries from a level up, and its checkboxes some sources only.
+-- brings every line of the log. Each panel's Show dropdown shows the entries from a level up, from the setting console.show at
+-- first, and its checkboxes some sources only.
 
 local ecs = require("ecs")
 local ui = require("ui")
@@ -42,6 +43,13 @@ ecs.setting.declare({
   type = "string",
   description = "The command that opens a file at a line in a code editor; {file} and {line} stand for them",
   default = "code --goto {file}:{line}",
+})
+ecs.setting.declare({
+  name = "show",
+  type = "choice",
+  description = "The level that a new console's Show dropdown shows the entries from; a console keeps its own choice",
+  choices = NAMES,
+  default = "Warnings and up",
 })
 
 local warned = false -- the user was told that the code editor did not start
@@ -252,8 +260,14 @@ function Console:menu(entry, x, y)
   })
 end
 
+-- a new panel shows from the level of the setting console.show, and a restored one from its own
 function Console.create(panel, saved)
-  local state = setmetatable({ panel = panel, follow = true, show = "info", hiddenSources = {} }, Console)
+  local state = setmetatable({ panel = panel, follow = true, show = "warn", hiddenSources = {} }, Console)
+  for i, name in ipairs(NAMES) do
+    if ecs.setting.get("console.show") == name then
+      state.show = LEVELS[i]
+    end
+  end
   if type(saved) == "table" and RANKS[saved.show] then
     state.show = saved.show
   end
@@ -325,7 +339,7 @@ function Console:draw(surface)
   end
   header[#header + 1] = ui.text("Show", { style = STYLES.note })
   header[#header + 1] = ui.dropdown(RANKS[self.show], choices, {
-    id = "show", width = 170, tooltip = "Show the entries of this level and the levels above", onSelect = function(choice)
+    id = "show", width = 200, tooltip = "Show the entries of this level and the levels above", onSelect = function(choice)
       self.show = LEVELS[choice]
     end,
   })
