@@ -2529,14 +2529,20 @@ local function arrange(node, x, y, width, height, state)
       childSize = math.max(0, childSize + room * grow / grows)
     end
 
-    -- the cross axis: the whole room, or the natural size aligned in it
+    -- the cross axis: the whole room, or the natural size aligned in it; an element without a fixed size across is no larger than the room,
+    -- so a text that does not fit is cut with an ellipsis rather than drawn over its neighbours
     local crossRoom = row and innerHeight or innerWidth
     local cross = row and child.layout.naturalHeight or child.layout.naturalWidth
     local crossAt = row and innerY or innerX
+    local fixed = row and child.height or not row and child.width
 
-    if stretches(child, row) and not (row and child.height or not row and child.width) then
+    if stretches(child, row) and not fixed then
       cross = crossRoom
     else
+      if not fixed then
+        cross = math.min(cross, math.max(0, crossRoom))
+      end
+
       local align = node.align or (row and "center" or "start")
       crossAt += (align == "center" and (crossRoom - cross) / 2 or align == "end" and crossRoom - cross or 0)
     end
