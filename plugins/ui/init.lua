@@ -1157,14 +1157,16 @@ do
 
   -- the lines of a text of spans: each line is runs of one span, by its index in the spans, at x from the line's start; with a width, it
   -- breaks between words as wrap does, and a line after a break leaves out the blanks it would start with. With a wrapMark, a line after a
-  -- break is marked wrapped and starts after the mark's width, where the mark is drawn
+  -- break is marked wrapped and starts after the mark's width, where the mark is drawn. With a gutter, every line starts after the gutter's
+  -- width, and the mark of a line after a break is drawn in the gutter
   local function lay(node, textSize, width)
-    local lines, x, broke = { { runs = {}, width = 0 } }, 0, false
-    local indent = node.wrapMark and width and measureText(fontOf(node), node.wrapMark, textSize) or 0
+    local gutter = node.gutter and measureText(fontOf(node), node.gutter, textSize) or 0
+    local lines, x, broke = { { runs = {}, width = gutter } }, gutter, false
+    local indent = node.wrapMark and width and (node.gutter and gutter or measureText(fontOf(node), node.wrapMark, textSize)) or gutter
 
     -- a line after a break, which starts after the mark
     local function breakLine()
-      lines[#lines + 1] = { runs = {}, width = indent, wrapped = indent > 0 or nil }
+      lines[#lines + 1] = { runs = {}, width = indent, wrapped = node.wrapMark and width and true or nil }
       x, broke = indent, true
       return lines[#lines]
     end
@@ -1218,8 +1220,8 @@ do
 
       for part in ((span.icon or span.image) and "" or span.text .. "\n"):gmatch("(.-)\n") do
         if not first then
-          lines[#lines + 1] = { runs = {}, width = 0 }
-          x, broke = 0, false
+          lines[#lines + 1] = { runs = {}, width = gutter }
+          x, broke = gutter, false
         end
 
         first = false
@@ -1253,7 +1255,8 @@ do
     end
 
     keyParts[1], keyParts[2], keyParts[3], keyParts[4] = textSize * 1024 + textScale, width or "", node.font or "", node.wrapMark or ""
-    local parts = 4
+    keyParts[5] = node.gutter or ""
+    local parts = 5
 
     for _, span in ipairs(node.spans) do
       keyParts[parts + 1] = (span.mono and 16 or 0) + styleBits(span)
@@ -1331,7 +1334,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines gutter "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1872,8 +1875,8 @@ function elements.text(text, props)
     node.maxLines, node.wrap = math.floor(node.maxLines), true
   end
 
-  -- a wrapMark is drawn where spans break, so a plain text that has one is one span
-  if node.wrapMark and not node.spans then
+  -- a wrapMark is drawn where spans break, and a gutter before them, so a plain text that has one is one span
+  if (node.wrapMark or node.gutter) and not node.spans then
     node.spans = { { text = node.text } }
   end
 
@@ -3104,9 +3107,13 @@ function inside.runs(node, surface, x, y)
   local line = lineHeight(fontOf(node), textSize)
 
   for i, spanLine in ipairs(node.layout.spanLines) do
-    -- a line after a break starts with the text's wrapMark, dimmed
-    if spanLine.wrapped then
-      draw.text(surface, fontOf(node), node.wrapMark, x, y + (i - 1) * line, textSize, "textDim")
+    -- the first line starts with the text's gutter, dimmed, and a line after a break with its wrapMark: at the gutter's end when it has
+    -- one, so the mark stands where the gutter's text would
+    if i == 1 and node.gutter then
+      draw.text(surface, fontOf(node), node.gutter, x, y, textSize, "textDim")
+    elseif spanLine.wrapped then
+      local markX = node.gutter and math.max(0, measureText(fontOf(node), node.gutter, textSize) - measureText(fontOf(node), node.wrapMark, textSize)) or 0
+      draw.text(surface, fontOf(node), node.wrapMark, x + markX, y + (i - 1) * line, textSize, "textDim")
     end
 
     -- the last line that a text with maxLines shows of more ends with an ellipsis: its runs stop where one still fits, and a word that
@@ -5484,7 +5491,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 

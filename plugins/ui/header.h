@@ -72,6 +72,7 @@ struct UiProps
     UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
     const char *wrapMark;        // what a text that wraps shows, dimmed, at the start of each line after a break, such as "↪ "; its lines start after it
     i32 maxLines;                // the most lines a text shows: it wraps, and its last shown line ends with an ellipsis when more follow
+    const char *gutter;          // what a text shows, dimmed, before its first line, such as its line's number; its lines start after it, and a wrapMark stands at its end
     UiFlag vertical;             // a separator up a row
     const char *label;           // a toggle's label
     const char *placeholder;     // the text an empty field shows, dimmed, until it is typed in
@@ -273,6 +274,7 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
     Ui_SetString(table, "results", props->results);
     Ui_SetString(table, "folders", props->folders);
     Ui_SetString(table, "wrapMark", props->wrapMark);
+    Ui_SetString(table, "gutter", props->gutter);
 
     const struct
     {
