@@ -878,24 +878,6 @@ static inline const UiTreeMark *Ui_FindTreeMark(const UiTreeNode *node, const ch
     return nullptr;
 }
 
-/// @brief The number of the shown nodes of a tree: the nodes, and the children of each open one.
-static inline i32 Ui_CountShownNodes(const UiTreeNode *nodes)
-{
-    i32 count = 0;
-
-    for (const UiTreeNode *node = nodes; node != nullptr && node->id != nullptr; node++)
-    {
-        count++;
-
-        if (node->children != nullptr && node->open != nullptr && *node->open)
-        {
-            count += Ui_CountShownNodes(node->children);
-        }
-    }
-
-    return count;
-}
-
 /// @brief A tree of nodes, which end with one whose id is nullptr, which builds only the rows in view and near it. selected points to the chosen node's id, one of the nodes' own, or nullptr; a
 /// click on a node's arrow writes its new state into its open, and a click on a node's mark writes its new state into its on.
 /// @return Whether a node was chosen, opened or closed, or a mark turned since the last draw.
@@ -921,15 +903,8 @@ static inline bool Ui_Tree(const char **selected, const UiTreeNode *nodes, const
         *mark->on = ECSValue_GetBool(ECSValue_GetTableField(marked, "on"), false);
     }
 
-    // the tree builds only the rows in view and near it, which ui's range gives once the clicks above opened and closed its nodes
-    i32 first = 1;
-    i32 last = 0;
-    Ui_current->functions.range(Ui_current->panel, props->id, Ui_CountShownNodes(nodes), &first, &last);
-
     ECSValue *description = Ui_Add("tree", props);
     Ui_SetString(description, "selected", *selected);
-    Ui_SetNumber(description, "first", first);
-    Ui_SetNumber(description, "last", last);
     Ui_AddTreeNodes(Ui_SetTable(description, "nodes"), Ui_SetTable(description, "open"), nodes);
     return chosen != nullptr || opened != nullptr || mark != nullptr;
 }

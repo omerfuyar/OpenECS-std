@@ -1310,14 +1310,16 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first last "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
 
 -- the tables of elements that a panel's next show left behind, cleared, which new elements are made from, as an arena is reused each
 -- frame: so each draw makes little garbage. An element lives until its panel's next show, which recycles it
-local spare = { nodes = {}, layouts = {}, lists = {} }
+-- spare.trees holds the trees made since the last show, whose rows the next show builds once it knows which are in view; a main chunk of
+-- LuaJIT has at most 200 locals, which this file reaches
+local spare = { nodes = {}, layouts = {}, lists = {}, trees = {} }
 
 -- the last of a list of cleared tables, taken from it, or nil
 function spare.take(list)
@@ -1522,68 +1524,21 @@ end
 -- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
 -- and onToggle(id, open) its new state; a node's marks are short texts at the end of its row, such as an eye and a lock, each on or off,
 -- and a click on one gives onMark(id, mark, on) its new state without choosing the node;
--- a long tree builds only the rows from first to last, the shown nodes' numbers that ui.range gives, as a long list does
+-- every tree builds only the rows in view and near it, as ui.range names them when its panel shows, in Lua and in C alike
 function elements.tree(nodes, props)
   props = props or {}
   ecs.check(props.id, "A tree needs an id, which keeps its offset.")
-  local open, rows = props.open or {}, {}
-  local ids, parents, folders = {}, {}, {}
-  local first, last = props.first or 1, props.last or math.huge
+  local open = props.open or {}
+  local ids, parents, folders, items, depths = {}, {}, {}, {}, {}
 
+  -- the shown nodes, in order: each node, then its children when it is open
   local function add(list, depth, parent)
     for _, item in ipairs(list) do
       local folder = item.children ~= nil
       local shown = folder and open[item.id] == true
       local index = #ids + 1
       ids[index], parents[index], folders[index] = item.id, parent, folder and (shown and "open" or "closed") or nil
-
-      if index < first or index > last then
-        if shown then
-          add(item.children, depth + 1, index)
-        end
-
-        continue
-      end
-
-      -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
-      local arrow = elements.space({ width = size.checkSize, grow = 0 })
-
-      if folder then
-        arrow = elements.row({ onClick = function()
-          if props.onToggle then
-            props.onToggle(item.id, not shown)
-          end
-        end }, { element("disclosure", { open = shown }) })
-      end
-
-      local cells = {
-        elements.space({ width = depth * size.checkSize, grow = 0 }),
-        arrow,
-        elements.text(item.label or tostring(item.id), { color = item.color }),
-      }
-
-      -- the marks are rows with onClick, as the arrow is, so a press on one turns it and does not choose the node
-      if item.marks and #item.marks > 0 then
-        cells[#cells + 1] = elements.space({ grow = 1 })
-
-        for _, mark in ipairs(item.marks) do
-          local cell = elements.row({
-            id = props.id .. ":" .. tostring(item.id) .. ":" .. tostring(mark.id),
-            tooltip = mark.tooltip,
-            keys = mark.keys,
-            onClick = function()
-              if props.onMark then
-                props.onMark(item.id, mark.id, not mark.on)
-              end
-            end,
-          }, { elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
-          -- a press on a mark keeps the list's choice, and drags nothing
-          cell.keepsChoice = true
-          cells[#cells + 1] = cell
-        end
-      end
-
-      rows[#rows + 1] = elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, cells)
+      items[index], depths[index] = item, depth
 
       if shown then
         add(item.children, depth + 1, index)
@@ -1593,13 +1548,57 @@ function elements.tree(nodes, props)
 
   add(nodes or {}, 0, nil)
 
+  -- the row of a shown node
+  local function buildRow(index)
+    local item, depth = items[index], depths[index]
+    local folder = item.children ~= nil
+    local shown = folders[index] == "open"
+
+    -- the arrow is a row with onClick, so a press on it toggles, and a press beside it only chooses
+    local arrow = elements.space({ width = size.checkSize, grow = 0 })
+
+    if folder then
+      arrow = elements.row({ onClick = function()
+        if props.onToggle then
+          props.onToggle(item.id, not shown)
+        end
+      end }, { element("disclosure", { open = shown }) })
+    end
+
+    local cells = {
+      elements.space({ width = depth * size.checkSize, grow = 0 }),
+      arrow,
+      elements.text(item.label or tostring(item.id), { color = item.color }),
+    }
+
+    -- the marks are rows with onClick, as the arrow is, so a press on one turns it and does not choose the node
+    if item.marks and #item.marks > 0 then
+      cells[#cells + 1] = elements.space({ grow = 1 })
+
+      for _, mark in ipairs(item.marks) do
+        local cell = elements.row({
+          id = props.id .. ":" .. tostring(item.id) .. ":" .. tostring(mark.id),
+          tooltip = mark.tooltip,
+          keys = mark.keys,
+          onClick = function()
+            if props.onMark then
+              props.onMark(item.id, mark.id, not mark.on)
+            end
+          end,
+        }, { elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
+        -- a press on a mark keeps the list's choice, and drags nothing
+        cell.keepsChoice = true
+        cells[#cells + 1] = cell
+      end
+    end
+
+    return elements.row({ id = props.id .. ":" .. tostring(item.id), gap = 4, padding = 2 }, cells)
+  end
+
   -- the list works with indexes, and the tree with ids
   local listProps = shallowCopy(props)
-  listProps.open, listProps.onToggle, listProps.selected, listProps.onMark, listProps.last = nil, nil, nil, nil, nil
-
-  if props.first or props.last then
-    listProps.count, listProps.first = #ids, math.min(first, #ids + 1)
-  end
+  listProps.open, listProps.onToggle, listProps.selected, listProps.onMark = nil, nil, nil, nil
+  listProps.count = #ids
 
   local indexOf, selected = {}, {}
 
@@ -1643,10 +1642,38 @@ function elements.tree(nodes, props)
     props.onDrop(index and ids[index], where, dataType, value)
   end
 
-  local node = elements.list(listProps, rows)
-  node.tree = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
-  -- data dropped on the middle of a node goes into it
-  node.dropInto = true
+  -- the rows are built when the panel shows, for the shown nodes that ui.range names then: the list stands in for them until then
+  local node = elements.list(listProps, {})
+  local treeInfo = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
+  node.tree, node.dropInto = treeInfo, true
+  spare.trees[#spare.trees + 1] = {
+    node = node,
+    id = props.id,
+    count = #ids,
+    fill = function(first, last)
+      local rows = {}
+
+      for index = first, last do
+        rows[#rows + 1] = buildRow(index)
+      end
+
+      listProps.first = first
+      local built = elements.list(listProps, rows)
+      clearTable(node)
+
+      for key, value in pairs(built) do
+        node[key] = value
+      end
+
+      -- the rows are items of the list that stands in the tree
+      for _, item in pairs(node.items) do
+        item.list = node
+      end
+
+      -- data dropped on the middle of a node goes into it
+      node.tree, node.dropInto = treeInfo, true
+    end,
+  }
   return node
 end
 
@@ -4868,6 +4895,13 @@ function services.show(panel, surface, root)
     readSizes()
   end
 
+  -- each tree made for this show builds its rows in view, which ui.range gives for its panel
+  for _, tree in ipairs(spare.trees) do
+    local first, last = services.range(panel, tree.id, tree.count)
+    tree.fill(first, last)
+  end
+
+  clearTable(spare.trees)
   showCount += 1
   state.ids = state.ids or {}
   clearTable(state.ids)
@@ -5179,7 +5213,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first last onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
