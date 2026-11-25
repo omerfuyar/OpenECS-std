@@ -1522,7 +1522,7 @@ end
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
 -- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
--- and onToggle(id, open) its new state; a node's marks are short texts at the end of its row, such as an eye and a lock, each on or off,
+-- and onToggle(id, open) its new state; a node's marks are short texts or icons at the end of its row, such as an eye and a lock, each on or off,
 -- and a click on one gives onMark(id, mark, on) its new state without choosing the node;
 -- every tree builds only the rows in view and near it, as ui.range names them when its panel shows, in Lua and in C alike
 function elements.tree(nodes, props)
@@ -1585,7 +1585,8 @@ function elements.tree(nodes, props)
               props.onMark(item.id, mark.id, not mark.on)
             end
           end,
-        }, { elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
+        }, { mark.icon and elements.icon(mark.icon, { color = mark.on and "accent" or "textDim" })
+          or elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
         -- a press on a mark keeps the list's choice, and drags nothing
         cell.keepsChoice = true
         cells[#cells + 1] = cell
@@ -2044,6 +2045,19 @@ function elements.image(path, props)
   return node
 end
 
+-- a small picture, a line of text high, in its colour: an eye, open or closed, or a padlock, locked or open; the main chunk is near Lua's
+-- 200 locals, so the names stay inside this block
+do
+  local ICONS = { eye = true, eyeClosed = true, lock = true, lockOpen = true }
+
+  function elements.icon(name, props)
+    ecs.check(ICONS[name] == true, ("'%s' is not an icon: eye, eyeClosed, lock or lockOpen."):format(tostring(name)))
+    local node = element("icon", props)
+    node.name = name
+    return node
+  end
+end
+
 function elements.space(props)
   local node = element("space", props)
 
@@ -2359,6 +2373,8 @@ function measure(node, state, room)
     width, height = 0, GRAPH_HEIGHT
   elseif node.type == "space" then
     width, height = 0, 0
+  elseif node.type == "icon" then
+    width, height = line, line
   elseif node.type == "disclosure" then
     width, height = size.checkSize, line
   else
@@ -2807,6 +2823,83 @@ local function paintGraph(node, surface)
   end
 end
 
+-- an icon, drawn from strokes, curves, a circle and a rounded box, which a show records; the main chunk is at Lua's 200 locals, so it is a
+-- function of ui's draw, and its helpers stay inside the block
+do
+  -- a stroke between two points, as two triangles offset by half its thickness across it
+  local function stroke(surface, x1, y1, x2, y2, half, color)
+    local length = math.sqrt((x2 - x1) ^ 2 + (y2 - y1) ^ 2)
+
+    if length == 0 then
+      return
+    end
+
+    local nx, ny = -(y2 - y1) / length * half, (x2 - x1) / length * half
+    triangle(surface, x1 + nx, y1 + ny, x2 + nx, y2 + ny, x2 - nx, y2 - ny, color)
+    triangle(surface, x1 + nx, y1 + ny, x2 - nx, y2 - ny, x1 - nx, y1 - ny, color)
+  end
+
+  -- strokes through the points of a curve, given as a function from 0 to 1
+  local function curve(surface, at, half, color)
+    local steps = 10
+    local x1, y1 = at(0)
+
+    for i = 1, steps do
+      local x2, y2 = at(i / steps)
+      stroke(surface, x1, y1, x2, y2, half, color)
+      x1, y1 = x2, y2
+    end
+  end
+
+  -- an icon by its name, in a square of side s whose top left is at x, y
+  function draw.icon(surface, name, x, y, s, color)
+    local cx, top = x + s / 2, y
+    local half = math.max(0.6, s / 16)
+
+    if name == "eye" or name == "eyeClosed" then
+      local cy, across = top + s * 0.5, s * 0.42
+
+      if name == "eye" then
+        -- the lids meet at the corners, and the pupil is between them
+        curve(surface, function(t)
+          local u = 2 * t - 1
+          return cx + u * across, cy - s * 0.24 * (1 - u * u)
+        end, half, color)
+        curve(surface, function(t)
+          local u = 2 * t - 1
+          return cx + u * across, cy + s * 0.24 * (1 - u * u)
+        end, half, color)
+        draw.circle(surface, cx, cy, s * 0.12, 0, color)
+      else
+        -- a shut lid, with its lashes below it
+        local function lid(u)
+          return cx + u * across, cy + s * 0.14 * (1 - u * u)
+        end
+
+        curve(surface, function(t)
+          return lid(2 * t - 1)
+        end, half, color)
+
+        for _, u in ipairs({ -0.55, 0, 0.55 }) do
+          local x, y = lid(u)
+          stroke(surface, x, y, x + u * s * 0.12, y + s * 0.16, half, color)
+        end
+      end
+    else
+      -- the body, and the shackle's arch over it: an open padlock's shackle is lifted, and only its left leg reaches the body
+      local bodyTop, radius = top + s * 0.48, s * 0.2
+      draw.rounded(surface, cx - s * 0.32, bodyTop, s * 0.64, s * 0.42, s * 0.08, color)
+      local archY = name == "lock" and top + s * 0.3 or top + s * 0.2
+      curve(surface, function(t)
+        local angle = math.pi + t * math.pi
+        return cx + math.cos(angle) * radius, archY + math.sin(angle) * radius
+      end, half, color)
+      stroke(surface, cx - radius, archY, cx - radius, bodyTop, half, color)
+      stroke(surface, cx + radius, archY, cx + radius, name == "lock" and bodyTop or archY + s * 0.08, half, color)
+    end
+  end
+end
+
 local function paintDisclosure(node, surface)
   local box = node.layout
   local half, x, y = size.checkSize / 4, box.x + box.width / 2, box.y + box.height / 2
@@ -2991,6 +3084,9 @@ function paint(node, surface, state)
     end
 
     draw.image(surface, box.picture, box.x + (box.width - width) / 2, box.y + (box.height - height) / 2, width, height)
+  elseif node.type == "icon" then
+    local side = math.min(box.width, box.height)
+    draw.icon(surface, node.name, box.x + (box.width - side) / 2, box.y + (box.height - side) / 2, side, node.color or "text")
   elseif node.type == "disclosure" then
     paintDisclosure(node, surface)
   elseif node.type == "graph" then
@@ -5643,6 +5739,14 @@ ecs.service.register({
         .. "@param props The image's properties (ui.Props)\n"
         .. "@return The image element",
     fn = elements.image,
+  },
+  icon = {
+    sig = "value<ui.Element>(string name, value<ui.Props?> props)",
+    doc = "A small picture, a line of text high and drawn from shapes in its color, the text's colour if missing\n"
+        .. "@param name The picture: eye, eyeClosed, lock or lockOpen\n"
+        .. "@param props The icon's properties (ui.Props), such as color and tooltip\n"
+        .. "@return The icon element",
+    fn = elements.icon,
   },
   space = {
     sig = "value<ui.Element>(value<ui.Props?> props)",

@@ -114,7 +114,7 @@ typedef struct UiColumn
     f64 width;
 } UiColumn;
 
-/// @brief A mark of a tree's node: a short text at the end of its row, such as an eye or a lock. A list of marks ends with one whose id is nullptr.
+/// @brief A mark of a tree's node: a short text or an icon at the end of its row, such as an eye or a lock. A list of marks ends with one whose id is nullptr.
 /// on points to whether it is on, which UI_TREE writes when the mark is clicked; a click does not choose the node.
 typedef struct UiTreeMark
 {
@@ -123,6 +123,7 @@ typedef struct UiTreeMark
     bool *on;
     const char *tooltip; // nullptr for none
     const char *keys;    // the key combination that turns it too, which its tooltip names; nullptr for none
+    const char *icon;    // an icon shown in place of the text, as UI_ICON names it: eye, eyeClosed, lock or lockOpen; nullptr for the text
 } UiTreeMark;
 
 /// @brief A node of a tree. A list of nodes ends with one whose id is nullptr. A node whose children are not nullptr has an arrow, even with none,
@@ -854,6 +855,7 @@ static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeN
                 Ui_SetBool(described, "on", mark->on != nullptr && *mark->on);
                 Ui_SetString(described, "tooltip", mark->tooltip);
                 Ui_SetString(described, "keys", mark->keys);
+                Ui_SetString(described, "icon", mark->icon);
             }
         }
 
@@ -956,6 +958,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_SEPARATOR(...) ((void)Ui_Add("separator", &(UiProps){__VA_ARGS__}))
 #define UI_SPACE(...) ((void)Ui_Add("space", &(UiProps){__VA_ARGS__}))
 #define UI_IMAGE(path, ...) Ui_SetString(Ui_Add("image", &(UiProps){__VA_ARGS__}), "value", (path))
+#define UI_ICON(name, ...) Ui_SetString(Ui_Add("icon", &(UiProps){__VA_ARGS__}), "value", (name))
 
 /// @brief Whether the clickable column or row with an id was clicked since the last draw.
 #define UI_CLICKED(id) (Ui_Take((id), "onClick") != nullptr)
