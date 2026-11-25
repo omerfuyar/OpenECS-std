@@ -1,4 +1,5 @@
 -- The panel list: every panel type of the tool, by the plugin that registered it, and opens the one the user chooses (DESIGN 14).
+-- It also gives the blank panel, which holds a place in the layout until a panel goes there.
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
@@ -217,6 +218,44 @@ ecs.panel.registerType({
   saveState = Panels.saveState,
   draw = Panels.draw,
   event = Panels.event,
+})
+
+-- the blank panel shows nothing but a dim hint, centred, so a user arranging the layout keeps a place, such as a split's other side, for a
+-- panel to open there later
+local Blank = {}
+Blank.__index = Blank
+
+function Blank.create(panel)
+  return setmetatable({ panel = panel }, Blank)
+end
+
+function Blank:destroy()
+  ui.forget(self.panel)
+end
+
+function Blank:draw(surface)
+  ui.show(
+    self.panel,
+    surface,
+    ui.column({ style = STYLES.view, align = "center" }, {
+      ui.column({ grow = 1 }, {}),
+      ui.text("Open a panel here from the panel list.", { color = "textDim", wrap = true, selectable = false }),
+      ui.column({ grow = 1 }, {}),
+    })
+  )
+end
+
+function Blank:event(event)
+  ui.event(self.panel, event)
+end
+
+ecs.panel.registerType({
+  name = "blank",
+  title = "Blank",
+  create = Blank.create,
+  destroy = Blank.destroy,
+  draw = Blank.draw,
+  event = Blank.event,
 })
 
 -- the panel types of a plugin that is enabled or disabled show at once
