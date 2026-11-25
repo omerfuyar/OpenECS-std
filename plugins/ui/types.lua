@@ -123,12 +123,13 @@
 ---@field label? string The id as text if missing.
 ---@field color? ecs.Color
 ---@field children? ui.TreeNode[]
----@field marks? ui.TreeMark[] Short texts at the end of the node's row, each on or off, such as an eye and a lock.
+---@field marks? ui.TreeMark[] Short texts or icons at the end of the node's row, each on or off, such as an eye and a lock.
 
 ---A mark of a tree's node: a click on it gives the tree's onMark its new state, and does not choose the node.
 ---@class ui.TreeMark
 ---@field id any
----@field text string What the row shows: in the accent colour while on, dimmed while off.
+---@field text? string What the row shows: in the accent colour while on, dimmed while off.
+---@field icon? string An icon that the row shows in place of the text, as ui.icon names it: eye, eyeClosed, lock or lockOpen.
 ---@field on boolean
 ---@field tooltip? string
 ---@field keys? string The key combination that turns it too, which its tooltip names after its text.
