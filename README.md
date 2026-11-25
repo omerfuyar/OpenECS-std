@@ -27,7 +27,7 @@ The standard plugins of [OpenECS](https://github.com/omerfuyar/OpenECS), and its
 - **video:** MPEG-1 video files with their MP2 sound, drawn with draw and played with mixer.
 - **settings:** the settings window.
 - **launcher:** picks a preset or session when OpenECS starts without one.
-- **panels:** the panel list: every panel type of the tool, by plugin, to open one.
+- **panels:** the panel list: every panel type of the tool, by plugin, to open one; and the blank panel, `panels.blank`, which holds a place in the layout until a panel is opened there.
 - **plugins:** the plugin list: every plugin in the plugin folders, to enable or disable one while the tool runs.
 - **files:** a folder's files as a tree, to open, make, rename, move and delete them, which a tool tells how its files open.
 - **viewer:** shows a file as what it is: an image, a sound or a text.
