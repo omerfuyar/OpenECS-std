@@ -3526,6 +3526,14 @@ local function openDropdown(panel, state, node)
       scale = surface.scale
       local h = height()
       local half = lineHeight(font, textSize) / 4
+      local items = {}
+
+      -- the rows it shows, which a test reads
+      for i, row in ipairs(rows) do
+        items[i] = { label = row.label, chosen = i == hover }
+      end
+
+      popup:setItems(items)
       draw.rounded(surface, 0, 0, width, h, size.radius + 1, "overlay")
 
       if typed ~= "" then
@@ -3720,6 +3728,16 @@ local function openMenu(panel, x, y, entries)
     height = height,
     draw = function(surface)
       scale = surface.scale
+      local items = {}
+
+      -- the entries it shows, which a test reads; a line is none
+      for i, entry in ipairs(shown) do
+        if not entry.line then
+          items[#items + 1] = { label = entry.label or "", keys = not entry.entries and entry.keys or nil, enabled = usable(i), chosen = i == hover }
+        end
+      end
+
+      popup:setItems(items)
       draw.rounded(surface, 0, 0, width, height, size.radius + 1, "overlay")
 
       for i, entry in ipairs(shown) do
