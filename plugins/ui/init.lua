@@ -1196,7 +1196,22 @@ do
     for index, span in ipairs(node.spans) do
       local first = true
 
-      for part in (span.text .. "\n"):gmatch("(.-)\n") do
+      -- an icon or an image is a square a line high, which wraps as a word does
+      if span.icon or span.image then
+        local side = lineHeight(spanFont(node, span), textSize)
+        local line = lines[#lines]
+
+        if width and x > 0 and x + side > width then
+          lines[#lines + 1] = { runs = {}, width = 0 }
+          line, x, broke = lines[#lines], 0, true
+        end
+
+        line.runs[#line.runs + 1] = { x = x, text = "", index = index, width = side, picture = true }
+        x += side
+        line.width = x
+      end
+
+      for part in ((span.icon or span.image) and "" or span.text .. "\n"):gmatch("(.-)\n") do
         if not first then
           lines[#lines + 1] = { runs = {}, width = 0 }
           x, broke = 0, false
@@ -1236,7 +1251,8 @@ do
     local parts = 3
 
     for _, span in ipairs(node.spans) do
-      keyParts[parts + 1], keyParts[parts + 2] = (span.mono and 16 or 0) + styleBits(span), span.text
+      keyParts[parts + 1] = (span.mono and 16 or 0) + styleBits(span)
+      keyParts[parts + 2] = span.icon and "\1icon:" .. span.icon or span.image and "\1image:" .. span.image or span.text
       parts += 2
     end
 
@@ -1522,7 +1538,7 @@ end
 -- a tree: a list whose items are the shown nodes, each below its parent and indented by its depth;
 -- a node is { id, label, children }, and one with children, even none, has an arrow that a click opens and closes;
 -- open names the open nodes by id, selected is the chosen node's id or a list of the chosen ones' ids, onSelect and onActivate get a node's id,
--- and onToggle(id, open) its new state; a node's marks are short texts or icons at the end of its row, such as an eye and a lock, each on or off,
+-- and onToggle(id, open) its new state; a node's label is a text or spans, and its marks are short labels at the end of its row, such as an eye and a lock, each on or off,
 -- and a click on one gives onMark(id, mark, on) its new state without choosing the node;
 -- every tree builds only the rows in view and near it, as ui.range names them when its panel shows, in Lua and in C alike
 function elements.tree(nodes, props)
@@ -1585,8 +1601,7 @@ function elements.tree(nodes, props)
               props.onMark(item.id, mark.id, not mark.on)
             end
           end,
-        }, { mark.icon and elements.icon(mark.icon, { color = mark.on and "accent" or "textDim" })
-          or elements.text(mark.text, { color = mark.on and "accent" or "textDim" }) })
+        }, { elements.text(mark.label, { color = mark.on and "accent" or "textDim" }) })
         -- a press on a mark keeps the list's choice, and drags nothing
         cell.keepsChoice = true
         cells[#cells + 1] = cell
@@ -1754,7 +1769,7 @@ function elements.section(title, props, children)
     end
   end }, {
     element("disclosure", { open = open }),
-    elements.text(tostring(title or ""), { style = styles.heading }),
+    elements.text(type(title) == "table" and title or tostring(title or ""), { style = styles.heading }),
   })
   node.children[1].place = 1
 
@@ -1811,7 +1826,23 @@ function elements.graph(values, props)
   return node
 end
 
--- a text, or a list of spans: each a text, or a table of its text and its style; text keeps the plain text either way
+-- a span of a text: a text, a table of its text and its style, or a picture a line high, an icon or an image, given as its element or
+-- as a table with its icon's name or its image's path; a picture's text is empty
+function inside.span(span)
+  if type(span) ~= "table" then
+    return { text = tostring(span) }
+  elseif span.type == "icon" then
+    return { text = "", icon = span.name, color = span.color }
+  elseif span.type == "image" then
+    return { text = "", image = span.path }
+  end
+
+  ecs.check(span.icon == nil or inside.ICONS[span.icon] == true, ("'%s' is not an icon: eye, eyeClosed, lock or lockOpen."):format(tostring(span.icon)))
+  return setmetatable({ text = (span.icon or span.image) and "" or tostring(span.text or "") }, { __index = span })
+end
+
+-- a label: a text, or a list of spans, as a text takes, so it can hold icons and images beside its words
+-- a text, or a list of spans; text keeps the plain text either way
 function elements.text(text, props)
   local node = element("text", props)
 
@@ -1820,8 +1851,7 @@ function elements.text(text, props)
     node.spans = {}
 
     for i, span in ipairs(text) do
-      span = type(span) == "table" and span or { text = span }
-      node.spans[i] = setmetatable({ text = tostring(span.text or "") }, { __index = span })
+      node.spans[i] = inside.span(span)
       plain[i] = node.spans[i].text
     end
 
@@ -1833,9 +1863,23 @@ function elements.text(text, props)
   return node
 end
 
+-- a button whose label is a text, or a list of spans, as a text takes
 function elements.button(label, props)
   local node = element("button", props)
-  node.label = tostring(label)
+
+  if type(label) == "table" then
+    node.spans = elements.text(label).spans
+    local plain = {}
+
+    for i, span in ipairs(node.spans) do
+      plain[i] = span.text
+    end
+
+    node.label = table.concat(plain)
+  else
+    node.label = tostring(label)
+  end
+
   return node
 end
 
@@ -2048,10 +2092,10 @@ end
 -- a small picture, a line of text high, in its colour: an eye, open or closed, or a padlock, locked or open; the main chunk is near Lua's
 -- 200 locals, so the names stay inside this block
 do
-  local ICONS = { eye = true, eyeClosed = true, lock = true, lockOpen = true }
+  inside.ICONS = { eye = true, eyeClosed = true, lock = true, lockOpen = true }
 
   function elements.icon(name, props)
-    ecs.check(ICONS[name] == true, ("'%s' is not an icon: eye, eyeClosed, lock or lockOpen."):format(tostring(name)))
+    ecs.check(inside.ICONS[name] == true, ("'%s' is not an icon: eye, eyeClosed, lock or lockOpen."):format(tostring(name)))
     local node = element("icon", props)
     node.name = name
     return node
@@ -2330,6 +2374,9 @@ function measure(node, state, room)
     height = #layout.lines * line
   elseif node.type == "text" then
     width, height = measureText(font, node.text, textSize), line
+  elseif node.type == "button" and node.spans then
+    layout.spanLines = layoutSpans(node, textSize, nil)
+    width, height = layout.spanLines[1].width + 2 * size.paddingX, boxed
   elseif node.type == "button" then
     width, height = measureText(font, node.label, textSize) + 2 * size.paddingX, boxed
   elseif node.type == "color" then
@@ -2968,15 +3015,42 @@ end
 -- what a text of spans clips: its runs, line after line
 function inside.spans()
   local node, surface = inside.arguments()
+  inside.runs(node, surface, node.layout.x, node.layout.y)
+end
+
+-- what a button whose label is spans clips: its label in the middle, or from its padding when it is wider
+function inside.label()
+  local node, surface = inside.arguments()
   local box = node.layout
+  local line = lineHeight(fontOf(node), node.size or fontSize())
+  local x = box.x + math.max(size.paddingX, (box.width - box.spanLines[1].width) / 2)
+  inside.runs(node, surface, x, box.y + (box.height - line) / 2)
+end
+
+-- the runs of a text of spans, or of a button's label, from x, y: words, and icons and images a line high
+function inside.runs(node, surface, x, y)
   local textSize = node.size or fontSize()
   local line = lineHeight(fontOf(node), textSize)
 
-  for i, spanLine in ipairs(box.spanLines) do
+  for i, spanLine in ipairs(node.layout.spanLines) do
     for _, run in ipairs(spanLine.runs) do
       local span = node.spans[run.index]
       local color = span.color or (span.link and "accent") or node.color or "text"
-      draw.text(surface, spanFont(node, span), run.text, box.x + run.x, box.y + (i - 1) * line, textSize, color)
+      local runX, runY = x + run.x, y + (i - 1) * line
+
+      if span.icon then
+        draw.icon(surface, span.icon, runX, runY, run.width, color)
+      elseif span.image then
+        local picture = loadImageCached(span.image, textScale)
+
+        if picture then
+          local imageWidth, imageHeight = draw.imageSize(picture)
+          local fit = math.min(run.width / imageWidth, line / imageHeight)
+          draw.image(surface, picture, runX + (run.width - imageWidth * fit) / 2, runY + (line - imageHeight * fit) / 2, imageWidth * fit, imageHeight * fit)
+        end
+      else
+        draw.text(surface, spanFont(node, span), run.text, runX, runY, textSize, color)
+      end
     end
   end
 end
@@ -3039,9 +3113,15 @@ function paint(node, surface, state)
     draw.text(surface, font, ellipsize(font, node.text, textSize, box.width), box.x, textY, textSize, node.color or "text")
   elseif node.type == "button" then
     draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, pressed and "accent" or hover and "buttonHover" or "button")
-    local shown = ellipsize(font, node.label, textSize, box.width - 2 * size.paddingX)
-    local width = measureText(font, shown, textSize)
-    draw.text(surface, font, shown, box.x + (box.width - width) / 2, textY, textSize, node.color or "text")
+
+    if box.spanLines then
+      -- a label of spans, in the middle, cut at the button's padding
+      inside.clip(surface, box.x + size.paddingX, box.y, box.width - 2 * size.paddingX, box.height, inside.label, node, state)
+    else
+      local shown = ellipsize(font, node.label, textSize, box.width - 2 * size.paddingX)
+      local width = measureText(font, shown, textSize)
+      draw.text(surface, font, shown, box.x + (box.width - width) / 2, textY, textSize, node.color or "text")
+    end
   elseif node.type == "color" then
     -- the swatch shows a colour with alpha over a light and a dark half, so its alpha shows
     draw.rounded(surface, box.x, box.y, box.width, box.height, size.radius, (pressed or hover) and "buttonHover" or "button")
@@ -5577,9 +5657,9 @@ ecs.service.register({
     fn = elements.group,
   },
   section = {
-    sig = "value<ui.Element>(string title, value<ui.SectionProps?> props, value<ui.Child[]?> children)",
+    sig = "value<ui.Element>(value<ui.Text> title, value<ui.SectionProps?> props, value<ui.Child[]?> children)",
     doc = "A heading with an arrow over elements, which a click on the heading shows and hides; in a list, its elements are the list's items\n"
-        .. "@param title The heading's text\n"
+        .. "@param title The heading: a text, or spans, as a text takes\n"
         .. "@param props The section's properties (ui.SectionProps); the plugin keeps open, and onToggle gets the new state\n"
         .. "@param children The elements, from the top, below the heading while it is open; none if nil\n"
         .. "@return The section",
@@ -5634,9 +5714,9 @@ ecs.service.register({
     fn = elements.text,
   },
   button = {
-    sig = "value<ui.Element>(string label, value<ui.ButtonProps?> props)",
+    sig = "value<ui.Element>(value<ui.Text> label, value<ui.ButtonProps?> props)",
     doc = "A button; onClick runs when it is clicked\n"
-        .. "@param label The text on the button\n"
+        .. "@param label The button's label: a text, or spans with icons and images, as a text takes\n"
         .. "@param props The button's properties (ui.ButtonProps)\n"
         .. "@return The button",
     fn = elements.button,

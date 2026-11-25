@@ -45,6 +45,7 @@ typedef enum UiFlag
 
 /// @brief The props of an element, in the manner of ui.Props. A number left 0, a flag left unset or a text left nullptr is left to ui. Each element uses the ones it knows.
 typedef struct UiProps UiProps;
+typedef struct UiSpan UiSpan;
 
 struct UiProps
 {
@@ -78,6 +79,7 @@ struct UiProps
     f64 step;                    // what a slider's or number's value is rounded to
     UiFlag valid;                // UI_FALSE marks a field's text as wrong, and keeps Return from giving it
     UiFlag alpha;                // a colour element whose picker has an alpha bar, and gives "#RRGGBBAA"
+    const UiSpan *spans;         // a button's or a section's label as spans, in place of its text, which stays its id: UI_LABEL(...)
     const char *sort;            // the id of the column a table is sorted by
     UiFlag ascending;            // a table's sort arrow points up
     i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
@@ -114,16 +116,16 @@ typedef struct UiColumn
     f64 width;
 } UiColumn;
 
-/// @brief A mark of a tree's node: a short text or an icon at the end of its row, such as an eye or a lock. A list of marks ends with one whose id is nullptr.
+/// @brief A mark of a tree's node: a short label at the end of its row, such as an eye or a lock. A list of marks ends with one whose id is nullptr.
 /// on points to whether it is on, which UI_TREE writes when the mark is clicked; a click does not choose the node.
 typedef struct UiTreeMark
 {
     const char *id;
-    const char *text;
+    const char *label;
     bool *on;
     const char *tooltip; // nullptr for none
     const char *keys;    // the key combination that turns it too, which its tooltip names; nullptr for none
-    const char *icon;    // an icon shown in place of the text, as UI_ICON names it: eye, eyeClosed, lock or lockOpen; nullptr for the text
+    const UiSpan *spans; // the label as spans, in place of label, such as UI_LABEL({.icon = "lock"}); nullptr for the label
 } UiTreeMark;
 
 /// @brief A node of a tree. A list of nodes ends with one whose id is nullptr. A node whose children are not nullptr has an arrow, even with none,
@@ -135,6 +137,7 @@ typedef struct UiTreeNode
     const struct UiTreeNode *children;
     bool *open;
     const UiTreeMark *marks; // nullptr for none
+    const UiSpan *spans;     // the label as spans, in place of label; nullptr for the label
 } UiTreeNode;
 
 /// @brief What UI_SHOW describes into. Ui_Init prepares it.
@@ -506,10 +509,13 @@ static inline void Ui_Text(const char *text, const UiProps *props)
     Ui_SetString(Ui_Add("text", props), "value", text);
 }
 
-/// @brief A part of a text in its own style, as ui.Span is. A false field is off, and a colour left nullptr is the text's.
-typedef struct UiSpan
+/// @brief A part of a text in its own style, or a picture a line high, as ui.Span is. A false field is off, and a colour left nullptr is the text's.
+/// A list of spans that has no count, as UI_LABEL makes, ends with an empty span, whose text, icon and image are nullptr.
+struct UiSpan
 {
     const char *text;
+    const char *icon;  // an icon in place of the text, as UI_ICON names it: eye, eyeClosed, lock or lockOpen
+    const char *image; // the path of an image in place of the text, which fits a square a line high
     bool bold;
     bool italic;
     bool mono; // in the mono font, for code
@@ -517,17 +523,14 @@ typedef struct UiSpan
     bool strike;
     const char *color;
     const char *link; // underlined, in the accent; UI_SPANS gives it when it is clicked
-} UiSpan;
+};
 
-/// @brief A text of spans, each in its own style. Gives the link that a click, or Return, gave since the last draw, or nullptr; it is valid until the
-/// next take. A text without an id takes the links of every such text.
-static inline const char *Ui_Spans(const UiSpan *spans, usz count, const UiProps *props)
+/// @brief Sets a table's field to a list of spans, of a count, or until the empty span when the count is SIZE_MAX.
+static inline void Ui_SetSpans(ECSValue *table, const char *name, const UiSpan *spans, usz count)
 {
-    const char *link = ECSValue_GetString(ECSValue_GetTableField(Ui_Take(props->id != nullptr ? props->id : "", "onLink"), "value"), nullptr);
-    ECSValue *description = Ui_Add("text", props);
-    ECSValue *list = description == nullptr ? nullptr : Ui_SetTable(description, "value");
+    ECSValue *list = table == nullptr ? nullptr : Ui_SetTable(table, name);
 
-    for (usz i = 0; list != nullptr && i < count; i++)
+    for (usz i = 0; list != nullptr && i < count && (count != SIZE_MAX || spans[i].text != nullptr || spans[i].icon != nullptr || spans[i].image != nullptr); i++)
     {
         ECSValue *span = nullptr;
 
@@ -539,6 +542,8 @@ static inline const char *Ui_Spans(const UiSpan *spans, usz count, const UiProps
 
         ECSValue_SetTable(span);
         Ui_SetString(span, "text", spans[i].text != nullptr ? spans[i].text : "");
+        Ui_SetString(span, "icon", spans[i].icon);
+        Ui_SetString(span, "image", spans[i].image);
         Ui_SetString(span, "color", spans[i].color);
         Ui_SetString(span, "link", spans[i].link);
         const struct
@@ -555,7 +560,27 @@ static inline const char *Ui_Spans(const UiSpan *spans, usz count, const UiProps
             }
         }
     }
+}
 
+/// @brief Sets a table's field to a label: its spans when there are, or else its text.
+static inline void Ui_SetLabel(ECSValue *table, const char *name, const char *text, const UiSpan *spans)
+{
+    if (spans != nullptr)
+    {
+        Ui_SetSpans(table, name, spans, SIZE_MAX);
+    }
+    else
+    {
+        Ui_SetString(table, name, text);
+    }
+}
+
+/// @brief A text of spans, each in its own style. Gives the link that a click, or Return, gave since the last draw, or nullptr; it is valid until the
+/// next take. A text without an id takes the links of every such text.
+static inline const char *Ui_Spans(const UiSpan *spans, usz count, const UiProps *props)
+{
+    const char *link = ECSValue_GetString(ECSValue_GetTableField(Ui_Take(props->id != nullptr ? props->id : "", "onLink"), "value"), nullptr);
+    Ui_SetSpans(Ui_Add("text", props), "value", spans, count);
     return link;
 }
 
@@ -563,7 +588,7 @@ static inline bool Ui_Button(const char *label, const UiProps *props)
 {
     UiProps named = *props;
     named.id = named.id == nullptr ? label : named.id;
-    Ui_SetString(Ui_Add("button", &named), "value", label);
+    Ui_SetLabel(Ui_Add("button", &named), "value", label, props->spans);
     return Ui_Take(named.id, "onClick") != nullptr;
 }
 
@@ -725,7 +750,7 @@ static inline bool Ui_OpenSection(bool *open, const char *title, const UiProps *
     const ECSValue *taken = Ui_Take(props->id, "onToggle");
     *open = taken != nullptr ? ECSValue_GetBool(ECSValue_GetTableField(taken, "value"), *open) : *open;
     ECSValue *description = Ui_Open("section", props);
-    Ui_SetString(description, "value", title);
+    Ui_SetLabel(description, "value", title, props->spans);
     Ui_SetBool(description, "open", *open);
     return taken != nullptr;
 }
@@ -829,7 +854,7 @@ static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeN
 
         ECSValue_SetTable(item);
         Ui_SetString(item, "id", node->id);
-        Ui_SetString(item, "label", node->label);
+        Ui_SetLabel(item, "label", node->label, node->spans);
 
         if (node->children != nullptr)
         {
@@ -851,11 +876,10 @@ static inline void Ui_AddTreeNodes(ECSValue *list, ECSValue *open, const UiTreeN
 
                 ECSValue_SetTable(described);
                 Ui_SetString(described, "id", mark->id);
-                Ui_SetString(described, "text", mark->text);
+                Ui_SetLabel(described, "label", mark->label, mark->spans);
                 Ui_SetBool(described, "on", mark->on != nullptr && *mark->on);
                 Ui_SetString(described, "tooltip", mark->tooltip);
                 Ui_SetString(described, "keys", mark->keys);
-                Ui_SetString(described, "icon", mark->icon);
             }
         }
 
@@ -958,6 +982,7 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 #define UI_SEPARATOR(...) ((void)Ui_Add("separator", &(UiProps){__VA_ARGS__}))
 #define UI_SPACE(...) ((void)Ui_Add("space", &(UiProps){__VA_ARGS__}))
 #define UI_IMAGE(path, ...) Ui_SetString(Ui_Add("image", &(UiProps){__VA_ARGS__}), "value", (path))
+#define UI_LABEL(...) ((const UiSpan[]){__VA_ARGS__, {0}})
 #define UI_ICON(name, ...) Ui_SetString(Ui_Add("icon", &(UiProps){__VA_ARGS__}), "value", (name))
 
 /// @brief Whether the clickable column or row with an id was clicked since the last draw.
