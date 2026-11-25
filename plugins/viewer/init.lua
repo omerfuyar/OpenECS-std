@@ -126,9 +126,10 @@ function Viewer:draw(surface)
         ui.text(("%.2f seconds"):format(self.sound:length()), {}),
       })
     elseif self.kind == "text" then
+      -- the rows a long line wraps into start with a dim mark, so they read as its rest, as in code editors
       local items = {}
       for i, spans in ipairs(self.lines) do
-        items[i] = ui.text(#spans > 0 and spans or " ", { font = "mono", wrap = true })
+        items[i] = ui.text(#spans > 0 and spans or " ", { font = "mono", wrap = true, wrapMark = "↪ " })
       end
       children[#children + 1] = ui.scroll({ id = "text" }, items)
     else
