@@ -120,16 +120,15 @@
 ---A node of a tree; one with children, even none, has an arrow.
 ---@class ui.TreeNode
 ---@field id any
----@field label? string The id as text if missing.
+---@field label? ui.Text The id as text if missing.
 ---@field color? ecs.Color
 ---@field children? ui.TreeNode[]
----@field marks? ui.TreeMark[] Short texts or icons at the end of the node's row, each on or off, such as an eye and a lock.
+---@field marks? ui.TreeMark[] Short labels at the end of the node's row, each on or off, such as an eye and a lock.
 
 ---A mark of a tree's node: a click on it gives the tree's onMark its new state, and does not choose the node.
 ---@class ui.TreeMark
 ---@field id any
----@field text? string What the row shows: in the accent colour while on, dimmed while off.
----@field icon? string An icon that the row shows in place of the text, as ui.icon names it: eye, eyeClosed, lock or lockOpen.
+---@field label ui.Text What the row shows, such as an icon: in the accent colour while on, dimmed while off, as its icons are.
 ---@field on boolean
 ---@field tooltip? string
 ---@field keys? string The key combination that turns it too, which its tooltip names after its text.
@@ -166,9 +165,12 @@
 ---@field wrap? boolean Breaks into lines at the width of its column, or its own width.
 ---@field onLink? fun(link: string) A click on a span with a link, or Return while the text has the keys, gives the link.
 
----A part of a text in its own style. draw makes bold, italic, underline and struck text from the text's font.
+---A part of a text in its own style, or a picture a line high: an icon, or an image. draw makes bold, italic, underline and struck text from
+---the text's font.
 ---@class ui.Span
----@field text string
+---@field text? string Empty for a picture.
+---@field icon? string An icon, as ui.icon names it: eye, eyeClosed, lock or lockOpen, in the span's colour.
+---@field image? string The path of an image, which fits a square a line high.
 ---@field bold? boolean
 ---@field italic? boolean
 ---@field mono? boolean In the mono font, for code.
@@ -177,8 +179,9 @@
 ---@field color? ecs.Color The span's colour; the text's if missing, and the accent for a link.
 ---@field link? string Underlined, in the accent; a click gives it to the text's onLink.
 
----A text, or a list of spans, each a text or a table.
----@alias ui.Text string|(string|ui.Span)[]
+---A text, or a list of spans, each a text, a table, or an icon or an image element: what a text, a button, a tree's node and mark, and a
+---section's title show, such as { ui.icon("lock"), " Locked" }.
+---@alias ui.Text string|(string|ui.Span|ui.Element)[]
 
 ---@class ui.ButtonProps: ui.Props
 ---@field onClick? fun()
