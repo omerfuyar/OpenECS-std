@@ -2,7 +2,7 @@
 -- may name a file and a line, such as "components/coin.lua:12", and a click on it runs the command of the setting
 -- console.editor, which opens the file there in the user's code editor. An entry equal to the one before it stacks on it.
 -- Each entry has a source, such as what a tool's program prints or a plugin whose log line it is: the core's event ecs.logged
--- brings the log's lines from the level of the setting console.log up, and each panel's checkboxes show some sources only.
+-- brings the log's lines from the level of the setting console.logLevel up, and each panel's checkboxes show some sources only.
 
 local ecs = require("ecs")
 local ui = require("ui")
@@ -54,7 +54,7 @@ ecs.setting.declare({
 })
 
 ecs.setting.declare({
-  name = "log",
+  name = "logLevel",
   type = "choice",
   choices = LOG_LEVELS,
   description = "The lowest level of the log's lines that the console shows, each with its plugin as its source; off for none",
@@ -181,11 +181,11 @@ function add(text, level, links, source, time)
   redraw()
 end
 
--- the log's lines, from the level of the setting console.log up; a debug line shows as info, and its plugin is its source
+-- the log's lines, from the level of the setting console.logLevel up; a debug line shows as info, and its plugin is its source
 local RANKS = { error = 2, warn = 3, info = 4, debug = 5 }
 
 ecs.event.subscribe("ecs.logged", function(_, line)
-  local wanted = ecs.setting.get("console.log")
+  local wanted = ecs.setting.get("console.logLevel")
   local rank = RANKS[line.level]
   for i, name in ipairs(LOG_LEVELS) do
     if name == wanted and rank and rank <= i then
@@ -376,7 +376,7 @@ function Console:draw(surface)
   end
   local logLevel = 1
   for i, name in ipairs(LOG_LEVELS) do
-    if name == ecs.setting.get("console.log") then
+    if name == ecs.setting.get("console.logLevel") then
       logLevel = i
     end
   end
@@ -384,7 +384,7 @@ function Console:draw(surface)
   sources[#sources + 1] = ui.text("Log", { style = STYLES.note })
   sources[#sources + 1] = ui.dropdown(logLevel, LOG_NAMES, {
     id = "log", width = 110, tooltip = "The lowest level of the log's lines that the console shows, from here on", onSelect = function(choice)
-      ecs.setting.set("console.log", LOG_LEVELS[choice])
+      ecs.setting.set("console.logLevel", LOG_LEVELS[choice])
     end,
   })
   -- the toggles, the search and the buttons are a bar along the top, over the sources and the entries
@@ -412,9 +412,11 @@ function Console:event(event)
   ui.event(self.panel, event)
 end
 
--- the levels and sources it hides, and how many entries show and are built, which a test reads
+-- the levels and sources it hides, and how many entries show and are built, and each source's count, which a test reads
 function Console:saveState()
-  return { hidden = self.hidden, hiddenSources = self.hiddenSources, shown = self.shown, built = self.built, chosen = self.chosen and self.chosen.text or nil }
+  local filtered = self:filter()
+  return { hidden = self.hidden, hiddenSources = self.hiddenSources, shown = self.shown, built = self.built, chosen = self.chosen and self.chosen.text or nil,
+    sources = filtered.bySource }
 end
 
 function Console:destroy()
