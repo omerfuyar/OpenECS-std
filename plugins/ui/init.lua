@@ -4538,57 +4538,35 @@ local function slide(state, node, x)
   end
 end
 
+-- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
+local inspecting = false
+
 -- hides a tooltip, shown or waiting
-local function hideTooltip(panel, state)
+local function hideTooltip(state)
   if state.tooltipTimer then
     state.tooltipTimer:stop()
   end
 
-  if state.tooltipShown then
-    panel:redraw()
+  if state.tooltipPopup then
+    state.tooltipPopup:close()
   end
 
-  state.tooltip, state.tooltipTimer, state.tooltipShown = nil, nil, false
+  state.tooltip, state.tooltipTimer, state.tooltipShown, state.tooltipPopup = nil, nil, false, nil
 end
 
--- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
--- the pointer rests before a tooltip shows, so each move starts the wait again
-local function followTooltip(panel, state, x, y)
-  local node = find(state.root, x, y, function(candidate)
-    return candidate.tooltip ~= nil or candidate.keys ~= nil
-  end)
-
-  if node and node.id == state.tooltip and state.tooltipShown then
-    return
-  end
-
-  hideTooltip(panel, state)
-
-  if node then
-    state.tooltip = node.id
-    state.tooltipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
-      state.tooltipShown = true
-      panel:redraw()
-
-      state.tooltipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
-        state.tooltipTimer = nil
-        hideTooltip(panel, state)
-      end)
-    end)
-  end
-end
-
--- draws the shown tooltip below and right of the pointer, inside the surface
-local function paintTooltip(surface, state, width, height)
-  local node = state.tooltipShown and findById(state.root, state.tooltip)
+-- shows the tooltip of the element that the pointer rests on in a popup below and right of the pointer, or above it if there is no room
+-- below, so the panel's edges do not cut it; the inspector shows no tooltip
+local function showTooltip(panel, state)
+  local node = not inspecting and findById(state.root, state.tooltip)
 
   if not node then
     return
   end
 
+  textScale = state.scale
   local font, textSize = draw.font("ui"), styles.note.size
   local line = lineHeight(font, textSize)
-  local lines = node.tooltip and wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX)) or {}
+  local lines = node.tooltip and wrap(font, tostring(node.tooltip), textSize, 320) or {}
 
   -- the keys that do the same come last, dimmed
   local keysLine = node.keys and #lines + 1
@@ -4604,24 +4582,59 @@ local function paintTooltip(surface, state, width, height)
   end
 
   boxWidth += 2 * size.paddingX
-  local x = clamp((state.pointerX or 0) + 12, 0, math.max(0, width - boxWidth))
-  local y = (state.pointerY or 0) + 18
+  local scale, pointerX, pointerY = state.scale, state.pointerX or 0, state.pointerY or 0
+  local popup
+  popup = panel:openPopup({
+    type = "tooltip",
+    -- the anchor runs from 6 above the pointer to 18 below it, and starts 12 right of it
+    anchor = { x = (pointerX + 12) * scale, y = (pointerY - 6) * scale, width = 0, height = 24 * scale },
+    width = boxWidth,
+    height = boxHeight,
+    draw = function(surface)
+      textScale = surface.scale
+      draw.rounded(surface, 0, 0, boxWidth, boxHeight, size.radius + 1, "overlay")
+      draw.roundedOutline(surface, 0, 0, boxWidth, boxHeight, size.radius + 1, 1, "frame")
 
-  -- a tooltip that does not fit below the pointer goes above it
-  if y + boxHeight > height then
-    y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
+      for i, text in ipairs(lines) do
+        draw.text(surface, font, text, size.paddingX, size.paddingY + (i - 1) * line, textSize, i == keysLine and "textDim" or "text")
+      end
+    end,
+    -- the core closes it with the panel, or when the panel is hidden
+    closed = function()
+      if state.tooltipPopup == popup then
+        state.tooltipPopup, state.tooltipShown = nil, false
+      end
+    end,
+  })
+  state.tooltipPopup, state.tooltipShown = popup, popup ~= nil
+end
+
+-- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
+-- the pointer rests before a tooltip shows, so each move starts the wait again
+local function followTooltip(panel, state, x, y)
+  local node = find(state.root, x, y, function(candidate)
+    return candidate.tooltip ~= nil or candidate.keys ~= nil
+  end)
+
+  if node and node.id == state.tooltip and state.tooltipShown then
+    return
   end
 
-  draw.rounded(surface, x, y, boxWidth, boxHeight, size.radius + 1, "overlay")
-  draw.roundedOutline(surface, x, y, boxWidth, boxHeight, size.radius + 1, 1, "frame")
+  hideTooltip(state)
 
-  for i, text in ipairs(lines) do
-    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, i == keysLine and "textDim" or "text")
+  if node then
+    state.tooltip = node.id
+    state.tooltipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
+      showTooltip(panel, state)
+
+      state.tooltipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
+        state.tooltipTimer = nil
+        hideTooltip(state)
+      end)
+    end)
   end
 end
 
--- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
-local inspecting = false
 
 -- the element under the pointer, the innermost one; a scroll element's children outside it are not under the pointer
 local function inspected(state)
@@ -5025,7 +5038,7 @@ local function handleEvent(panel, event)
   if event.type == "pointerMove" then
     followTooltip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
   else
-    hideTooltip(panel, state)
+    hideTooltip(state)
   end
 
   -- Ctrl+F gives the keys to the panel's search field, the first if it has several
@@ -5148,15 +5161,13 @@ local function keepScrollOffsets(node, state)
 end
 
 -- lays out the elements in the panel's surface and draws them; call it from the panel's draw
--- what a show paints: the background, the elements, and the inspector or a tooltip over them
+-- what a show paints: the background, the elements, and the inspector over them
 function inside.show(root, surface, state, width, height)
   draw.fill(surface, 0, 0, width, height, "panel")
   paint(root, surface, state)
 
   if inspecting then
     paintInspector(surface, state, width, height)
-  else
-    paintTooltip(surface, state, width, height)
   end
 end
 
@@ -5342,7 +5353,7 @@ end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
-  -- a closing panel is not drawn again, so its tooltip's timer only stops
+  -- the core closes a closing panel's tooltip, so its timer only stops
   if panels[panel] and panels[panel].tooltipTimer then
     panels[panel].tooltipTimer:stop()
   end
