@@ -500,7 +500,7 @@ function Files:grid(children)
       end,
     }, {
       icon(id, entry.children ~= nil),
-      ui.text(entry.label, { size = 12 }),
+      ui.text(entry.label, { size = 12, maxLines = 2 }),
     })
   end
   children[#children + 1] = ui.scroll({ id = "grid", grow = 1, onMenu = function(x, y)

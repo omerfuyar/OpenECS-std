@@ -164,6 +164,8 @@
 ---@class ui.TextProps: ui.Props
 ---@field wrap? boolean Breaks into lines at the width of its column, or its own width.
 ---@field wrapMark? string What a text that wraps shows, in "textDim", at the start of each line after a break, such as "↪ "; those lines start after it. A new line of the text's own is not marked.
+---@field maxLines? integer The most lines it shows: it wraps, as with wrap = true, and the last line it shows ends with an ellipsis when more follow.
+---@field gutter? string What a text shows, in "textDim", before its first line, such as the number of a code's line; each of its lines starts after the gutter's width, and a wrapMark stands at the gutter's end, where its text would.
 ---@field onLink? fun(link: string) A click on a span with a link, or Return while the text has the keys, gives the link.
 
 ---A part of a text in its own style, or a picture a line high: an icon, or an image. draw makes bold, italic, underline and struck text from

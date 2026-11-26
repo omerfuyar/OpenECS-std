@@ -981,9 +981,10 @@ local function prefix(text, count)
   return text:sub(1, at - 1)
 end
 
--- the text that fits a width, ended with an ellipsis when it is cut
-local function ellipsize(font, text, textSize, width)
-  if measureText(font, text, textSize) <= width then
+-- the text that fits a width, ended with an ellipsis when it is cut; with cut, it ends with one even when it fits, as the last line that a
+-- text with maxLines shows of more
+local function ellipsize(font, text, textSize, width, cut)
+  if not cut and measureText(font, text, textSize) <= width then
     return text
   end
 
@@ -1156,14 +1157,16 @@ do
 
   -- the lines of a text of spans: each line is runs of one span, by its index in the spans, at x from the line's start; with a width, it
   -- breaks between words as wrap does, and a line after a break leaves out the blanks it would start with. With a wrapMark, a line after a
-  -- break is marked wrapped and starts after the mark's width, where the mark is drawn
+  -- break is marked wrapped and starts after the mark's width, where the mark is drawn. With a gutter, every line starts after the gutter's
+  -- width, and the mark of a line after a break is drawn in the gutter
   local function lay(node, textSize, width)
-    local lines, x, broke = { { runs = {}, width = 0 } }, 0, false
-    local indent = node.wrapMark and width and measureText(fontOf(node), node.wrapMark, textSize) or 0
+    local gutter = node.gutter and measureText(fontOf(node), node.gutter, textSize) or 0
+    local lines, x, broke = { { runs = {}, width = gutter } }, gutter, false
+    local indent = node.wrapMark and width and (node.gutter and gutter or measureText(fontOf(node), node.wrapMark, textSize)) or gutter
 
     -- a line after a break, which starts after the mark
     local function breakLine()
-      lines[#lines + 1] = { runs = {}, width = indent, wrapped = indent > 0 or nil }
+      lines[#lines + 1] = { runs = {}, width = indent, wrapped = node.wrapMark and width and true or nil }
       x, broke = indent, true
       return lines[#lines]
     end
@@ -1217,8 +1220,8 @@ do
 
       for part in ((span.icon or span.image) and "" or span.text .. "\n"):gmatch("(.-)\n") do
         if not first then
-          lines[#lines + 1] = { runs = {}, width = 0 }
-          x, broke = 0, false
+          lines[#lines + 1] = { runs = {}, width = gutter }
+          x, broke = gutter, false
         end
 
         first = false
@@ -1252,7 +1255,8 @@ do
     end
 
     keyParts[1], keyParts[2], keyParts[3], keyParts[4] = textSize * 1024 + textScale, width or "", node.font or "", node.wrapMark or ""
-    local parts = 4
+    keyParts[5] = node.gutter or ""
+    local parts = 5
 
     for _, span in ipairs(node.spans) do
       keyParts[parts + 1] = (span.mono and 16 or 0) + styleBits(span)
@@ -1330,7 +1334,7 @@ end
 local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark "
+  .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines gutter "
   .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
@@ -1864,8 +1868,15 @@ function elements.text(text, props)
     node.text = tostring(text)
   end
 
-  -- a wrapMark is drawn where spans break, so a plain text that has one is one span
-  if node.wrapMark and not node.spans then
+  -- a text with maxLines wraps, and shows at most that many lines
+  ecs.check(node.maxLines == nil or (type(node.maxLines) == "number" and node.maxLines >= 1), "A text's maxLines is a number of lines, 1 or more.")
+
+  if node.maxLines then
+    node.maxLines, node.wrap = math.floor(node.maxLines), true
+  end
+
+  -- a wrapMark is drawn where spans break, and a gutter before them, so a plain text that has one is one span
+  if (node.wrapMark or node.gutter) and not node.spans then
     node.spans = { { text = node.text } }
   end
 
@@ -2339,6 +2350,34 @@ function measureRowWidths(node, state, rowRoom, along)
   return along, across
 end
 
+-- the first count of a text's lines, as a text with maxLines shows them, at most width wide: a text's last line ends with an ellipsis, and a
+-- last line of spans keeps in cut where its runs end, and is as wide as they are with the ellipsis that inside.runs draws after them. The
+-- lines are shared, so the shown ones are kept on them by count, and no one changes them
+function inside.cutLines(lines, count, font, textSize, width)
+  if #lines <= count then
+    return lines
+  end
+
+  lines.cuts = lines.cuts or {}
+  local shown = lines.cuts[count]
+
+  if shown == nil then
+    shown = table.move(lines, 1, count, 1, {})
+    local last = shown[count]
+
+    if type(last) == "string" then
+      shown[count] = ellipsize(font, (last:gsub("%s+$", "")), textSize, width or math.huge, true)
+    else
+      local dots = measureText(font, "…", textSize)
+      shown[count] = { runs = last.runs, width = math.min(last.width + dots, width or math.huge), wrapped = last.wrapped, cut = last.width }
+    end
+
+    lines.cuts[count] = shown
+  end
+
+  return shown
+end
+
 -- the size an element needs, without growing, which it keeps in its layout; containers measure their children first
 -- room is the width a column gives its children, which text that wraps breaks at; nil in a row
 function measure(node, state, room)
@@ -2362,6 +2401,11 @@ function measure(node, state, room)
 
   if node.type == "text" and node.spans then
     layout.spanLines = layoutSpans(node, textSize, node.wrap and (node.width or room) or nil)
+
+    if node.maxLines then
+      layout.spanLines = inside.cutLines(layout.spanLines, node.maxLines, font, textSize, node.wrap and (node.width or room) or nil)
+    end
+
     width, height = 0, #layout.spanLines * line
 
     for _, spanLine in ipairs(layout.spanLines) do
@@ -2369,6 +2413,16 @@ function measure(node, state, room)
     end
   elseif node.type == "text" and node.wrap and innerWidthOf(node, room) then
     layout.lines, width = wrapKept(font, node.text, textSize, innerWidthOf(node, room))
+
+    -- a text with maxLines shows its first lines, and is as wide as the widest of them
+    if node.maxLines and #layout.lines > node.maxLines then
+      layout.lines, width = inside.cutLines(layout.lines, node.maxLines, font, textSize, innerWidthOf(node, room)), 0
+
+      for _, text in ipairs(layout.lines) do
+        width = math.max(width, measureText(font, text, textSize))
+      end
+    end
+
     height = #layout.lines * line
   elseif node.type == "text" and node.text:find("\n") then
     -- a text of many lines without wrap keeps its own lines, each cut with an ellipsis when it is drawn
@@ -2377,6 +2431,11 @@ function measure(node, state, room)
 
     for text in (node.text .. "\n"):gmatch("(.-)\n") do
       layout.lines[#layout.lines + 1] = text
+    end
+
+    layout.lines = node.maxLines and inside.cutLines(layout.lines, node.maxLines, font, textSize, room) or layout.lines
+
+    for _, text in ipairs(layout.lines) do
       width = math.max(width, measureText(font, text, textSize))
     end
 
@@ -3048,17 +3107,36 @@ function inside.runs(node, surface, x, y)
   local line = lineHeight(fontOf(node), textSize)
 
   for i, spanLine in ipairs(node.layout.spanLines) do
-    -- a line after a break starts with the text's wrapMark, dimmed
-    if spanLine.wrapped then
-      draw.text(surface, fontOf(node), node.wrapMark, x, y + (i - 1) * line, textSize, "textDim")
+    -- the first line starts with the text's gutter, dimmed, and a line after a break with its wrapMark: at the gutter's end when it has
+    -- one, so the mark stands where the gutter's text would
+    if i == 1 and node.gutter then
+      draw.text(surface, fontOf(node), node.gutter, x, y, textSize, "textDim")
+    elseif spanLine.wrapped then
+      local markX = node.gutter and math.max(0, measureText(fontOf(node), node.gutter, textSize) - measureText(fontOf(node), node.wrapMark, textSize)) or 0
+      draw.text(surface, fontOf(node), node.wrapMark, x + markX, y + (i - 1) * line, textSize, "textDim")
     end
+
+    -- the last line that a text with maxLines shows of more ends with an ellipsis: its runs stop where one still fits, and a word that
+    -- crosses there is cut with it
+    local stop = spanLine.cut and math.min(spanLine.cut, node.layout.width - measureText(fontOf(node), "…", textSize))
+    local dotsX = spanLine.cut
 
     for _, run in ipairs(spanLine.runs) do
       local span = node.spans[run.index]
       local color = span.color or (span.link and "accent") or node.color or "text"
       local runX, runY = x + run.x, y + (i - 1) * line
 
-      if span.icon then
+      if stop and run.x + run.width > stop then
+        if not run.picture and run.x < stop then
+          draw.text(surface, spanFont(node, span), ellipsize(spanFont(node, span), (run.text:gsub("%s+$", "")), textSize, node.layout.width - run.x, true), runX, runY,
+            textSize, color)
+          dotsX = nil
+        else
+          dotsX = math.min(dotsX, run.x)
+        end
+
+        break
+      elseif span.icon then
         draw.icon(surface, span.icon, runX, runY, run.width, color)
       elseif span.image then
         local picture = loadImageCached(span.image, textScale)
@@ -3071,6 +3149,10 @@ function inside.runs(node, surface, x, y)
       else
         draw.text(surface, spanFont(node, span), run.text, runX, runY, textSize, color)
       end
+    end
+
+    if dotsX then
+      draw.text(surface, fontOf(node), "…", x + dotsX, y + (i - 1) * line, textSize, node.color or "text")
     end
   end
 end
@@ -3380,6 +3462,16 @@ local function openDropdown(panel, state, node)
   -- the rows below the search's: { label, choice } for a choice, { label, folder } for a folder, and { label, back = true }
   local rows = {}
   local popup
+  -- a popup no taller than the room above or below the dropdown in its window, whichever is larger: it shows `limit` rows from
+  -- after `skip`, and the wheel and the keys scroll it
+  local skip, limit = 0, math.huge
+  local place = panel.place
+
+  if place and place.windowHeight > 0 then
+    local below = place.windowHeight - place.y - (box.y + box.height) * scale
+    local above = place.y + box.y * scale
+    limit = math.max(1, math.floor(math.max(below, above) / scale / rowHeight))
+  end
 
   -- the folder that holds a path, "" for the top, and the path's last part
   local function split(path)
@@ -3459,13 +3551,25 @@ local function openDropdown(panel, state, node)
   end
 
   local function height()
-    return rowHeight * math.max(1, #rows + top())
+    return rowHeight * math.max(1, math.min(#rows + top(), limit))
+  end
+
+  -- the rows below the search's that show, and a skip that keeps the hovered one among them
+  local function room()
+    return math.max(1, limit - top())
+  end
+
+  local function keepHover()
+    skip = clamp(skip, math.max(0, hover - room()), math.max(0, hover - 1))
+    skip = clamp(skip, 0, math.max(0, #rows - room()))
   end
 
   -- shows the rows again, hovering the first that is not the way back, or the given one
   local function refill(hovered)
     fill()
     hover = hovered or ((rows[1] and rows[1].back and rows[2]) and 2 or 1)
+    skip = 0
+    keepHover()
     popup:setSize(width, height())
     popup:redraw()
   end
@@ -3501,7 +3605,7 @@ local function openDropdown(panel, state, node)
 
   local function rowAt(y)
     local index = math.floor(y / scale / rowHeight) + 1 - top()
-    return rows[index] ~= nil and index or nil
+    return index >= 1 and index <= room() and rows[index + skip] ~= nil and index + skip or nil
   end
 
   -- the chosen one's folder is open first, with it hovered
@@ -3516,6 +3620,8 @@ local function openDropdown(panel, state, node)
       hover = i
     end
   end
+
+  keepHover()
 
   local message
   popup, message = panel:openPopup({
@@ -3532,8 +3638,9 @@ local function openDropdown(panel, state, node)
         draw.text(surface, font, ellipsize(font, typed, textSize, width - 2 * size.paddingX), size.paddingX, size.paddingY, textSize, "textDim")
       end
 
-      for i, row in ipairs(rows) do
-        local y = (i - 1 + top()) * rowHeight
+      for i = skip + 1, math.min(#rows, skip + room()) do
+        local row = rows[i]
+        local y = (i - 1 - skip + top()) * rowHeight
         local x, room = size.paddingX, width - 2 * size.paddingX
 
         if i == hover then
@@ -3567,8 +3674,13 @@ local function openDropdown(panel, state, node)
       elseif event.type == "keyDown" and (event.key == "Up" or event.key == "Down") then
         if #rows > 0 then
           hover = clamp(hover + (event.key == "Up" and -1 or 1), 1, #rows)
+          keepHover()
           popup:redraw()
         end
+      elseif event.type == "wheel" and #rows > room() then
+        skip = clamp(skip - (event.scrollY > 0 and 1 or event.scrollY < 0 and -1 or 0) * 3, 0, #rows - room())
+        hover = clamp(hover, skip + 1, skip + room())
+        popup:redraw()
       elseif event.type == "keyDown" and isEnter(event) then
         if rows[hover] ~= nil then
           choose(hover)
@@ -4456,57 +4568,35 @@ local function slide(state, node, x)
   end
 end
 
+-- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
+local inspecting = false
+
 -- hides a tooltip, shown or waiting
-local function hideTooltip(panel, state)
+local function hideTooltip(state)
   if state.tooltipTimer then
     state.tooltipTimer:stop()
   end
 
-  if state.tooltipShown then
-    panel:redraw()
+  if state.tooltipPopup then
+    state.tooltipPopup:close()
   end
 
-  state.tooltip, state.tooltipTimer, state.tooltipShown = nil, nil, false
+  state.tooltip, state.tooltipTimer, state.tooltipShown, state.tooltipPopup = nil, nil, false, nil
 end
 
--- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
--- the pointer rests before a tooltip shows, so each move starts the wait again
-local function followTooltip(panel, state, x, y)
-  local node = find(state.root, x, y, function(candidate)
-    return candidate.tooltip ~= nil or candidate.keys ~= nil
-  end)
-
-  if node and node.id == state.tooltip and state.tooltipShown then
-    return
-  end
-
-  hideTooltip(panel, state)
-
-  if node then
-    state.tooltip = node.id
-    state.tooltipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
-      state.tooltipShown = true
-      panel:redraw()
-
-      state.tooltipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
-        state.tooltipTimer = nil
-        hideTooltip(panel, state)
-      end)
-    end)
-  end
-end
-
--- draws the shown tooltip below and right of the pointer, inside the surface
-local function paintTooltip(surface, state, width, height)
-  local node = state.tooltipShown and findById(state.root, state.tooltip)
+-- shows the tooltip of the element that the pointer rests on in a popup below and right of the pointer, or above it if there is no room
+-- below, so the panel's edges do not cut it; the inspector shows no tooltip
+local function showTooltip(panel, state)
+  local node = not inspecting and findById(state.root, state.tooltip)
 
   if not node then
     return
   end
 
+  textScale = state.scale
   local font, textSize = draw.font("ui"), styles.note.size
   local line = lineHeight(font, textSize)
-  local lines = node.tooltip and wrap(font, tostring(node.tooltip), textSize, math.min(320, width - 4 * size.paddingX)) or {}
+  local lines = node.tooltip and wrap(font, tostring(node.tooltip), textSize, 320) or {}
 
   -- the keys that do the same come last, dimmed
   local keysLine = node.keys and #lines + 1
@@ -4522,24 +4612,59 @@ local function paintTooltip(surface, state, width, height)
   end
 
   boxWidth += 2 * size.paddingX
-  local x = clamp((state.pointerX or 0) + 12, 0, math.max(0, width - boxWidth))
-  local y = (state.pointerY or 0) + 18
+  local scale, pointerX, pointerY = state.scale, state.pointerX or 0, state.pointerY or 0
+  local popup
+  popup = panel:openPopup({
+    type = "tooltip",
+    -- the anchor runs from 6 above the pointer to 18 below it, and starts 12 right of it
+    anchor = { x = (pointerX + 12) * scale, y = (pointerY - 6) * scale, width = 0, height = 24 * scale },
+    width = boxWidth,
+    height = boxHeight,
+    draw = function(surface)
+      textScale = surface.scale
+      draw.rounded(surface, 0, 0, boxWidth, boxHeight, size.radius + 1, "overlay")
+      draw.roundedOutline(surface, 0, 0, boxWidth, boxHeight, size.radius + 1, 1, "frame")
 
-  -- a tooltip that does not fit below the pointer goes above it
-  if y + boxHeight > height then
-    y = math.max(0, (state.pointerY or 0) - 6 - boxHeight)
+      for i, text in ipairs(lines) do
+        draw.text(surface, font, text, size.paddingX, size.paddingY + (i - 1) * line, textSize, i == keysLine and "textDim" or "text")
+      end
+    end,
+    -- the core closes it with the panel, or when the panel is hidden
+    closed = function()
+      if state.tooltipPopup == popup then
+        state.tooltipPopup, state.tooltipShown = nil, false
+      end
+    end,
+  })
+  state.tooltipPopup, state.tooltipShown = popup, popup ~= nil
+end
+
+-- starts waiting to show the tooltip of the element under the pointer, unless it shows already;
+-- the pointer rests before a tooltip shows, so each move starts the wait again
+local function followTooltip(panel, state, x, y)
+  local node = find(state.root, x, y, function(candidate)
+    return candidate.tooltip ~= nil or candidate.keys ~= nil
+  end)
+
+  if node and node.id == state.tooltip and state.tooltipShown then
+    return
   end
 
-  draw.rounded(surface, x, y, boxWidth, boxHeight, size.radius + 1, "overlay")
-  draw.roundedOutline(surface, x, y, boxWidth, boxHeight, size.radius + 1, 1, "frame")
+  hideTooltip(state)
 
-  for i, text in ipairs(lines) do
-    draw.text(surface, font, text, x + size.paddingX, y + size.paddingY + (i - 1) * line, textSize, i == keysLine and "textDim" or "text")
+  if node then
+    state.tooltip = node.id
+    state.tooltipTimer = ecs.timer.start(TOOLTIP_DELAY, false, function()
+      showTooltip(panel, state)
+
+      state.tooltipTimer = ecs.timer.start(TOOLTIP_TIME, false, function()
+        state.tooltipTimer = nil
+        hideTooltip(state)
+      end)
+    end)
   end
 end
 
--- the inspector: whether ui outlines every element of every panel and names the one under the pointer, for the person who builds a panel
-local inspecting = false
 
 -- the element under the pointer, the innermost one; a scroll element's children outside it are not under the pointer
 local function inspected(state)
@@ -4943,7 +5068,7 @@ local function handleEvent(panel, event)
   if event.type == "pointerMove" then
     followTooltip(panel, state, (event.x or 0) / state.scale, (event.y or 0) / state.scale)
   else
-    hideTooltip(panel, state)
+    hideTooltip(state)
   end
 
   -- Ctrl+F gives the keys to the panel's search field, the first if it has several
@@ -5066,15 +5191,13 @@ local function keepScrollOffsets(node, state)
 end
 
 -- lays out the elements in the panel's surface and draws them; call it from the panel's draw
--- what a show paints: the background, the elements, and the inspector or a tooltip over them
+-- what a show paints: the background, the elements, and the inspector over them
 function inside.show(root, surface, state, width, height)
   draw.fill(surface, 0, 0, width, height, "panel")
   paint(root, surface, state)
 
   if inspecting then
     paintInspector(surface, state, width, height)
-  else
-    paintTooltip(surface, state, width, height)
   end
 end
 
@@ -5260,7 +5383,7 @@ end
 
 -- forgets a panel's state; call it from the panel's destroy
 function services.forget(panel)
-  -- a closing panel is not drawn again, so its tooltip's timer only stops
+  -- the core closes a closing panel's tooltip, so its timer only stops
   if panels[panel] and panels[panel].tooltipTimer then
     panels[panel].tooltipTimer:stop()
   end
@@ -5409,7 +5532,7 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -5728,7 +5851,7 @@ ecs.service.register({
   text = {
     sig = "value<ui.Element>(value<ui.Text> text, value<ui.TextProps?> props)",
     doc = "A line of text, or of spans in their own styles\n"
-        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true\n"
+        .. "@param text The text, or a list of spans (ui.Span), each a text or a table of its text and style; cut with an ellipsis, or at the edge for spans, when it does not fit unless props has wrap = true; with maxLines, it wraps and shows at most that many lines, the last ending with an ellipsis when more follow\n"
         .. "@param props The text's properties (ui.TextProps)\n"
         .. "@return The text element",
     fn = elements.text,
