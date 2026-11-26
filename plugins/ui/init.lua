@@ -3279,11 +3279,25 @@ function paint(node, surface, state)
     draw.fill(surface, box.x, box.y + box.height / 2 - 0.5, box.width, 1, node.color or "frame")
   elseif node.type == "scroll" then
     paintScroll(node, surface, state)
-    return
   end
 
-  for _, child in ipairs(node.children or {}) do
-    paint(child, surface, state)
+  if node.type ~= "scroll" then
+    for _, child in ipairs(node.children or {}) do
+      paint(child, surface, state)
+    end
+  end
+
+  -- where dragged data would land: a line along the top or the bottom of the item it lands before or after, or a box around what it goes into
+  local mark = state.dropMark
+
+  if mark and mark.id == node.id then
+    if mark.where == "before" then
+      draw.fill(surface, box.x, box.y, box.width, 2, "accent")
+    elseif mark.where == "after" then
+      draw.fill(surface, box.x, box.y + box.height - 2, box.width, 2, "accent")
+    else
+      draw.roundedOutline(surface, box.x, box.y, box.width, box.height, corner, 2, "accent")
+    end
   end
 end
 
@@ -5043,30 +5057,44 @@ end
 
 -- data dropped on the panel goes to the innermost element under it with onDrop; a list gives its item under the place, or nil beside its
 -- items, and where on the item it landed: before it in its upper half and after it in its lower half, or for a tree before it in its upper
--- quarter, after it in its lower quarter and into it between
-local function handleDrop(state, x, y, dataType, value)
-  local node = find(state.root, x, y, function(node)
+-- quarter, after it in its lower quarter and into it between. While data is dragged over the panel, the same element keeps the mark of where
+-- it would land, which paint draws, until the data leaves
+local function handleDrop(panel, state, x, y, event)
+  local node = event.type ~= "dragLeave" and find(state.root, x, y, function(node)
     return node.onDrop ~= nil or (isListItem(node) and node.list.onDrop ~= nil)
-  end)
+  end) or nil
+  local where = nil
+
+  if node and node.onDrop == nil then
+    local box = node.layout
+    local part = box.height > 0 and (y - box.y) / box.height or 0.5
+    where = part < 0.5 and "before" or "after"
+
+    if node.list.dropInto then
+      where = part < 0.25 and "before" or part >= 0.75 and "after" or "into"
+    end
+  end
+
+  if event.type ~= "drop" then
+    local mark = state.dropMark
+    where = where or "into"
+
+    if mark == nil and node or mark ~= nil and (node == nil or mark.id ~= node.id or mark.where ~= where) then
+      state.dropMark = node and { id = node.id, where = where } or nil
+      panel:redraw()
+    end
+
+    return node ~= nil
+  end
 
   if not node then
     return false
-  end
-
-  if node.onDrop == nil then
-    local box, list = node.layout, node.list
-    local part = box.height > 0 and (y - box.y) / box.height or 0.5
-    local where = part < 0.5 and "before" or "after"
-
-    if list.dropInto then
-      where = part < 0.25 and "before" or part >= 0.75 and "after" or "into"
-    end
-
-    list.onDrop(node.itemIndex, where, dataType, value)
+  elseif where then
+    node.list.onDrop(node.itemIndex, where, event.dataType, event.value)
   elseif isList(node) then
-    node.onDrop(nil, nil, dataType, value)
+    node.onDrop(nil, nil, event.dataType, event.value)
   else
-    node.onDrop(dataType, value, x, y)
+    node.onDrop(event.dataType, event.value, x, y)
   end
 
   return true
@@ -5126,8 +5154,8 @@ local function handleEvent(panel, event)
     return handleMenuDown(panel, state, x, y)
   elseif event.type == "pointerUp" and event.button == 3 then
     return handleMenuUp(state, x, y)
-  elseif event.type == "drop" then
-    return handleDrop(state, x, y, event.dataType, event.value)
+  elseif event.type == "drop" or event.type == "dragOver" or event.type == "dragLeave" then
+    return handleDrop(panel, state, x, y, event)
   elseif event.type == "wheel" then
     local scroll = find(state.root, x, y, scrollable)
 
