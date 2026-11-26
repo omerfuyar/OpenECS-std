@@ -387,7 +387,6 @@ function Settings.create(panel, saved, version)
 end
 
 function Settings:destroy()
-  ui.forget(self.panel)
   windows[self.panel] = nil
 end
 
@@ -402,9 +401,6 @@ function Settings:saveState()
   return { selected = chosen and chosen.name or nil, closed = closed }
 end
 
-function Settings:draw(surface)
-  ui.show(self.panel, surface, self:view())
-end
 
 function Settings:event(event)
   if event.type == "shown" then
@@ -412,21 +408,21 @@ function Settings:event(event)
   end
 
   -- Return edits the chosen setting, when no element of the window takes it
-  if not ui.event(self.panel, event) and event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #self.items > 0 then
+  if event.type == "keyDown" and (event.key == "Return" or event.key == "Keypad Enter") and #self.items > 0 then
     self:edit()
   end
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "window",
   title = "Settings",
   stateVersion = STATE_VERSION,
   create = Settings.create,
   destroy = Settings.destroy,
   saveState = Settings.saveState,
-  draw = Settings.draw,
+  view = Settings.view,
   event = Settings.event,
-})
+}))
 
 -- a setting that another plugin or the user's file changes, and the settings of a plugin that is enabled or disabled, show at once
 local function refreshAll()

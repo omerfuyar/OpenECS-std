@@ -89,7 +89,7 @@ function Viewer:load(path)
   self.panel:redraw()
 end
 
-function Viewer:draw(surface)
+function Viewer:view(surface)
   local children = {}
   if not self.path then
     children[1] = ui.text("No file is open.", { style = STYLES.note })
@@ -138,7 +138,7 @@ function Viewer:draw(surface)
       children[#children + 1] = ui.text("The viewer shows images, sounds and texts.", { style = STYLES.note, wrap = true })
     end
   end
-  ui.show(self.panel, surface, ui.column({ padding = 8, gap = 6 }, children))
+  return ui.column({ padding = 8, gap = 6 }, children)
 end
 
 function Viewer.create(panel, saved, version)
@@ -150,9 +150,6 @@ function Viewer.create(panel, saved, version)
   return state
 end
 
-function Viewer:event(event)
-  ui.event(self.panel, event)
-end
 
 function Viewer:saveState()
   return { path = self.path }
@@ -162,20 +159,18 @@ function Viewer:destroy()
   if self.voice then
     mixer.stop(self.voice)
   end
-  ui.forget(self.panel)
   panels[self.panel] = nil
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "file",
   title = "Viewer",
   stateVersion = STATE_VERSION,
   create = Viewer.create,
-  draw = Viewer.draw,
-  event = Viewer.event,
+  view = Viewer.view,
   saveState = Viewer.saveState,
   destroy = Viewer.destroy,
-})
+}))
 
 ecs.service.register({
   open = { sig = "void(string path)", doc = "Show a file in a viewer: the one that shows it, the first one open, or a new one\n@param path The file's path", fn = function(path)

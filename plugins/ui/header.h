@@ -23,6 +23,7 @@
 // The macros cover every element of Lua's ui, with the same props, so a plugin in C builds the same interface as one in Lua.
 
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 /// @brief grow = UI_FIXED keeps an element from growing where it would by default, as a scroll or a space does.
@@ -41,6 +42,11 @@ typedef enum UiFlag
 
 /// @brief How deep containers may be nested.
 #define UI_DEPTH 32
+
+/// @brief How many panel types Ui_PanelType completes in one C file at most; a file may define another number before it includes ui.h.
+#ifndef UI_PANEL_TYPES
+#define UI_PANEL_TYPES 16
+#endif
 
 /// @brief The number of items of an array.
 #define UI__COUNT(array) (sizeof(array) / sizeof((array)[0]))
@@ -1292,3 +1298,147 @@ static inline const char *Ui_ActivatedNode(const char *id, const UiTreeNode *nod
 
 /// @brief The id of the column whose title of the table with an id was clicked since the last draw, or nullptr.
 #define UI_SORTED(id) Ui_Sorted(id)
+
+#pragma region Panel types
+
+/// @brief A panel type built with ui, which Ui_PanelType completes for ECSPanelType_Register, as Lua's ui.panelType does.
+typedef struct UiPanelTypeDesc
+{
+    ECSPanelTypeDesc type;                          // as ECSPanelType_Register takes it, without Draw: its Event gets only the events that ui did not take, and its Destroy runs after ui forgets the panel
+    void (*View)(void *state, ECSSurface *surface); // describes the panel's elements with the macros, as the block of UI_SHOW, at each draw
+} UiPanelTypeDesc;
+
+/// @brief A panel type that Ui_PanelType completed: the plugin's description, the Ui it shows with, and what it registers.
+typedef struct Ui__PanelType
+{
+    UiPanelTypeDesc desc;
+    Ui *ui;
+    ECSPanelTypeDesc completed;
+} Ui__PanelType;
+
+/// @brief A panel's state as the core keeps it for a panel type of Ui_PanelType: its panel, its type, and the plugin's own state, which the type's functions get.
+typedef struct Ui__Panel
+{
+    ECSPanel panel;
+    const Ui__PanelType *type;
+    void *state;
+} Ui__Panel;
+
+/// @brief The panel types that Ui_PanelType completed in this C file.
+[[maybe_unused]] static Ui__PanelType Ui__panelTypes[UI_PANEL_TYPES];
+[[maybe_unused]] static usz Ui__panelTypeCount = 0;
+
+/// @brief The completed type of a panel, by the local name at the end of its type's full name, such as "view" of "canvas.view".
+static inline const Ui__PanelType *Ui__FindPanelType(ECSPanel panel)
+{
+    const char *full = ECSPanel_GetType(panel);
+    const char *dot = full != nullptr ? strchr(full, '.') : nullptr;
+
+    for (usz i = 0; dot != nullptr && i < Ui__panelTypeCount; i++)
+    {
+        if (strcmp(Ui__panelTypes[i].desc.type.name, dot + 1) == 0)
+        {
+            return &Ui__panelTypes[i];
+        }
+    }
+
+    return nullptr;
+}
+
+static inline SHUResult Ui__PanelCreate(ECSPanel panel, const ECSValue *savedState, u32 version, void **retState)
+{
+    const Ui__PanelType *type = Ui__FindPanelType(panel);
+    Ui__Panel *made = type != nullptr ? calloc(1, sizeof(Ui__Panel)) : nullptr;
+
+    if (made == nullptr)
+    {
+        return SHUResult_ErrAllocation;
+    }
+
+    *made = (Ui__Panel){.panel = panel, .type = type};
+    SHUResult result = type->desc.type.Create != nullptr ? type->desc.type.Create(panel, savedState, version, &made->state) : SHUResult_Ok;
+
+    if (result != SHUResult_Ok)
+    {
+        free(made);
+        return result;
+    }
+
+    *retState = made;
+    return SHUResult_Ok;
+}
+
+static inline void Ui__PanelDestroy(void *data)
+{
+    Ui__Panel *made = data;
+    made->type->ui->functions.forget(made->panel);
+
+    if (made->type->desc.type.Destroy != nullptr)
+    {
+        made->type->desc.type.Destroy(made->state);
+    }
+
+    free(made);
+}
+
+static inline void Ui__PanelDraw(void *data, ECSSurface *surface, f64 seconds)
+{
+    (void)seconds;
+    Ui__Panel *made = data;
+
+    UI_SHOW(made->type->ui, made->panel, surface)
+    {
+        made->type->desc.View(made->state, surface);
+    }
+}
+
+static inline void Ui__PanelEvent(void *data, const ECSPanelEvent *event)
+{
+    Ui__Panel *made = data;
+
+    if (!Ui_Event(made->type->ui, made->panel, event) && made->type->desc.type.Event != nullptr)
+    {
+        made->type->desc.type.Event(made->state, event);
+    }
+}
+
+static inline SHUResult Ui__PanelSaveState(void *data, ECSValue *retSavedState)
+{
+    Ui__Panel *made = data;
+    return made->type->desc.type.SaveState(made->state, retSavedState);
+}
+
+static inline SHUResult Ui__PanelSave(void *data)
+{
+    Ui__Panel *made = data;
+    return made->type->desc.type.Save(made->state);
+}
+
+/// @brief Completes a panel type's description with ui's part, for ECSPanelType_Register, as Lua's ui.panelType does: its Draw shows what View
+/// describes, its Event gives each event to ui first, and its Destroy forgets the panel. The type's own functions get the plugin's own state, which its
+/// Create gives. ECSPanelType_Register(plugin, Ui_PanelType(&ui, &desc)) registers it, so the type is the plugin's own.
+/// @param ui The plugin's Ui, which Ui_Init prepared; it must live as long as the type, as a static one does.
+/// @return What ECSPanelType_Register takes; an empty description, which it refuses, when the description has no View, or has a Draw, or this file
+/// completed UI_PANEL_TYPES types already.
+static inline const ECSPanelTypeDesc *Ui_PanelType(Ui *ui, const UiPanelTypeDesc *desc)
+{
+    static const ECSPanelTypeDesc refused = {0};
+
+    if (desc->View == nullptr || desc->type.Draw != nullptr || Ui__panelTypeCount == UI_PANEL_TYPES)
+    {
+        ECS_LogWarn(ui->plugin, "ui: Ui_PanelType needs View, and no Draw, and completes at most %d panel types in a file", UI_PANEL_TYPES);
+        return &refused;
+    }
+
+    Ui__PanelType *type = &Ui__panelTypes[Ui__panelTypeCount++];
+    *type = (Ui__PanelType){.desc = *desc, .ui = ui, .completed = desc->type};
+    type->completed.Create = Ui__PanelCreate;
+    type->completed.Destroy = Ui__PanelDestroy;
+    type->completed.Draw = Ui__PanelDraw;
+    type->completed.Event = Ui__PanelEvent;
+    type->completed.SaveState = desc->type.SaveState != nullptr ? Ui__PanelSaveState : nullptr;
+    type->completed.Save = desc->type.Save != nullptr ? Ui__PanelSave : nullptr;
+    return &type->completed;
+}
+
+#pragma endregion Panel types

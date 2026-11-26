@@ -331,7 +331,6 @@ function Keys.create(panel, saved, version)
 end
 
 function Keys:destroy()
-  ui.forget(self.panel)
   lists[self.panel] = nil
 end
 
@@ -346,29 +345,23 @@ function Keys:saveState()
   return { closed = closed }
 end
 
-function Keys:draw(surface)
-  ui.show(self.panel, surface, self:view())
-end
-
 function Keys:event(event)
   -- plugins may have registered functions and panel types since the list was drawn
   if event.type == "shown" then
     self:refresh()
   end
-
-  ui.event(self.panel, event)
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "list",
   title = "Keys",
   stateVersion = STATE_VERSION,
   create = Keys.create,
   destroy = Keys.destroy,
   saveState = Keys.saveState,
-  draw = Keys.draw,
+  view = Keys.view,
   event = Keys.event,
-})
+}))
 
 -- the keys of a plugin that is enabled or disabled, and a new prefix, show at once
 local function refreshAll()

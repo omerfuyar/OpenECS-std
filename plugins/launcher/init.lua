@@ -161,7 +161,6 @@ function Launcher.create(panel, saved, version)
 end
 
 function Launcher:destroy()
-  ui.forget(self.panel)
   lists[self.panel] = nil
 end
 
@@ -170,28 +169,22 @@ function Launcher:saveState()
   return { selected = chosen and { type = chosen.type, name = chosen.name } or nil }
 end
 
-function Launcher:draw(surface)
-  ui.show(self.panel, surface, self:view())
-end
-
 function Launcher:event(event)
   if event.type == "shown" then
     self:refresh()
   end
-
-  ui.event(self.panel, event)
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "list",
   title = "Launcher",
   stateVersion = STATE_VERSION,
   create = Launcher.create,
   destroy = Launcher.destroy,
   saveState = Launcher.saveState,
-  draw = Launcher.draw,
+  view = Launcher.view,
   event = Launcher.event,
-})
+}))
 
 local services = {}
 

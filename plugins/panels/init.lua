@@ -181,7 +181,6 @@ function Panels.create(panel, saved, version)
 end
 
 function Panels:destroy()
-  ui.forget(self.panel)
   lists[self.panel] = nil
 end
 
@@ -196,29 +195,23 @@ function Panels:saveState()
   return { selected = chosen and chosen.name or nil, closed = closed }
 end
 
-function Panels:draw(surface)
-  ui.show(self.panel, surface, self:view())
-end
-
 function Panels:event(event)
   -- plugins may have registered types since the list was drawn
   if event.type == "shown" then
     self:refresh()
   end
-
-  ui.event(self.panel, event)
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "list",
   title = "Panels",
   stateVersion = STATE_VERSION,
   create = Panels.create,
   destroy = Panels.destroy,
   saveState = Panels.saveState,
-  draw = Panels.draw,
+  view = Panels.view,
   event = Panels.event,
-})
+}))
 
 -- the blank panel shows nothing but a dim hint, centred, so a user arranging the layout keeps a place, such as a split's other side, for a
 -- panel to open there later
@@ -229,34 +222,20 @@ function Blank.create(panel)
   return setmetatable({ panel = panel }, Blank)
 end
 
-function Blank:destroy()
-  ui.forget(self.panel)
+function Blank:view()
+  return ui.column({ style = STYLES.view, align = "center" }, {
+    ui.column({ grow = 1 }, {}),
+    ui.text("Open a panel here from the panel list.", { color = "textDim", wrap = true, selectable = false }),
+    ui.column({ grow = 1 }, {}),
+  })
 end
 
-function Blank:draw(surface)
-  ui.show(
-    self.panel,
-    surface,
-    ui.column({ style = STYLES.view, align = "center" }, {
-      ui.column({ grow = 1 }, {}),
-      ui.text("Open a panel here from the panel list.", { color = "textDim", wrap = true, selectable = false }),
-      ui.column({ grow = 1 }, {}),
-    })
-  )
-end
-
-function Blank:event(event)
-  ui.event(self.panel, event)
-end
-
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "blank",
   title = "Blank",
   create = Blank.create,
-  destroy = Blank.destroy,
-  draw = Blank.draw,
-  event = Blank.event,
-})
+  view = Blank.view,
+}))
 
 -- the panel types of a plugin that is enabled or disabled show at once
 ecs.event.subscribe("ecs.pluginsChanged", function()

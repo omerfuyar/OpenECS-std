@@ -5464,6 +5464,55 @@ function services.forget(panel)
   panels[panel] = nil
 end
 
+-- completes a panel type's description with ui's part: its draw shows what view gives, its event gives each event to ui first and the
+-- type's own event the events ui did not take, and its destroy forgets the panel before the type's own destroy. Each panel's state is the
+-- type's own, which its create gives, kept with the panel, so the type's functions get their own state, as C's Ui_PanelType does. The plugin
+-- registers what it gives with ecs.panel.registerType, so the type is the plugin's own.
+function services.panelType(desc)
+  ecs.check(type(desc) == "table" and type(desc.view) == "function", "ui.panelType needs view, a function that gives the panel's elements.")
+  ecs.check(desc.draw == nil, "ui.panelType draws the panel itself; a panel type built with it gives view, not draw.")
+  local completed = {}
+
+  for key, value in pairs(desc) do
+    completed[key] = value
+  end
+
+  local create, view, event, destroy, saveState, save = desc.create, desc.view, desc.event, desc.destroy, desc.saveState, desc.save
+  completed.view = nil
+
+  function completed.create(panel, saved, version)
+    return { panel = panel, own = create and create(panel, saved, version) }
+  end
+
+  function completed.draw(made, surface)
+    services.show(made.panel, surface, view(made.own, surface))
+  end
+
+  function completed.event(made, panelEvent)
+    if not handleEvent(made.panel, panelEvent) and event then
+      event(made.own, panelEvent)
+    end
+  end
+
+  function completed.destroy(made)
+    services.forget(made.panel)
+
+    if destroy then
+      destroy(made.own)
+    end
+  end
+
+  completed.saveState = saveState and function(made)
+    return saveState(made.own)
+  end
+
+  completed.save = save and function(made)
+    return save(made.own)
+  end
+
+  return completed
+end
+
 -- the rectangle of an element in the last layout, in layout units
 function services.rect(panel, id)
   local root = panelState(panel).root
@@ -5839,6 +5888,15 @@ ecs.service.register({
     doc = "Forget a panel's state\n"
         .. "@param panel The panel, as its destroy gets it",
     fn = services.forget,
+  },
+  panelType = {
+    sig = "value<ecs.PanelTypeDesc>(value<ui.PanelTypeDesc> desc)",
+    doc = "Complete a panel type's description with ui's part, for ecs.panel.registerType: its draw shows what view gives, its event gives each event to ui first, "
+        .. "and its destroy forgets the panel; from C, Ui_PanelType of ui's header does the same\n"
+        .. "@param desc The panel type, as ecs.panel.registerType takes it, with view in place of draw: view(state, surface) gives the panel's elements; "
+        .. "its event gets only the events that ui did not take, and its functions get the state that its create gives (ui.PanelTypeDesc)\n"
+        .. "@return The description, with draw, event and destroy, and the functions that get each panel's state given it with its panel",
+    fn = services.panelType,
   },
   rect = {
     sig = "value<ui.Rect?>(handle<ecs.panel> panel, string id)",
