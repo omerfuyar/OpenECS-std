@@ -1335,7 +1335,7 @@ local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines gutter "
-  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDragOver onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
 
@@ -1666,6 +1666,10 @@ function elements.tree(nodes, props)
     props.onDrop(index and ids[index], where, dataType, value)
   end
 
+  listProps.onDragOver = props.onDragOver and function(index, where, dataType, value)
+    return props.onDragOver(index and ids[index], where, dataType, value)
+  end
+
   -- the rows are built when the panel shows, for the shown nodes that ui.range names then: the list stands in for them until then
   local node = elements.list(listProps, {})
   local treeInfo = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
@@ -1755,7 +1759,7 @@ function elements.table(columns, rows, props)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop, onDragOver = props.onDragOver }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
 end
@@ -5057,8 +5061,9 @@ end
 
 -- data dropped on the panel goes to the innermost element under it with onDrop; a list gives its item under the place, or nil beside its
 -- items, and where on the item it landed: before it in its upper half and after it in its lower half, or for a tree before it in its upper
--- quarter, after it in its lower quarter and into it between. While data is dragged over the panel, the same element keeps the mark of where
--- it would land, which paint draws, until the data leaves
+-- quarter, after it in its lower quarter and into it between. The element's onDragOver, with what onDrop would get, refuses the landing with
+-- false, or gives an item another place. While data is dragged over the panel, the same element keeps the mark of where it would land, which
+-- paint draws, until the data leaves
 local function handleDrop(panel, state, x, y, event)
   local node = event.type ~= "dragLeave" and find(state.root, x, y, function(node)
     return node.onDrop ~= nil or (isListItem(node) and node.list.onDrop ~= nil)
@@ -5075,12 +5080,34 @@ local function handleDrop(panel, state, x, y, event)
     end
   end
 
+  -- the tool's answer: nil or true takes the landing as it is, false refuses it, and an item takes another place
+  local answer = nil
+
+  if not node then
+    answer = false
+  elseif where then
+    answer = node.list.onDragOver and node.list.onDragOver(node.itemIndex, where, event.dataType, event.value)
+  elseif isList(node) then
+    answer = node.onDragOver and node.onDragOver(nil, nil, event.dataType, event.value)
+  else
+    answer = node.onDragOver and node.onDragOver(event.dataType, event.value, x, y)
+  end
+
+  ecs.check(answer == nil or answer == true or answer == false or answer == "before" or answer == "after" or answer == "into",
+    "onDragOver gives nothing, true, false, \"before\", \"after\" or \"into\".")
+
+  if answer == false then
+    node = nil
+  elseif where and type(answer) == "string" then
+    where = answer
+  end
+
   if event.type ~= "drop" then
     local mark = state.dropMark
-    where = where or "into"
+    local shown = where or "into"
 
-    if mark == nil and node or mark ~= nil and (node == nil or mark.id ~= node.id or mark.where ~= where) then
-      state.dropMark = node and { id = node.id, where = where } or nil
+    if mark == nil and node or mark ~= nil and (node == nil or mark.id ~= node.id or mark.where ~= shown) then
+      state.dropMark = node and { id = node.id, where = shown } or nil
       panel:redraw()
     end
 
@@ -5545,7 +5572,77 @@ end
 
 -- descriptions, for plugins in C -------------------------------------------
 
--- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+-- the functions of plugins in C that call their C callbacks, by the number ui.dispatcher gave each, which their descriptions name
+services.callers = {}
+
+-- a Lua function for a C function that a description or a menu's entry gives as { caller, token }: it gives the C plugin's caller the token
+-- and a table of what the callback gets, and gives back what the C function answered; nil for anything else
+function services.callC(given)
+  if type(given) ~= "table" then
+    return nil
+  end
+
+  local call, token = services.callers[given.caller], given.token
+  ecs.check(call ~= nil and type(token) == "string", "A described callback names a caller that ui.dispatcher gave, and its token.")
+  return function(args)
+    return call(token, args)
+  end
+end
+
+-- a menu's entries, whose C callbacks become Lua functions; Lua's entries stay as they are
+function services.menuEntries(entries)
+  local converted = {}
+
+  for i, entry in ipairs(entries or {}) do
+    local copy = shallowCopy(entry)
+    local click = services.callC(entry.onClick)
+    copy.onClick = click and function()
+      click({})
+    end or entry.onClick
+    copy.entries = entry.entries and services.menuEntries(entry.entries)
+    converted[i] = copy
+  end
+
+  return converted
+end
+
+-- a described element's C functions, as the Lua functions that its element takes: a list, a table and a tree give an item and where; another
+-- element gives the place
+function services.describedFunctions(props, items)
+  local onDrag, onDragOver, onDrop, onMenu = services.callC(props.onDrag), services.callC(props.onDragOver), services.callC(props.onDrop), services.callC(props.onMenu)
+
+  props.onDrag = items and onDrag and function(item)
+    local got = onDrag({ item = item })
+
+    if got then
+      return got.type, got.value
+    end
+  end or nil
+
+  if items then
+    props.onDragOver = onDragOver and function(item, where, dataType, value)
+      return onDragOver({ item = item, where = where, dataType = dataType, value = value })
+    end
+    props.onDrop = onDrop and function(item, where, dataType, value)
+      onDrop({ item = item, where = where, dataType = dataType, value = value })
+    end
+    props.onMenu = onMenu and function(item, x, y)
+      onMenu({ item = item, x = x, y = y })
+    end
+  else
+    props.onDragOver = onDragOver and function(dataType, value, x, y)
+      return onDragOver({ dataType = dataType, value = value, x = x, y = y })
+    end
+    props.onDrop = onDrop and function(dataType, value, x, y)
+      onDrop({ dataType = dataType, value = value, x = x, y = y })
+    end
+    props.onMenu = onMenu and function(x, y)
+      onMenu({ x = x, y = y })
+    end
+  end
+end
+
+-- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, as its macro takes them at the next draw
 -- those of ASKED are kept only by an element whose props have them as true, since they change how the element behaves
 local ASKED = { onActivate = true, onSort = true }
 local CALLBACKS = {
@@ -5578,7 +5675,8 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort "
+  .. "onDrag onDragOver onDrop onMenu"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -5595,6 +5693,7 @@ local function build(panel, description)
 
   -- a column or row with clickable = true is clicked like a button
   local elementType = description.type
+  services.describedFunctions(props, elementType == "list" or elementType == "table" or elementType == "tree")
   local callbacks = CALLBACKS[elementType] or (props.clickable and { "onClick" }) or {}
   props.clickable = nil
 
@@ -5721,7 +5820,18 @@ ecs.service.register({
         .. "@param y The point's y\n"
         .. "@param entries The entries, in order: each a table of its label, the keys that run it too, whether it is enabled, and its onClick, or a line between entries",
     fn = function(panel, x, y, entries)
-      openMenu(panel, x, y, entries)
+      openMenu(panel, x, y, services.menuEntries(entries))
+    end,
+  },
+  dispatcher = {
+    sig = "int(keep fn<void(buffer token, value args, out value result)> call)",
+    doc = "Keep the function of a plugin in C that calls its C callbacks, which ui.h's Ui_Init gives; descriptions name it by the number this gives\n"
+        .. "@param call Calls the C function of a token that a description gave, with what the callback gets, and fills what ui gets back\n"
+        .. "@return The number that names the function in descriptions",
+    fn = function(call)
+      local callers = services.callers
+      callers[#callers + 1] = call
+      return #callers
     end,
   },
   forget = {

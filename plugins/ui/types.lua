@@ -60,8 +60,9 @@
 ---@field font? string A font name of draw, such as "ui" or "mono".
 ---@field tooltip? string A text that shows when the pointer rests on it.
 ---@field keys? string The key combination that does what it does, such as "Ctrl+S", which its tooltip names after its text, dimmed.
----@field onMenu? fun(x: number, y: number) A release of the right button on it gives the place, in layout units, such as to open ui.menu there; Lua only.
----@field onDrop? fun(dataType: string, value: any, x: number, y: number) Data dropped on it, which the panel accepts, gives its type, its value and the place, in layout units; Lua only.
+---@field onMenu? fun(x: number, y: number) A release of the right button on it gives the place, in layout units, such as to open ui.menu there.
+---@field onDrop? fun(dataType: string, value: any, x: number, y: number) Data dropped on it, which the panel accepts, gives its type, its value and the place, in layout units.
+---@field onDragOver? fun(dataType: string, value: any, x: number, y: number): boolean? Whether data dragged over it may land there, asked at each move and at the drop: false refuses it, nothing or true takes it.
 ---@field selectable? boolean false keeps a list's child, such as a heading, from being an item.
 
 ---A column or a row: with onClick, it is clicked like a button.
@@ -80,8 +81,9 @@
 ---@field onSelect? fun(item: integer, how: "toggle"|"range"|nil, between: integer[]?) A press on an item gives its number; with Ctrl, how is "toggle", and with Shift "range", with the numbers from the first chosen item to it.
 ---@field onActivate? fun(item: integer) A click on an item gives its number.
 ---@field onMenu? fun(item: integer?, x: number, y: number) A right click gives the item under it, which a right press chose if it was not, or nil beside the items, and the place.
----@field onDrag? fun(item: integer): string?, any A press on an item and a move of the drag threshold give the item; the type and the value that it gives are dragged as the core's data, and nil drags nothing. Lua only.
----@field onDrop? fun(item: integer?, where: "before"|"after"|nil, dataType: string, value: any) Data dropped on an item gives it, and whether it landed on its upper or lower half; nil and nil beside the items. Lua only.
+---@field onDrag? fun(item: integer): string?, any A press on an item and a move of the drag threshold give the item; the type and the value that it gives are dragged as the core's data, and nil drags nothing.
+---@field onDrop? fun(item: integer?, where: "before"|"after"|"into"|nil, dataType: string, value: any) Data dropped on an item gives it, and whether it landed on its upper or lower half, or the place that onDragOver gave; nil and nil beside the items.
+---@field onDragOver? fun(item: integer?, where: "before"|"after"|nil, dataType: string, value: any): boolean|"before"|"after"|"into"|nil Whether data dragged there may land, asked at each move and at the drop with what onDrop would get: false refuses it, nothing or true takes it, and over an item another where gives it that place, which the mark shows and onDrop gets.
 
 ---@class ui.GroupProps: ui.Props
 ---@field title? string
@@ -112,7 +114,8 @@
 ---@field onActivate? fun(row: integer)
 ---@field onMenu? fun(row: integer?, x: number, y: number)
 ---@field onDrag? fun(row: integer): string?, any As a list's.
----@field onDrop? fun(row: integer?, where: "before"|"after"|nil, dataType: string, value: any) As a list's.
+---@field onDrop? fun(row: integer?, where: "before"|"after"|"into"|nil, dataType: string, value: any) As a list's.
+---@field onDragOver? fun(row: integer?, where: "before"|"after"|nil, dataType: string, value: any): boolean|"before"|"after"|"into"|nil As a list's.
 ---@field onSort? fun(column: string) A click on a title gives its column's id.
 ---@field sort? string The id of the column the rows are sorted by, which shows an arrow.
 ---@field ascending? boolean The arrow points up.
@@ -141,7 +144,8 @@
 ---@field onActivate? fun(id: any)
 ---@field onMenu? fun(id: any, x: number, y: number) A right click gives the node's id, or nil beside the nodes, and the place.
 ---@field onDrag? fun(id: any): string?, any As a list's, with the node's id.
----@field onDrop? fun(id: any, where: "before"|"into"|"after"|nil, dataType: string, value: any) Data dropped on a node gives its id, and where it landed: before it on its upper quarter, after it on its lower quarter, and into it between; nil and nil beside the nodes.
+---@field onDrop? fun(id: any, where: "before"|"into"|"after"|nil, dataType: string, value: any) Data dropped on a node gives its id, and where it landed: before it on its upper quarter, after it on its lower quarter, and into it between, or the place that onDragOver gave; nil and nil beside the nodes.
+---@field onDragOver? fun(id: any, where: "before"|"into"|"after"|nil, dataType: string, value: any): boolean|"before"|"after"|"into"|nil As a list's, with the node's id.
 ---@field onToggle? fun(id: any, open: boolean) A click on an arrow gives the node's id and its new state.
 ---@field onMark? fun(id: any, mark: any, on: boolean) A click on a node's mark gives the node's id, the mark's id and its new state.
 
@@ -241,7 +245,7 @@
 ---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description
 ---@field type string The element's type, which names its function, such as "column" or "button".
----@field props? ui.Props The element's props, without callbacks; a column or row with clickable = true is clicked like a button, onActivate = true
+---@field props? ui.Props The element's props; its callbacks are C functions, onDrag, onDragOver, onDrop and onMenu as tables of caller and token, or none; a column or row with clickable = true is clicked like a button, onActivate = true
 ---and onSort = true ask a list, table or tree for those callbacks, and a field with valid = false refuses Return.
 ---@field value? boolean|number|string The value its function takes first: a text, a label, a state, a number, a path, a section's title or a colour.
 ---@field choices? string[] A selector's, tabs' or dropdown's choices.
