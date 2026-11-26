@@ -11,7 +11,7 @@ local STYLES = ui.styles()
 local STATE_VERSION = 1
 
 local folder = "" -- the shown folder, ending with a slash
-local watching = nil ---@type fs.watch?
+local watching = nil -- the watch of the folder, or nil
 local panels = {} ---@type table<ecs.Panel, table>
 
 ---What the tool gives the files panel. Every field may be left out.
