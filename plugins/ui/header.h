@@ -16,8 +16,10 @@
 //         }
 //     }
 //
-// C gives ui no functions. An element with an id keeps what its callback gets, and its macro takes it at the next draw: UI_BUTTON gives whether it
-// was clicked, and UI_TOGGLE writes the new state into its bool. The plugin's Init calls Ui_Init, and the panel's Event gives each event to Ui_Event.
+// An element with an id keeps what its callback gets, and its macro takes it at the next draw: UI_BUTTON gives whether it was clicked, and UI_TOGGLE
+// writes the new state into its bool. Where ui needs an answer at once, or a callback reads more naturally, the props take C functions, as Lua's take
+// Lua functions: onDrag, onDragOver, onDrop and onMenu, which get the props' user first. The plugin's Init calls Ui_Init, and the panel's Event gives
+// each event to Ui_Event.
 // The macros cover every element of Lua's ui, with the same props, so a plugin in C builds the same interface as one in Lua.
 
 #include <ctype.h>
@@ -43,57 +45,116 @@ typedef enum UiFlag
 /// @brief The number of items of an array.
 #define UI__COUNT(array) (sizeof(array) / sizeof((array)[0]))
 
+/// @brief Where dragged data lands on an item of a list, a table or a tree: before it, after it or into it; UI_BESIDE beside the items, and on any
+/// other element, where Lua's where is nil.
+typedef enum UiWhere
+{
+    UI_BESIDE,
+    UI_BEFORE,
+    UI_AFTER,
+    UI_INTO,
+} UiWhere;
+
+/// @brief What onDragOver and onDrop get, as Lua's get it.
+typedef struct UiDrop
+{
+    const ECSValue *item;  // a list's or a table's item, from 1, or a tree's node id; nullptr beside the items and on another element
+    UiWhere where;         // where on the item it lands
+    const char *dataType;  // the data's type, one that the panel accepts
+    const ECSValue *value; // the dragged value
+    f64 x;                 // the place on an element that is not a list, a table or a tree, in layout units; 0 on them
+    f64 y;
+} UiDrop;
+
+/// @brief A press on an item and a move of the drag threshold give the item, as onDrag does in Lua.
+/// @param user The props' user.
+/// @param item The item: a list's or a table's number, from 1, or a tree's node id.
+/// @param retType The type of the data to drag, which must live until the function returns.
+/// @param retValue The value to drag, which the function fills.
+/// @return Whether to drag the data, which ui drags as the core's; false drags nothing.
+typedef bool (*UiDragFunction)(void *user, const ECSValue *item, const char **retType, ECSValue *retValue);
+
+/// @brief Says whether dragged data may land where it is, at each DragOver and at the drop, as onDragOver does in Lua.
+/// @param user The props' user.
+/// @param drop What onDrop would get; over an item, a new where gives the item that place, which the mark shows and onDrop gets.
+/// @return True to take the landing, false to refuse it: no mark, and a drop there goes to no onDrop.
+typedef bool (*UiDragOverFunction)(void *user, UiDrop *drop);
+
+/// @brief Data dropped on an element, as onDrop gets it in Lua.
+/// @param user The props' user.
+/// @param drop What was dropped, and where.
+/// @return Nothing.
+typedef void (*UiDropFunction)(void *user, const UiDrop *drop);
+
+/// @brief A release of the right button on an element, as onMenu gets it in Lua.
+/// @param user The props' user.
+/// @param item The item under the pointer; nullptr beside the items, and on an element that is not a list, a table or a tree.
+/// @param x The place, in layout units, as Ui_Menu takes it.
+/// @param y The place's y.
+/// @return Nothing.
+typedef void (*UiMenuFunction)(void *user, const ECSValue *item, f64 x, f64 y);
+
+/// @brief A click on a menu's entry, or Return on it.
+/// @param user The entry's user.
+/// @return Nothing.
+typedef void (*UiClickFunction)(void *user);
+
 /// @brief The props of an element, in the manner of ui.Props. A number left 0, a flag left unset or a text left nullptr is left to ui. Each element uses the ones it knows.
 typedef struct UiProps UiProps;
 typedef struct UiSpan UiSpan;
 
 struct UiProps
 {
-    const char *id;              // names the element; an element whose macro takes what it got needs one, and a button's label is its id if it has none
-    const UiProps *style;        // a style: the props of its look that it does not give itself, such as &ui.styles.note
-    f64 width;                   // a fixed width, in layout units
-    f64 height;                  // a fixed height, in layout units
-    f64 grow;                    // a share of the room left along the parent's direction; UI_FIXED for none
-    UiFlag stretch;              // takes the parent's whole cross size
-    f64 padding;                 // room inside a container's edges
-    f64 gap;                     // room between a container's children
-    const char *align;           // where a container puts children that do not stretch: "start", "center" or "end"
-    const char *background;      // a colour, such as "#202226", or a theme colour, such as "panel"
-    const char *hoverBackground; // the background while the pointer is over it
-    const char *border;          // the colour of a line around it
-    const char *color;           // the colour of its text
-    f64 size;                    // the font size of its text
-    const char *font;            // a font name of draw, such as "ui" or "mono"
-    const char *tooltip;         // a text that shows when the pointer rests on it
-    const char *keys;            // the key combination that does what it does, such as "Ctrl+S", which its tooltip names
-    UiFlag selectable;           // UI_FALSE for a list's child that is not an item, such as a heading
-    UiFlag clickable;            // a column or row that is clicked like a button; UI_CLICKED takes the click
-    const char *title;           // a group's title
-    UiFlag wrap;                 // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
-    const char *wrapMark;        // what a text that wraps shows, dimmed, at the start of each line after a break, such as "↪ "; its lines start after it
-    i32 maxLines;                // the most lines a text shows: it wraps, and its last shown line ends with an ellipsis when more follow
-    const char *gutter;          // what a text shows, dimmed, before its first line, such as its line's number; its lines start after it, and a wrapMark stands at its end
-    UiFlag vertical;             // a separator up a row
-    const char *label;           // a toggle's label
-    const char *placeholder;     // the text an empty field shows, dimmed, until it is typed in
-    const char *look;            // a toggle's look: "check" or "switch"
-    f64 min;                     // a slider's or number's least value; min and max count when they differ
-    f64 max;                     // a slider's or number's greatest value
-    f64 step;                    // what a slider's or number's value is rounded to
-    UiFlag valid;                // UI_FALSE marks a field's text as wrong, and keeps Return from giving it
-    UiFlag alpha;                // a colour element whose picker has an alpha bar, and gives "#RRGGBBAA"
-    const UiSpan *spans;         // a button's or a section's label as spans, in place of its text, which stays its id: UI_LABEL(...)
-    const char *sort;            // the id of the column a table is sorted by
-    UiFlag ascending;            // a table's sort arrow points up
-    i32 selected;                // a list's chosen item, from 1; UI_LIST sets it
-    i32 count;                   // a long list's number of items, when it describes only the items that ui's range gives
-    i32 first;                   // the number of a long list's first described item, from 1, as ui's range gives it
-    bool onActivate;             // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
-    bool onSort;                 // a table whose titles are clicked to sort; UI_SORTED takes the column
-    const char *dialog;          // a path's file dialog: "openFile", "saveFile" or "openFolder"
-    const char *pattern;         // the extensions a path's file dialog shows, such as "ttf;otf"
-    const char *results;         // a search's list that shows what matches, which Up and Down choose in while the search has the keys
-    const char *folders;         // a dropdown's separator of folders, such as ".": its choices are paths, shown a folder at a time
+    const char *id;                // names the element; an element whose macro takes what it got needs one, and a button's label is its id if it has none
+    const UiProps *style;          // a style: the props of its look that it does not give itself, such as &ui.styles.note
+    f64 width;                     // a fixed width, in layout units
+    f64 height;                    // a fixed height, in layout units
+    f64 grow;                      // a share of the room left along the parent's direction; UI_FIXED for none
+    UiFlag stretch;                // takes the parent's whole cross size
+    f64 padding;                   // room inside a container's edges
+    f64 gap;                       // room between a container's children
+    const char *align;             // where a container puts children that do not stretch: "start", "center" or "end"
+    const char *background;        // a colour, such as "#202226", or a theme colour, such as "panel"
+    const char *hoverBackground;   // the background while the pointer is over it
+    const char *border;            // the colour of a line around it
+    const char *color;             // the colour of its text
+    f64 size;                      // the font size of its text
+    const char *font;              // a font name of draw, such as "ui" or "mono"
+    const char *tooltip;           // a text that shows when the pointer rests on it
+    const char *keys;              // the key combination that does what it does, such as "Ctrl+S", which its tooltip names
+    UiFlag selectable;             // UI_FALSE for a list's child that is not an item, such as a heading
+    UiFlag clickable;              // a column or row that is clicked like a button; UI_CLICKED takes the click
+    const char *title;             // a group's title
+    UiFlag wrap;                   // text that breaks into lines at its width, or a row whose children go on more lines when they do not fit
+    const char *wrapMark;          // what a text that wraps shows, dimmed, at the start of each line after a break, such as "↪ "; its lines start after it
+    i32 maxLines;                  // the most lines a text shows: it wraps, and its last shown line ends with an ellipsis when more follow
+    const char *gutter;            // what a text shows, dimmed, before its first line, such as its line's number; its lines start after it, and a wrapMark stands at its end
+    UiFlag vertical;               // a separator up a row
+    const char *label;             // a toggle's label
+    const char *placeholder;       // the text an empty field shows, dimmed, until it is typed in
+    const char *look;              // a toggle's look: "check" or "switch"
+    f64 min;                       // a slider's or number's least value; min and max count when they differ
+    f64 max;                       // a slider's or number's greatest value
+    f64 step;                      // what a slider's or number's value is rounded to
+    UiFlag valid;                  // UI_FALSE marks a field's text as wrong, and keeps Return from giving it
+    UiFlag alpha;                  // a colour element whose picker has an alpha bar, and gives "#RRGGBBAA"
+    const UiSpan *spans;           // a button's or a section's label as spans, in place of its text, which stays its id: UI_LABEL(...)
+    const char *sort;              // the id of the column a table is sorted by
+    UiFlag ascending;              // a table's sort arrow points up
+    i32 selected;                  // a list's chosen item, from 1; UI_LIST sets it
+    i32 count;                     // a long list's number of items, when it describes only the items that ui's range gives
+    i32 first;                     // the number of a long list's first described item, from 1, as ui's range gives it
+    bool onActivate;               // a list, table or tree whose items are activated, with a click or Return; UI_ACTIVATED takes the item
+    bool onSort;                   // a table whose titles are clicked to sort; UI_SORTED takes the column
+    const char *dialog;            // a path's file dialog: "openFile", "saveFile" or "openFolder"
+    const char *pattern;           // the extensions a path's file dialog shows, such as "ttf;otf"
+    const char *results;           // a search's list that shows what matches, which Up and Down choose in while the search has the keys
+    const char *folders;           // a dropdown's separator of folders, such as ".": its choices are paths, shown a folder at a time
+    void *user;                    // what onDrag, onDragOver, onDrop and onMenu get first
+    UiDragFunction onDrag;         // a list's, a table's or a tree's items are dragged
+    UiDragOverFunction onDragOver; // says where dropped data may land; it needs onDrop
+    UiDropFunction onDrop;         // data of a type that the panel accepts is dropped on it
+    UiMenuFunction onMenu;         // a release of the right button on it, such as to open Ui_Menu there
 };
 
 /// @brief ui's own styles, which its views and the first-party views use so they look alike. Ui_Init copies them from ui.styles.
@@ -152,6 +213,7 @@ typedef struct Ui
     ECSValue *root;               // a list that holds the element that UI_SHOW shows
     ECSValue *children[UI_DEPTH]; // the children of each open container, the innermost last
     usz depth;
+    i32 caller;                                // the number that ui.dispatcher gave, which names the plugin's callbacks in descriptions
     bool failed;                               // memory ran out, or containers are nested too deeply; nothing shows
     UiStyles styles;                           // ui's own styles, for .style
     char texts[UI_STYLE_TEXTS][UI_STYLE_TEXT]; // the texts of the styles, which they point to
@@ -241,6 +303,48 @@ static inline void Ui_AddString(ECSValue *list, const char *text)
     }
 }
 
+/// @brief The kinds of C functions that ui calls back, which a token names.
+typedef enum UiCallbackKind
+{
+    UI__DRAG,
+    UI__DRAG_OVER,
+    UI__DROP,
+    UI__MENU,
+    UI__CLICK,
+} UiCallbackKind;
+
+/// @brief What a description gives ui for a C function: ui gives it back to the plugin's Ui__Call, which calls the function with its user.
+typedef struct UiToken
+{
+    UiCallbackKind kind;
+    void (*function)(void);
+    void *user;
+} UiToken;
+
+/// @brief Sets a field of a table to a C function that ui calls back: the caller's number, and the token, as bytes that ui does not read.
+static inline void Ui_SetCallback(ECSValue *table, const char *name, UiCallbackKind kind, void (*function)(void), void *user)
+{
+    ECSValue *callback = function == nullptr || table == nullptr ? nullptr : Ui_SetTable(table, name);
+
+    if (callback == nullptr)
+    {
+        return;
+    }
+
+    UiToken token;
+    memset(&token, 0, sizeof(token));
+    token.kind = kind;
+    token.function = function;
+    token.user = user;
+    Ui_SetNumber(callback, "caller", Ui_current->caller);
+    ECSValue *bytes = Ui_NewField(callback, "token");
+
+    if (bytes != nullptr && ECSValue_SetBuffer(bytes, (SHUSliceView){.data = &token, .size = sizeof(token)}))
+    {
+        Ui_current->failed = true;
+    }
+}
+
 /// @brief Writes the props that are not left to ui into a description's props.
 static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz depth)
 {
@@ -314,6 +418,11 @@ static inline void Ui_WriteProps(ECSValue *table, const UiProps *props, usz dept
             Ui_SetBool(table, flags[i].name, flags[i].flag == UI_TRUE);
         }
     }
+
+    Ui_SetCallback(table, "onDrag", UI__DRAG, (void (*)(void))props->onDrag, props->user);
+    Ui_SetCallback(table, "onDragOver", UI__DRAG_OVER, (void (*)(void))props->onDragOver, props->user);
+    Ui_SetCallback(table, "onDrop", UI__DROP, (void (*)(void))props->onDrop, props->user);
+    Ui_SetCallback(table, "onMenu", UI__MENU, (void (*)(void))props->onMenu, props->user);
 }
 
 /// @brief Writes an element's props into its description, its style's among them.
@@ -359,12 +468,100 @@ static inline void Ui_Close(void)
     Ui_current->depth--;
 }
 
+/// @brief The names of UiWhere, as Lua's where gives them; UI_BESIDE is nil.
+[[maybe_unused]] static const char *const UI__WHERE[] = {nullptr, "before", "after", "into"};
+
+/// @brief What an onDragOver or an onDrop gets, from what ui gives Ui__Call.
+static inline UiDrop Ui__Drop(const ECSValue *args)
+{
+    const char *where = ECSValue_GetString(ECSValue_GetTableField(args, "where"), "");
+    UiDrop drop = {
+        .item = ECSValue_GetTableField(args, "item"),
+        .dataType = ECSValue_GetString(ECSValue_GetTableField(args, "dataType"), ""),
+        .value = ECSValue_GetTableField(args, "value"),
+        .x = ECSValue_GetNumber(ECSValue_GetTableField(args, "x"), 0.0),
+        .y = ECSValue_GetNumber(ECSValue_GetTableField(args, "y"), 0.0),
+    };
+
+    for (usz i = 1; i < UI__COUNT(UI__WHERE); i++)
+    {
+        drop.where = strcmp(where, UI__WHERE[i]) == 0 ? (UiWhere)i : drop.where;
+    }
+
+    return drop;
+}
+
+/// @brief Calls the C function of a token that a description gave ui, with the props' user and what ui gives, and fills what ui gets back: onDrag's
+/// type and value, onDragOver's false or new where, and nil for the others. ui.dispatcher keeps it, and ui calls it during the panel's events.
+static inline void Ui__Call(SHUSlice bytes, const ECSValue *args, ECSValue *retResult)
+{
+    UiToken token;
+
+    if (bytes.size != sizeof(token))
+    {
+        return;
+    }
+
+    memcpy(&token, bytes.data, sizeof(token));
+
+    switch (token.kind)
+    {
+    case UI__DRAG:
+    {
+        const char *type = nullptr;
+        ECSValue *value = nullptr;
+        ECSValue *typeField = nullptr;
+        ECSValue_SetTable(retResult);
+        bool dragged = !ECSValue_SetTableField(retResult, "value", &value) && ((UiDragFunction)token.function)(token.user, ECSValue_GetTableField(args, "item"), &type, value);
+
+        if (!dragged || type == nullptr || ECSValue_SetTableField(retResult, "type", &typeField) || ECSValue_SetString(typeField, type))
+        {
+            ECSValue_SetNil(retResult);
+        }
+
+        break;
+    }
+    case UI__DRAG_OVER:
+    {
+        UiDrop drop = Ui__Drop(args);
+        UiWhere where = drop.where;
+
+        if (!((UiDragOverFunction)token.function)(token.user, &drop))
+        {
+            ECSValue_SetBool(retResult, false);
+        }
+        else if (where != UI_BESIDE && drop.where != where && drop.where > UI_BESIDE && drop.where <= UI_INTO && ECSValue_SetString(retResult, UI__WHERE[drop.where]))
+        {
+            ECSValue_SetNil(retResult);
+        }
+
+        break;
+    }
+    case UI__DROP:
+    {
+        UiDrop drop = Ui__Drop(args);
+        ((UiDropFunction)token.function)(token.user, &drop);
+        break;
+    }
+    case UI__MENU:
+        ((UiMenuFunction)token.function)(token.user, ECSValue_GetTableField(args, "item"), ECSValue_GetNumber(ECSValue_GetTableField(args, "x"), 0.0), ECSValue_GetNumber(ECSValue_GetTableField(args, "y"), 0.0));
+        break;
+    case UI__CLICK:
+        ((UiClickFunction)token.function)(token.user);
+        break;
+    default:
+        break;
+    }
+}
+
 /// @brief Prepares a Ui for a plugin: looks up ui's functions. Call it from the plugin's Init; the plugin's manifest must depend on ui.
 /// @return SHUResult_Ok, or the error of the first function that cannot be looked up.
 static inline SHUWUR SHUResult Ui_Init(Ui *retUi, ECSPlugin plugin)
 {
     *retUi = (Ui){.plugin = plugin};
     SHU_ReturnResult(UiFunctions_Get(plugin, &retUi->functions));
+    // ui keeps the function that calls the plugin's C callbacks, and descriptions name it by its number
+    retUi->caller = retUi->functions.dispatcher(Ui__Call);
 
     // ui gives its styles until it is asked again, so the Ui keeps copies, whose texts it holds itself
     const ECSValue *styles = retUi->functions.styles();
@@ -492,6 +689,21 @@ static inline bool Ui_Event(Ui *ui, ECSPanel panel, const ECSPanelEvent *event)
     case ECSPanelEventType_Text:
         Ui_SetString(table, "text", event->text.text);
         break;
+    case ECSPanelEventType_DragOver:
+    case ECSPanelEventType_Drop:
+    {
+        ECSValue *value = nullptr;
+        Ui_SetNumber(table, "x", event->drop.x);
+        Ui_SetNumber(table, "y", event->drop.y);
+        Ui_SetString(table, "dataType", ECSDropData_GetType(event->drop.data));
+
+        if (ECSValue_SetTableField(table, "value", &value) || ECSValue_Copy(value, ECSDropData_GetValue(event->drop.data)))
+        {
+            ui->failed = true;
+        }
+
+        break;
+    }
     default:
         break;
     }
@@ -505,6 +717,82 @@ static inline bool Ui_Event(Ui *ui, ECSPanel panel, const ECSPanelEvent *event)
     ECSValue_Destroy(&table);
     Ui_current = current;
     return taken;
+}
+
+/// @brief An entry of a menu, as ui.MenuEntry is: a label that onClick runs, a submenu of entries, or a line between entries. A list of entries
+/// ends with one whose label is nullptr and that is no line.
+typedef struct UiMenuEntry
+{
+    const char *label;
+    const char *keys;                  // the keys that run the same, shown at the entry's right, such as "Ctrl+D"; nullptr for none
+    UiFlag enabled;                    // UI_FALSE dims the entry, and it does not run
+    UiClickFunction onClick;           // runs when the entry is clicked, or chosen with Return; the menu closes first
+    void *user;                        // what onClick gets
+    const struct UiMenuEntry *entries; // a submenu's entries, which open in place of the menu's; nullptr for none
+    bool line;                         // a line between entries, which has nothing else
+} UiMenuEntry;
+
+/// @brief Adds a menu's entries to a list, and their submenus' entries to theirs.
+static inline void Ui__MenuEntries(ECSValue *list, const UiMenuEntry *entries, usz depth)
+{
+    for (usz i = 0; list != nullptr && depth < UI_DEPTH && (entries[i].label != nullptr || entries[i].line); i++)
+    {
+        ECSValue *entry = Ui_AddItem(list);
+
+        if (entry == nullptr)
+        {
+            return;
+        }
+
+        ECSValue_SetTable(entry);
+
+        if (entries[i].line)
+        {
+            Ui_SetBool(entry, "line", true);
+            continue;
+        }
+
+        Ui_SetString(entry, "label", entries[i].label);
+        Ui_SetString(entry, "keys", entries[i].keys);
+
+        if (entries[i].enabled != UI_UNSET)
+        {
+            Ui_SetBool(entry, "enabled", entries[i].enabled == UI_TRUE);
+        }
+
+        Ui_SetCallback(entry, "onClick", UI__CLICK, (void (*)(void))entries[i].onClick, entries[i].user);
+
+        if (entries[i].entries != nullptr)
+        {
+            Ui__MenuEntries(Ui_SetTable(entry, "entries"), entries[i].entries, depth + 1);
+        }
+    }
+}
+
+/// @brief Opens a menu of entries in a popup at a point of a panel, in layout units, such as where onMenu's right click was, as ui.menu does.
+static inline void Ui_Menu(Ui *ui, ECSPanel panel, f64 x, f64 y, const UiMenuEntry *entries)
+{
+    ECSValue *list = nullptr;
+
+    if (ECSValue_Create(&list))
+    {
+        return;
+    }
+
+    // Ui_NewField reports to the current Ui
+    Ui *current = Ui_current;
+    Ui_current = ui;
+    ui->failed = false;
+    ECSValue_SetTable(list);
+    Ui__MenuEntries(list, entries, 0);
+
+    if (!ui->failed)
+    {
+        ui->functions.menu(panel, (f32)x, (f32)y, list);
+    }
+
+    ECSValue_Destroy(&list);
+    Ui_current = current;
 }
 
 #pragma region Elements

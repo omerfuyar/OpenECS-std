@@ -5572,7 +5572,77 @@ end
 
 -- descriptions, for plugins in C -------------------------------------------
 
--- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, since C gives ui no functions
+-- the functions of plugins in C that call their C callbacks, by the number ui.dispatcher gave each, which their descriptions name
+services.callers = {}
+
+-- a Lua function for a C function that a description or a menu's entry gives as { caller, token }: it gives the C plugin's caller the token
+-- and a table of what the callback gets, and gives back what the C function answered; nil for anything else
+function services.callC(given)
+  if type(given) ~= "table" then
+    return nil
+  end
+
+  local call, token = services.callers[given.caller], given.token
+  ecs.check(call ~= nil and type(token) == "string", "A described callback names a caller that ui.dispatcher gave, and its token.")
+  return function(args)
+    return call(token, args)
+  end
+end
+
+-- a menu's entries, whose C callbacks become Lua functions; Lua's entries stay as they are
+function services.menuEntries(entries)
+  local converted = {}
+
+  for i, entry in ipairs(entries or {}) do
+    local copy = shallowCopy(entry)
+    local click = services.callC(entry.onClick)
+    copy.onClick = click and function()
+      click({})
+    end or entry.onClick
+    copy.entries = entry.entries and services.menuEntries(entry.entries)
+    converted[i] = copy
+  end
+
+  return converted
+end
+
+-- a described element's C functions, as the Lua functions that its element takes: a list, a table and a tree give an item and where; another
+-- element gives the place
+function services.describedFunctions(props, items)
+  local onDrag, onDragOver, onDrop, onMenu = services.callC(props.onDrag), services.callC(props.onDragOver), services.callC(props.onDrop), services.callC(props.onMenu)
+
+  props.onDrag = items and onDrag and function(item)
+    local got = onDrag({ item = item })
+
+    if got then
+      return got.type, got.value
+    end
+  end or nil
+
+  if items then
+    props.onDragOver = onDragOver and function(item, where, dataType, value)
+      return onDragOver({ item = item, where = where, dataType = dataType, value = value })
+    end
+    props.onDrop = onDrop and function(item, where, dataType, value)
+      onDrop({ item = item, where = where, dataType = dataType, value = value })
+    end
+    props.onMenu = onMenu and function(item, x, y)
+      onMenu({ item = item, x = x, y = y })
+    end
+  else
+    props.onDragOver = onDragOver and function(dataType, value, x, y)
+      return onDragOver({ dataType = dataType, value = value, x = x, y = y })
+    end
+    props.onDrop = onDrop and function(dataType, value, x, y)
+      onDrop({ dataType = dataType, value = value, x = x, y = y })
+    end
+    props.onMenu = onMenu and function(x, y)
+      onMenu({ x = x, y = y })
+    end
+  end
+end
+
+-- the callbacks of each type of element; a described element with an id keeps what they get, for ui.take, as its macro takes them at the next draw
 -- those of ASKED are kept only by an element whose props have them as true, since they change how the element behaves
 local ASKED = { onActivate = true, onSort = true }
 local CALLBACKS = {
@@ -5605,7 +5675,8 @@ local TAKES = {
 local DESCRIBED = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
-  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort"):gmatch("%S+") do
+  .. "sort ascending vertical wrap label look min max step valid clickable alpha placeholder dialog pattern results folders count first wrapMark maxLines gutter onActivate onSort "
+  .. "onDrag onDragOver onDrop onMenu"):gmatch("%S+") do
   DESCRIBED[name] = true
 end
 
@@ -5622,6 +5693,7 @@ local function build(panel, description)
 
   -- a column or row with clickable = true is clicked like a button
   local elementType = description.type
+  services.describedFunctions(props, elementType == "list" or elementType == "table" or elementType == "tree")
   local callbacks = CALLBACKS[elementType] or (props.clickable and { "onClick" }) or {}
   props.clickable = nil
 
@@ -5748,7 +5820,18 @@ ecs.service.register({
         .. "@param y The point's y\n"
         .. "@param entries The entries, in order: each a table of its label, the keys that run it too, whether it is enabled, and its onClick, or a line between entries",
     fn = function(panel, x, y, entries)
-      openMenu(panel, x, y, entries)
+      openMenu(panel, x, y, services.menuEntries(entries))
+    end,
+  },
+  dispatcher = {
+    sig = "int(keep fn<void(buffer token, value args, out value result)> call)",
+    doc = "Keep the function of a plugin in C that calls its C callbacks, which ui.h's Ui_Init gives; descriptions name it by the number this gives\n"
+        .. "@param call Calls the C function of a token that a description gave, with what the callback gets, and fills what ui gets back\n"
+        .. "@return The number that names the function in descriptions",
+    fn = function(call)
+      local callers = services.callers
+      callers[#callers + 1] = call
+      return #callers
     end,
   },
   forget = {
