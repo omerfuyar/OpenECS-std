@@ -2,7 +2,7 @@
 return {
   name = "markdown",
   version = "0.1.0",
-  api = 3,
+  api = 4,
   description = "Markdown, as GitHub writes it, read into a tree of nodes, or into ui's elements for notes and help panels",
   type = "native",
 }

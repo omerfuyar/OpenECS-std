@@ -2,7 +2,7 @@
 return {
   name = "process",
   version = "0.1.0",
-  api = 3,
+  api = 4,
   description = "Runs programs: their input, output and errors as streams that never block the tool, or a whole run that gives the output",
   type = "native",
 }
