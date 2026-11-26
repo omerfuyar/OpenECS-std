@@ -1335,7 +1335,7 @@ local PROPS = {}
 
 for name in ("id style width height grow stretch padding gap align background hoverBackground border color size font tooltip keys selectable title selected "
   .. "sort ascending vertical wrap label look min max step valid clickable open up alpha placeholder dialog pattern results colors lines folders count first wrapMark maxLines gutter "
-  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDrag"):gmatch("%S+") do
+  .. "onClick onChange onSubmit onSelect onActivate onSort onToggle onLink onMenu onDrop onDragOver onDrag"):gmatch("%S+") do
   PROPS[name] = true
 end
 
@@ -1666,6 +1666,10 @@ function elements.tree(nodes, props)
     props.onDrop(index and ids[index], where, dataType, value)
   end
 
+  listProps.onDragOver = props.onDragOver and function(index, where, dataType, value)
+    return props.onDragOver(index and ids[index], where, dataType, value)
+  end
+
   -- the rows are built when the panel shows, for the shown nodes that ui.range names then: the list stands in for them until then
   local node = elements.list(listProps, {})
   local treeInfo = { ids = ids, parents = parents, folders = folders, onToggle = props.onToggle }
@@ -1755,7 +1759,7 @@ function elements.table(columns, rows, props)
   end
 
   -- the list scrolls its rows below the header, and takes the room the table has
-  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop }, items)
+  local list = elements.list({ id = props.id, grow = 1, selected = props.selected, onSelect = props.onSelect, onActivate = props.onActivate, onMenu = props.onMenu, onDrag = props.onDrag, onDrop = props.onDrop, onDragOver = props.onDragOver }, items)
   local header = elements.row({ id = props.id .. ":header", padding = 2, background = "tabRow", stretch = true }, cells(nil))
   return elements.column({ width = props.width, height = props.height, grow = props.grow, stretch = props.stretch, border = props.border }, { header, list })
 end
@@ -5057,8 +5061,9 @@ end
 
 -- data dropped on the panel goes to the innermost element under it with onDrop; a list gives its item under the place, or nil beside its
 -- items, and where on the item it landed: before it in its upper half and after it in its lower half, or for a tree before it in its upper
--- quarter, after it in its lower quarter and into it between. While data is dragged over the panel, the same element keeps the mark of where
--- it would land, which paint draws, until the data leaves
+-- quarter, after it in its lower quarter and into it between. The element's onDragOver, with what onDrop would get, refuses the landing with
+-- false, or gives an item another place. While data is dragged over the panel, the same element keeps the mark of where it would land, which
+-- paint draws, until the data leaves
 local function handleDrop(panel, state, x, y, event)
   local node = event.type ~= "dragLeave" and find(state.root, x, y, function(node)
     return node.onDrop ~= nil or (isListItem(node) and node.list.onDrop ~= nil)
@@ -5075,12 +5080,34 @@ local function handleDrop(panel, state, x, y, event)
     end
   end
 
+  -- the tool's answer: nil or true takes the landing as it is, false refuses it, and an item takes another place
+  local answer = nil
+
+  if not node then
+    answer = false
+  elseif where then
+    answer = node.list.onDragOver and node.list.onDragOver(node.itemIndex, where, event.dataType, event.value)
+  elseif isList(node) then
+    answer = node.onDragOver and node.onDragOver(nil, nil, event.dataType, event.value)
+  else
+    answer = node.onDragOver and node.onDragOver(event.dataType, event.value, x, y)
+  end
+
+  ecs.check(answer == nil or answer == true or answer == false or answer == "before" or answer == "after" or answer == "into",
+    "onDragOver gives nothing, true, false, \"before\", \"after\" or \"into\".")
+
+  if answer == false then
+    node = nil
+  elseif where and type(answer) == "string" then
+    where = answer
+  end
+
   if event.type ~= "drop" then
     local mark = state.dropMark
-    where = where or "into"
+    local shown = where or "into"
 
-    if mark == nil and node or mark ~= nil and (node == nil or mark.id ~= node.id or mark.where ~= where) then
-      state.dropMark = node and { id = node.id, where = where } or nil
+    if mark == nil and node or mark ~= nil and (node == nil or mark.id ~= node.id or mark.where ~= shown) then
+      state.dropMark = node and { id = node.id, where = shown } or nil
       panel:redraw()
     end
 
