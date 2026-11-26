@@ -1,5 +1,6 @@
 -- Undo and redo for any tool (DESIGN 34): histories of records that plugins push, each with the functions that take a change back and make it
--- again; the keys and functions that act on the focused panel's history; and the History panel, which lists the records.
+-- again; the keys and functions that act on the focused panel's history, or the tool's default one; and the History panel, which lists the
+-- records.
 -- It is built with the ui standard plugin.
 
 local ecs = require("ecs")
@@ -34,7 +35,8 @@ ecs.handle.registerType("history")
 
 local histories = {} ---@type table<string, history.Kept> every open history, by name
 local byPanel = {} ---@type table<integer, history.Kept> the history of each panel that uses one, by the panel's id
-local current ---@type history.Kept? the history of the panel that had the focus last and has one
+local current ---@type history.Kept? the history of the panel that had the focus last and has one, or the default one it followed to
+local default ---@type history.Kept? the tool's default history, for a panel without one of its own
 local lists = {} ---@type table<ecs.Panel, table> every open History panel's state, by its panel
 local busy = false -- an undo or a redo runs, so a push is refused
 
@@ -87,6 +89,10 @@ function services.close(handle)
     current = nil
   end
 
+  if default == kept then
+    default = nil
+  end
+
   kept.records, kept.position = {}, 0
   changed(kept)
 end
@@ -102,16 +108,33 @@ function services.use(panel, handle)
   end
 end
 
--- what the panel with the focus undoes: its own history, or for a History panel the one it shows
+-- what the panel with the focus undoes: its own history, for a History panel the one it shows, or else the default one
 local function focused()
   local focus = ecs.layout.getFocus()
+  local list = focus and lists[focus]
+  return (focus and byPanel[focus.id]) or (list and list:shown()) or default
+end
 
-  if not focus then
-    return nil
+-- the History panels that follow the focus show the default history, when a panel without one of its own has the focus and is not a History
+-- panel
+local function followDefault()
+  local focus = ecs.layout.getFocus()
+
+  if not default or not focus or byPanel[focus.id] or lists[focus] then
+    return
   end
 
-  local list = lists[focus]
-  return byPanel[focus.id] or (list and list:shown()) or nil
+  current = default
+
+  for _, list in pairs(lists) do
+    list.chosen = nil
+    list.panel:redraw()
+  end
+end
+
+function services.useDefault(handle)
+  default = handle and historyOf(handle) or nil
+  followDefault()
 end
 
 -- calls a record's undo or redo; a failure clears the history, as its records may no longer match the data
@@ -311,10 +334,10 @@ function List:destroy()
   lists[self.panel] = nil
 end
 
--- the history that the panel shows: the one its dropdown chose, or the focused panel's
+-- the history that the panel shows: the one its dropdown chose, the focused panel's, or the default one
 function List:shown()
   local chosen = self.chosen and histories[self.chosen]
-  return chosen or current
+  return chosen or current or default
 end
 
 function List:view()
@@ -343,11 +366,20 @@ function List:view()
 
   local first, last = ui.range(self.panel, "records", #kept.records + 1)
   local rows = {}
+  self.rows, self.first = {}, first
 
   for row = first, last do
     local record = kept.records[row - 1]
+    local spans = { record and record.label or "Before every change" }
+
+    -- a record's tags follow its label, dimmed
+    if record and #record.tags > 0 then
+      spans[2] = { text = "    " .. table.concat(record.tags, ", "), color = "textDim" }
+    end
+
     -- the records after the last one done are undone, and Redo or a click brings them back
-    rows[#rows + 1] = ui.text(record and record.label or "Before every change", { color = row - 1 > kept.position and "textDim" or nil })
+    rows[#rows + 1] = ui.text(spans, { color = row - 1 > kept.position and "textDim" or nil })
+    self.rows[#self.rows + 1] = spans[1] .. (spans[2] and spans[2].text or "")
   end
 
   return ui.column({ style = STYLES.view, gap = 6 }, {
@@ -369,9 +401,10 @@ function List:view()
 end
 
 function List:saveState()
-  -- not read back; a test reads what shows, and where the list of records is, in layout units
+  -- not read back; a test reads what shows: the history, the texts of the rows built, from the row first, and where the list of records is,
+  -- in layout units
   local kept = self:shown()
-  return { shown = kept and kept.name or nil, records = ui.rect(self.panel, "records") }
+  return { shown = kept and kept.name or nil, rows = self.rows, first = self.first, records = ui.rect(self.panel, "records") }
 end
 
 ecs.panel.registerType(ui.panelType({
@@ -384,16 +417,20 @@ ecs.panel.registerType(ui.panelType({
   destroy = List.destroy,
 }))
 
--- the history of the panel that gets the focus, if it has one, shows; a History panel that follows it forgets its own choice
+-- the history of the panel that gets the focus, if it has one, shows, or else the default one; a History panel that follows it forgets its
+-- own choice
 ecs.event.subscribe("ecs.focusChanged", function(_, value)
   local kept = type(value) == "table" and value.panel and byPanel[value.panel]
 
-  if kept then
-    current = kept
+  if not kept then
+    followDefault()
+    return
+  end
 
-    for _, list in pairs(lists) do
-      list.chosen = nil
-    end
+  current = kept
+
+  for _, list in pairs(lists) do
+    list.chosen = nil
   end
 end)
 
@@ -432,6 +469,12 @@ ecs.service.register({
     doc = "Make a panel's undo and redo act on a history\n@param panel The panel\n@param history The history, or nothing to take it away",
     fn = services.use,
   },
+  useDefault = {
+    sig = "void(" .. HISTORY .. ")",
+    doc = "Make undo and redo act on a history in a panel without one of its own, and when no panel has the focus\n"
+        .. "@param history The tool's default history, or nothing to take it away",
+    fn = services.useDefault,
+  },
   push = {
     sig = "void(" .. HISTORY .. ", string label, string merge, value<string[]> tags, keep fn<void(value data)> undo, keep fn<void(value data)> redo, value data)",
     doc = "Record a change that the plugin has made\n@param history The history\n@param label What the change was, as the History panel shows it\n"
@@ -453,8 +496,8 @@ ecs.service.register({
     fn = services.drop,
   },
   clear = { sig = "void(" .. HISTORY .. ")", doc = "Remove every record of a history\n@param history The history", fn = services.clear },
-  undo = { sig = "void()", doc = "Undo the last change of the focused panel's history", fn = services.undo },
-  redo = { sig = "void()", doc = "Redo the last undone change of the focused panel's history", fn = services.redo },
+  undo = { sig = "void()", doc = "Undo the last change of the focused panel's history, or of the default one", fn = services.undo },
+  redo = { sig = "void()", doc = "Redo the last undone change of the focused panel's history, or of the default one", fn = services.redo },
   undoIn = { sig = "void(" .. HISTORY .. ")", doc = "Undo the last change of a history\n@param history The history", fn = services.undoIn },
   redoIn = { sig = "void(" .. HISTORY .. ")", doc = "Redo the last undone change of a history\n@param history The history", fn = services.redoIn },
   goTo = {
