@@ -454,7 +454,7 @@ static inline const ECSValue *Ui_Take(const char *id, const char *callback)
 /// @return Whether an element took the event.
 static inline bool Ui_Event(Ui *ui, ECSPanel panel, const ECSPanelEvent *event)
 {
-    static const char *const TYPES[] = {"pointerDown", "pointerUp", "pointerMove", "wheel", "keyDown", "keyUp", "focused", "unfocused", "shown", "hidden", "resized", "drop", "text"};
+    static const char *const TYPES[] = {"pointerDown", "pointerUp", "pointerMove", "wheel", "keyDown", "keyUp", "focused", "unfocused", "shown", "hidden", "resized", "drop", "text", "dragOver", "dragLeave"};
     ECSValue *table = nullptr;
 
     if (ECSValue_Create(&table))
