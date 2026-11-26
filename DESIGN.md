@@ -37,6 +37,7 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 31. The console
 32. The profiler
 33. The key list
+34. history
 
 ## 1. Rules
 
@@ -616,6 +617,21 @@ How OpenECS's standard plugins and first-party Lua plugins are built. They follo
 - The list reads the bindings again when it is shown, on `ecs.pluginsChanged`, when `ecs.prefix` changes, and after each change it makes. The panel's saved state is the scopes whose sections are closed.
 - The plugin also shows the keys after the prefix while the core waits for one, from the core's event `ecs.prefix` (OpenECS DESIGN 7.5, 8.4): a popup of type tooltip at the bottom right of the focused panel's OS window, a margin from its edges, placed from `panel.place` (OpenECS DESIGN 4.6) and drawn with draw (2), which closes when the core waits no more. It lists each key and what it does now, in sections: Navigation (focus, move, tabs and workspaces), Panel (the core's other functions on the focused panel), Layout (closing a group, locking it and resetting the layout), Session (saving and opening sessions, the title bar's menus and quitting) and More (the plugins' functions). A section without keys has no heading, and Escape, Cancel ends the list.
 - Keys of one kind share a line. The keys that switch workspaces show the first workspace's key to the last one's: `1...0`, and the keys that move the focused panel to a workspace the same way: `Shift+1...0`. Focus and move show `Arrows` and `Shift+Arrows` when their four functions are on the four arrows with the same modifiers.
+
+## 34. history
+
+- The first-party Lua plugin `history` keeps undo and redo for any tool. A plugin opens histories, pushes a record for each change it makes, and names the history of each of its panels; history gives the keys, the functions and a panel that lists the records. Each plugin still decides what a change is and how to take it back, and sets its own panels' unsaved marks (OpenECS DESIGN 4.5).
+- The core's settings file loads it for every tool (OpenECS DESIGN 12.3), and binds `Ctrl+Z` to `history.undo`, and `Ctrl+Y` and `Ctrl+Shift+Z` to `history.redo`, for the whole tool, as a plugin binds keys only for its own panels (OpenECS DESIGN 7.8). A preset puts the two functions in a menu, such as Edit. They act on the history of the focused panel, and do nothing for a panel without one.
+- **Histories.** `history.open(name)` gives the history of that name, a handle of the type `history.history`, and makes it the first time; the same name gives the same history, so a tool keeps one for a document or one for the whole tool, as it likes: `"notes:" .. path`, or `"onlr"`. `history.close(h)` drops a history and its records.
+- `history.use(panel, h)` makes a panel's Ctrl+Z and Ctrl+Y act on a history, usually in its `create`; nil takes it away. A closed panel is forgotten.
+- **Records.** `history.push(h, label, merge, tags, undo, redo, data)` records a change that the plugin has made already: `undo(data)` takes it back, and `redo(data)` makes it again. Both are `keep fn`s (OpenECS DESIGN 10.4), so a plugin in C gives a C function and its data, as a plugin in Lua gives functions. The label names the change in the History panel and in a menu's Undo. A push drops the records that were undone.
+- A record with a `merge` key, such as `"A.x"`, merges into the record before it when that one has the same key, is the last one done, and was pushed or merged less than `history.mergeTime` seconds before, 1 by default. The merged record keeps the first one's undo and the last one's redo, so a drag or typing that pushes at each step is undone at once. An empty key never merges.
+- `history.change(h, label, merge, old, new, apply, data)` is a record for one value: it calls `apply(new, data)`, and records `apply(old, data)` as its undo and `apply(new, data)` as its redo. A C function has no closure, so `data`, as `push`'s, tells it what the value belongs to, such as its panel's id. The values are generic values (OpenECS DESIGN 10.3), so a setting, a colour or a table of fields works the same from C and from Lua.
+- **Tags.** `tags` is a list of texts, such as the files a record changes. `history.drop(h, tag)` removes every record with that tag, as when a file changes on disk and the plugin takes the disk's version; `history.clear(h)` removes them all. The records after a dropped one keep their order.
+- **Undo and redo.** `history.undo()` and `history.redo()`, the functions that the keys run, act on the focused panel's history. `history.undoIn(h)`, `history.redoIn(h)` and `history.goTo(h, position)` act on a history: `goTo` undoes or redoes until `position` records are done, 0 for none. A record pushed while an undo or a redo runs is refused, so a plugin's undo may use the same functions that push. An undo or a redo that fails is reported, and the history is cleared, as its records may no longer match the data.
+- `history.state(h)` gives the records as `{ label, tags }`, the oldest first, and `position`, how many are done. A history keeps at most `history.limit` records, 1000 by default; a push past it drops the oldest.
+- history emits `history.changed`, with the history's name, after each push, undo, redo, drop and clear, so a panel that shows its records, such as a toolbar's count, redraws on it.
+- **The History panel.** The panel type `history.list`, titled "History", is built with ui (5). It shows the history of the panel that had the focus last and has one, and a dropdown chooses another open history. Its first row is the state before every record, then each record by its label, the ones undone dimmed. A click on a row goes to it, with `goTo`. It binds `history.show`, which opens the panel or focuses it, to `H` after the prefix and adds it to the title bar's menu Tools (OpenECS DESIGN 7.8, 6.8).
 
 ---
 
