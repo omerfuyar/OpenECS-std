@@ -250,7 +250,7 @@ function Profiler:chosenTable()
   return ui.table(columns, rows, { id = "table:" .. tab, grow = 1, stretch = true })
 end
 
-function Profiler:describe()
+function Profiler:view()
   local measuring = ecs.setting.get("ecs.profile") == true
   -- its switches and buttons are a bar along the top, over what it shows
   local bar = ui.row({ style = STYLES.bar, gap = 12, align = "center" }, {
@@ -340,7 +340,6 @@ end
 
 function Profiler:destroy()
   self.timer:stop()
-  ui.forget(self.panel)
   views[self.panel] = nil
 end
 
@@ -348,24 +347,17 @@ function Profiler:saveState()
   return { tab = self.tab, paused = self.paused }
 end
 
-function Profiler:draw(surface)
-  ui.show(self.panel, surface, self:describe())
-end
 
-function Profiler:event(event)
-  ui.event(self.panel, event)
-end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "view",
   title = "Profiler",
   stateVersion = STATE_VERSION,
   create = Profiler.create,
   destroy = Profiler.destroy,
   saveState = Profiler.saveState,
-  draw = Profiler.draw,
-  event = Profiler.event,
-})
+  view = Profiler.view,
+}))
 
 -- opens the profiler, or shows the one that is open, so a key can bring it up
 local function open()

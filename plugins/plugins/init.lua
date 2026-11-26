@@ -178,7 +178,6 @@ function Plugins.create(panel, saved, version)
 end
 
 function Plugins:destroy()
-  ui.forget(self.panel)
   lists[self.panel] = nil
 end
 
@@ -187,29 +186,23 @@ function Plugins:saveState()
   return { selected = chosen and chosen.name or nil }
 end
 
-function Plugins:draw(surface)
-  ui.show(self.panel, surface, self:view())
-end
-
 function Plugins:event(event)
   -- plugins may have been installed since the list was drawn
   if event.type == "shown" then
     self:refresh()
   end
-
-  ui.event(self.panel, event)
 end
 
-ecs.panel.registerType({
+ecs.panel.registerType(ui.panelType({
   name = "list",
   title = "Plugins",
   stateVersion = STATE_VERSION,
   create = Plugins.create,
   destroy = Plugins.destroy,
   saveState = Plugins.saveState,
-  draw = Plugins.draw,
+  view = Plugins.view,
   event = Plugins.event,
-})
+}))
 
 ecs.event.subscribe("ecs.pluginsChanged", function()
   for _, list in pairs(lists) do

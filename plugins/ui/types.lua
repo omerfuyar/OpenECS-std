@@ -242,6 +242,13 @@
 ---@field dialog? "openFile"|"saveFile"|"openFolder" The file dialog its button opens; "openFile" if missing.
 ---@field pattern? string The extensions the dialog shows, such as "ttf;otf"; every file if missing.
 
+---A panel type built with ui, which ui.panelType completes for ecs.panel.registerType: view in place of draw, and ui's part in event and destroy.
+---Each panel's state holds its panel as panel.
+---@class ui.PanelTypeDesc: ecs.PanelTypeDesc
+---@field view fun(state: any, surface: ecs.Surface): ui.Element Gives the panel's elements, which ui shows, at each draw.
+---@field event? fun(state: any, event: ecs.PanelEvent) Gets the events that ui did not take.
+---@field destroy? fun(state: any) Runs after ui forgets the panel.
+
 ---An element as a plugin in C describes it, which ui.showDescription builds with the element function of its type.
 ---@class ui.Description
 ---@field type string The element's type, which names its function, such as "column" or "button".
