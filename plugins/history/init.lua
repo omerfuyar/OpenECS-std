@@ -465,12 +465,12 @@ ecs.service.register({
   },
   close = { sig = "void(" .. HISTORY .. ")", doc = "Drop a history and its records\n@param history The history, as open gives it", fn = services.close },
   use = {
-    sig = "void(handle<ecs.panel> panel, " .. HISTORY .. ")",
+    sig = "void(handle<ecs.panel> panel, handle<history.history>? history)",
     doc = "Make a panel's undo and redo act on a history\n@param panel The panel\n@param history The history, or nothing to take it away",
     fn = services.use,
   },
   useDefault = {
-    sig = "void(" .. HISTORY .. ")",
+    sig = "void(handle<history.history>? history)",
     doc = "Make undo and redo act on a history in a panel without one of its own, and when no panel has the focus\n"
         .. "@param history The tool's default history, or nothing to take it away",
     fn = services.useDefault,
