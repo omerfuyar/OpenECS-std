@@ -26,13 +26,8 @@ local panels = {} ---@type table<ecs.Panel, table>
 local handlers = {}
 local menu
 
-ecs.event.declare("changed", "The shown folder's files changed")
-
-local function redraw()
-  for panel in pairs(panels) do
-    panel:redraw()
-  end
-end
+-- every files panel draws again when it comes (redrawOn)
+ecs.event.declare("changed", "The shown folder's files changed, or another folder is shown")
 
 -- each folder's entries without the hidden ones, folders first, then files, each by name; listed once, and again when its watch fires
 local listed = {}
@@ -91,7 +86,7 @@ local function watch(dir)
         end
       end
     end
-    redraw()
+    ecs.event.emit("files.changed")
   end) or true
   -- what came before the watch started is listed after it, so no change falls between
   listed[dir] = nil
@@ -114,7 +109,7 @@ local function setFolder(path)
   if folder ~= "" then
     watch("")
   end
-  redraw()
+  ecs.event.emit("files.changed")
 end
 
 -- The tree's nodes for a folder: folders first, then files, each by name. A folder's children are made only when open
@@ -306,7 +301,6 @@ function Files:dropFiles(paths, dir)
       self.open[dir:sub(1, -2)] = true
     end
     ecs.event.emit("files.changed")
-    self.panel:redraw()
   end
 end
 
@@ -652,6 +646,7 @@ ecs.panel.registerType({
   name = "tree",
   title = "Files",
   stateVersion = STATE_VERSION,
+  redrawOn = { "files.changed" },
   create = Files.create,
   draw = Files.draw,
   event = Files.event,
