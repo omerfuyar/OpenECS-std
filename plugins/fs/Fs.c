@@ -1,6 +1,7 @@
 // The fs standard plugin: what Lua's io and os libraries cannot do with files and folders (DESIGN 10).
 // It lists folders, tells what a path is, makes and removes folders, copies files and finds the user's folders, with SDL's filesystem functions.
-// It watches folders for changes with inotify on Linux and ReadDirectoryChangesW on Windows, which SDL does not offer, and elsewhere by reading the folders again and again.
+// It watches folders, and the folders inside them, for changes with inotify on Linux and ReadDirectoryChangesW on Windows, which SDL does not offer, and elsewhere by
+// reading the folders again and again.
 // Lua's os.rename moves files and folders, so fs does not. os.remove cannot remove a folder on Windows, so fs removes.
 
 #include "OpenECS.h"
@@ -8,11 +9,16 @@
 #include "SDL3/SDL.h"
 
 #ifdef __linux__
+#include <errno.h>
 #include <sys/inotify.h>
-#include <unistd.h>
-#elif defined(_WIN32)
+#endif
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #define STB_DS_IMPLEMENTATION
@@ -42,18 +48,30 @@ typedef struct FsEntry
     char *name;
     SDL_Time modified;
     Uint64 size;
+    bool folder; // a folder, and not a link to one, which a recursive watch enters
 } FsEntry;
+
+/// @brief A folder that a watch reads the changes of: its own folder, and, for a recursive watch, each folder inside it. Windows watches them all with the first, so it has none.
+typedef struct FsWatched
+{
+    char *folder;     // as the watch tells it: the watch's folder and the path inside it, ending with /
+    char *fullPath;   // its full path, ending with a separator
+    int descriptor;   // inotify's watch, which watches of the same folder share, or -1
+    FsEntry *entries; // stb_ds array of its entries as they were last read, sorted by name, where there is no inotify
+    bool lost;        // it cannot be watched, so its changes are lost and the folders inside it are not entered
+    bool told;        // its watch was told that it is lost
+} FsWatched;
 
 /// @brief A watched folder. Its handle is fs.watch.
 typedef struct FsWatch
 {
     char *folder;   // as it was given, ending with a separator
-    int descriptor; // inotify's watch, which watches of the same folder share, or -1
+    char *fullPath; // its full path, ending with a separator
     FsChangedFunction Changed;
-    bool stopped;     // stopped while changes were being told; freed after them
-    bool gone;        // its folder was removed or can no longer be watched, which it was told once
-    char *fullPath;   // the folder's full path, ending with a separator, which is read again where there is no inotify
-    FsEntry *entries; // stb_ds array of its entries as they were last read, sorted by name, where there is no inotify
+    bool recursive;     // the folders inside it are watched too, apart from those whose names start with a dot
+    bool stopped;       // stopped while changes were being told; freed after them
+    bool gone;          // its folder was removed or can no longer be watched, which it was told once
+    FsWatched *folders; // stb_ds array: the watch's folder first, then the folders inside it that a recursive watch reads; empty on Windows
 #ifdef _WIN32
     HANDLE directory;      // the folder, opened for ReadDirectoryChangesW, or nullptr
     OVERLAPPED overlapped; // the read of changes that waits for the folder to change
@@ -287,22 +305,331 @@ static void FsFreeEntries(FsEntry *entries)
     arrfree(entries);
 }
 
-/// @brief Frees a watch, and stops inotify's watch if no other watch shares it; the timer stops when nothing is watched.
-static void FsFreeWatch(FsWatch *watch)
+#ifdef _WIN32
+/// @brief A UTF-8 path as Windows' wide characters, or nullptr; SDL_free frees it.
+static WCHAR *FsWide(const char *path)
 {
-#ifdef __linux__
-    bool shared = false;
+    int wideLength = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
+    WCHAR *wide = wideLength <= 0 ? nullptr : SDL_malloc((usz)wideLength * sizeof(WCHAR));
 
+    if (wide == nullptr || MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, wideLength) <= 0)
+    {
+        SDL_free(wide);
+        return nullptr;
+    }
+
+    return wide;
+}
+#endif
+
+/// @brief Whether a path is a folder, and not a link to one, which a recursive watch would enter again through each link that leads back.
+static bool FsIsPlainFolder(const char *fullPath)
+{
+    // a separator at the end would follow a link
+    char *path = SDL_strdup(fullPath);
+    usz length = path == nullptr ? 0 : SDL_strlen(path);
+
+    if (length > 1 && ECSPath_IsSeparator(path[length - 1]))
+    {
+        path[length - 1] = '\0';
+    }
+
+#ifdef _WIN32
+    WCHAR *wide = path == nullptr ? nullptr : FsWide(path);
+    DWORD attributes = wide == nullptr ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(wide);
+    SDL_free(wide);
+    SDL_free(path);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+#else
+    struct stat info = {0};
+    bool folder = path != nullptr && lstat(path, &info) == 0 && S_ISDIR(info.st_mode);
+    SDL_free(path);
+    return folder;
+#endif
+}
+
+/// @brief Whether an entry is one that a recursive watch enters: a folder, not a link to one, whose name does not start with a dot.
+static bool FsIsEntered(const char *fullPath, const char *name)
+{
+    char *path = nullptr;
+    bool entered = name[0] != '.' && SDL_asprintf(&path, "%s%s", fullPath, name) >= 0 && FsIsPlainFolder(path);
+    SDL_free(path);
+    return entered;
+}
+
+/// @brief Tells a watch that it lost changes ("overflow") or its folder ("gone"), with an empty name, and reports it.
+static void FsTellLost(FsWatch *watch, const char *change, bool gone)
+{
+    if (watch->stopped || watch->gone)
+    {
+        return;
+    }
+
+    watch->gone = gone;
+    ECS_LogWarn(FILESYSTEM.plugin, gone ? "The folder '%s' is gone or can no longer be watched." : "Changes of the folder '%s' were lost; read it again.", watch->folder);
+    watch->Changed(watch->folder, "", change);
+}
+
+#ifdef __linux__
+/// @brief Whether a watch that has not stopped reads inotify's watch, which watches of the same folder share.
+static bool FsIsDescriptorUsed(int descriptor)
+{
     for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
-        shared = shared || (FILESYSTEM.watches[i] != watch && !FILESYSTEM.watches[i]->stopped && FILESYSTEM.watches[i]->descriptor == watch->descriptor);
+        const FsWatch *watch = FILESYSTEM.watches[i];
+
+        for (usz j = 0; j < arrlenu(watch->folders) && !watch->stopped; j++)
+        {
+            if (watch->folders[j].descriptor == descriptor)
+            {
+                return true;
+            }
+        }
     }
 
-    if (!shared && watch->descriptor >= 0)
+    return false;
+}
+
+/// @brief Starts reading a folder's changes with inotify, or reads them again: the folder at its path may be another one now.
+/// @return Whether it is watched.
+static bool FsWatchOne(FsWatched *folder)
+{
+    if (FILESYSTEM.inotify < 0)
     {
-        inotify_rm_watch(FILESYSTEM.inotify, watch->descriptor);
+        FILESYSTEM.inotify = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     }
-#elif defined(_WIN32)
+
+    // IN_ONLYDIR: a file is not a folder to watch
+    int descriptor = FILESYSTEM.inotify < 0 ? -1 : inotify_add_watch(FILESYSTEM.inotify, folder->fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
+    int previous = folder->descriptor;
+    folder->descriptor = descriptor;
+
+    if (previous >= 0 && previous != descriptor && !FsIsDescriptorUsed(previous))
+    {
+        inotify_rm_watch(FILESYSTEM.inotify, previous);
+    }
+
+    return descriptor >= 0;
+}
+
+/// @brief Why a folder cannot be watched, as inotify said a moment ago.
+static const char *FsWhyNotWatched(void)
+{
+    return errno == ENOSPC ? "the system's limit of watched folders, fs.inotify.max_user_watches, is reached" : "it cannot be read";
+}
+#elif !defined(_WIN32)
+static bool FsReadFolder(const char *fullPath, FsEntry **retEntries);
+
+/// @brief Starts reading a folder's changes by reading it now, so the next read finds what changed after the watch began.
+/// @return Whether it is watched.
+static bool FsWatchOne(FsWatched *folder)
+{
+    SDL_PathInfo info = {0};
+    FsFreeEntries(folder->entries);
+    folder->entries = nullptr;
+    return SDL_GetPathInfo(folder->fullPath, &info) && info.type == SDL_PATHTYPE_DIRECTORY && FsReadFolder(folder->fullPath, &folder->entries);
+}
+
+static const char *FsWhyNotWatched(void)
+{
+    return "it cannot be read";
+}
+#endif
+
+#ifndef _WIN32
+static void FsFreeWatched(FsWatched *folder)
+{
+#ifdef __linux__
+    if (folder->descriptor >= 0 && !FsIsDescriptorUsed(folder->descriptor))
+    {
+        inotify_rm_watch(FILESYSTEM.inotify, folder->descriptor);
+    }
+#endif
+
+    FsFreeEntries(folder->entries);
+    SDL_free(folder->fullPath);
+    SDL_free(folder->folder);
+}
+
+/// @brief Adds a folder to a watch, by its path in the watch's folder, ending with /, or empty for the watch's own; a folder that it has is read again.
+/// A folder inside that cannot be watched is kept as lost, and reported.
+/// @return Whether the folder is watched, so a recursive watch enters it.
+static bool FsAddFolder(FsWatch *watch, const char *path)
+{
+    FsWatched folder = {.descriptor = -1};
+
+    if (SDL_asprintf(&folder.folder, "%s%s", watch->folder, path) < 0 || SDL_asprintf(&folder.fullPath, "%s%s", watch->fullPath, path) < 0)
+    {
+        FsFreeWatched(&folder);
+        return false;
+    }
+
+    for (usz i = 0; i < arrlenu(watch->folders); i++)
+    {
+        if (SDL_strcmp(watch->folders[i].folder, folder.folder) == 0)
+        {
+            FsFreeWatched(&folder);
+            return !watch->folders[i].lost && FsWatchOne(&watch->folders[i]);
+        }
+    }
+
+    bool watching = FsWatchOne(&folder);
+
+#ifdef __linux__
+    // the same folder by another path, as a bind mount gives, is not entered twice
+    for (usz i = 0; i < arrlenu(watch->folders) && watching; i++)
+    {
+        if (watch->folders[i].descriptor == folder.descriptor)
+        {
+            folder.descriptor = -1;
+            FsFreeWatched(&folder);
+            return false;
+        }
+    }
+#endif
+
+    if (!watching && path[0] != '\0')
+    {
+        folder.lost = true;
+        ECS_LogWarn(FILESYSTEM.plugin, "The folder '%s' cannot be watched: %s.", folder.folder, FsWhyNotWatched());
+    }
+
+    if (!watching && path[0] == '\0')
+    {
+        FsFreeWatched(&folder);
+        return false;
+    }
+
+    arrput(watch->folders, folder);
+    return watching;
+}
+
+/// @brief Stops reading the changes of a folder of a recursive watch, and of the folders inside it, as when it was removed.
+/// @param folder The folder, as the watch tells it, ending with /.
+static void FsDropFolders(FsWatch *watch, const char *folder)
+{
+    usz length = SDL_strlen(folder);
+
+    for (usz i = arrlenu(watch->folders); i > 1; i--)
+    {
+        if (SDL_strncmp(watch->folders[i - 1].folder, folder, length) == 0)
+        {
+            FsWatched dropped = watch->folders[i - 1];
+            arrdel(watch->folders, i - 1);
+            FsFreeWatched(&dropped);
+        }
+    }
+}
+
+/// @brief Tells a recursive watch, once, of each folder inside it that cannot be watched: "overflow" with that folder and an empty name, as its changes are lost.
+static void FsTellLostFolders(FsWatch *watch)
+{
+    for (usz i = 1; i < arrlenu(watch->folders) && !watch->stopped; i++)
+    {
+        if (watch->folders[i].lost && !watch->folders[i].told)
+        {
+            watch->folders[i].told = true;
+            watch->Changed(watch->folders[i].folder, "", "overflow");
+        }
+    }
+}
+#endif
+
+/// @brief Goes through a folder of a recursive watch, by its path in the watch's folder: it watches each folder inside that it enters, as deep as they
+/// go, and with tell, tells each entry as added. Windows watches them all with the watch's folder, so there it only tells.
+static void FsEnter(FsWatch *watch, const char *path, bool tell)
+{
+    char *folder = nullptr;
+    char *fullPath = nullptr;
+    int count = 0;
+    char **names = nullptr;
+
+    if (SDL_asprintf(&folder, "%s%s", watch->folder, path) >= 0 && SDL_asprintf(&fullPath, "%s%s", watch->fullPath, path) >= 0)
+    {
+        names = SDL_GlobDirectory(fullPath, "*", 0, &count);
+    }
+
+    if (names != nullptr)
+    {
+        SDL_qsort(names, (size_t)count, sizeof(char *), FsCompareNames);
+    }
+
+    for (int i = 0; names != nullptr && i < count && !watch->stopped; i++)
+    {
+        char *inside = nullptr;
+
+        if (tell)
+        {
+            watch->Changed(folder, names[i], "added");
+        }
+
+        // a folder is watched before it is read, so nothing made in it falls between
+        if (FsIsEntered(fullPath, names[i]) && SDL_asprintf(&inside, "%s%s/", path, names[i]) >= 0)
+        {
+#ifdef _WIN32
+            FsEnter(watch, inside, tell);
+#else
+            if (FsAddFolder(watch, inside))
+            {
+                FsEnter(watch, inside, tell);
+            }
+#endif
+        }
+
+        SDL_free(inside);
+    }
+
+    SDL_free(names);
+    SDL_free(fullPath);
+    SDL_free(folder);
+}
+
+/// @brief Tells a watch of a change of an entry in one of its folders; a recursive watch stops watching a folder that is removed, and watches one that
+/// is added, telling what it holds already as added, as when it is moved in.
+/// @param folder The folder, as the watch tells it, ending with /.
+static void FsTellChange(FsWatch *watch, const char *folder, const char *name, const char *change, bool entered)
+{
+    char *inside = nullptr;
+    entered = entered && watch->recursive && SDL_asprintf(&inside, "%s%s/", folder, name) >= 0;
+    const char *path = entered ? inside + SDL_strlen(watch->folder) : nullptr;
+
+#ifndef _WIN32
+    if (entered && SDL_strcmp(change, "removed") == 0)
+    {
+        FsDropFolders(watch, inside);
+    }
+#endif
+
+    watch->Changed(folder, name, change);
+
+    if (entered && !watch->stopped && SDL_strcmp(change, "added") == 0)
+    {
+#ifdef _WIN32
+        FsEnter(watch, path, true);
+#else
+        if (FsAddFolder(watch, path))
+        {
+            FsEnter(watch, path, true);
+        }
+#endif
+    }
+
+    SDL_free(inside);
+}
+
+/// @brief Frees a watch, and stops inotify's watches that no other watch shares; the timer stops when nothing is watched.
+static void FsFreeWatch(FsWatch *watch)
+{
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
+    {
+        if (FILESYSTEM.watches[i] == watch)
+        {
+            arrdelswap(FILESYSTEM.watches, i);
+            break;
+        }
+    }
+
+#ifdef _WIN32
     // the read that waits is cancelled, and ends, before its buffer is freed
     if (watch->directory != nullptr && watch->directory != INVALID_HANDLE_VALUE)
     {
@@ -317,19 +644,16 @@ static void FsFreeWatch(FsWatch *watch)
     }
 
     SDL_free(watch->buffer);
+#else
+    while (arrlenu(watch->folders) > 0)
+    {
+        FsWatched folder = arrpop(watch->folders);
+        FsFreeWatched(&folder);
+    }
 #endif
 
-    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
-    {
-        if (FILESYSTEM.watches[i] == watch)
-        {
-            arrdelswap(FILESYSTEM.watches, i);
-            break;
-        }
-    }
-
+    arrfree(watch->folders);
     ECSService_ReleaseCallback((ECSFunction)watch->Changed);
-    FsFreeEntries(watch->entries);
     SDL_free(watch->fullPath);
     SDL_free(watch->folder);
     SDL_free(watch);
@@ -364,72 +688,113 @@ static void FsFreeStoppedWatches(void)
     }
 }
 
-/// @brief Tells a watch that it lost changes ("overflow") or its folder ("gone"), with an empty name, and reports it.
-static void FsTellLost(FsWatch *watch, const char *change, bool gone)
-{
-    if (watch->stopped || watch->gone)
-    {
-        return;
-    }
-
-    watch->gone = gone;
-    ECS_LogWarn(FILESYSTEM.plugin, gone ? "The folder '%s' is gone or can no longer be watched." : "Changes of the folder '%s' were lost; read it again.", watch->folder);
-    watch->Changed(watch->folder, "", change);
-}
-
 #ifdef __linux__
 /// @brief Starts watching a folder with inotify.
 static bool FsStartWatching(FsWatch *watch, const char *fullPath)
 {
-    if (FILESYSTEM.inotify < 0)
+    (void)fullPath;
+    return FsAddFolder(watch, "");
+}
+
+/// @brief Goes through a recursive watch's folders again after changes were lost: it stops watching those that are gone, and watches those that came.
+static void FsWalkAgain(FsWatch *watch)
+{
+    for (usz i = 1; i < arrlenu(watch->folders);)
     {
-        FILESYSTEM.inotify = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (FsIsPlainFolder(watch->folders[i].fullPath))
+        {
+            i++;
+            continue;
+        }
+
+        // the folders inside it go with it, so the walk starts again
+        char *folder = SDL_strdup(watch->folders[i].folder);
+        FsDropFolders(watch, folder != nullptr ? folder : "");
+        SDL_free(folder);
+        i = 1;
     }
 
-    // IN_ONLYDIR: a file is not a folder to watch
-    watch->descriptor = FILESYSTEM.inotify < 0 ? -1 : inotify_add_watch(FILESYSTEM.inotify, fullPath, IN_ONLYDIR | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
-    return watch->descriptor >= 0;
+    FsEnter(watch, "", false);
+}
+
+/// @brief The change that an inotify event says of an entry: "added", "removed" or "changed", or nullptr if it says none.
+static const char *FsChangeOf(u32 mask)
+{
+    if (mask & (u32)(IN_CREATE | IN_MOVED_TO))
+    {
+        return "added";
+    }
+
+    if (mask & (u32)(IN_DELETE | IN_MOVED_FROM))
+    {
+        return "removed";
+    }
+
+    return mask & (u32)(IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB) ? "changed" : nullptr;
+}
+
+/// @brief Tells a watch what an inotify event says of one of its folders, if it is one of them.
+static void FsTellWatch(FsWatch *watch, const struct inotify_event *event)
+{
+    // a watched folder is gone, or an entry of it changed, which a recursive watch enters if it is a folder whose name does not start with a dot
+    bool gone = (event->mask & (u32)(IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0;
+    const char *change = FsChangeOf(event->mask);
+    bool entered = (event->mask & IN_ISDIR) != 0 && event->len > 0 && event->name[0] != '.';
+
+    for (usz i = 0; i < arrlenu(watch->folders) && !watch->stopped; i++)
+    {
+        if (watch->folders[i].descriptor != event->wd)
+        {
+            continue;
+        }
+
+        // a folder inside that is gone is told as removed in its own folder, so only the watch's folder is gone; the folders may change
+        // while it is told, so its own is copied
+        char *folder = i == 0 && gone ? nullptr : SDL_strdup(watch->folders[i].folder);
+
+        if (i == 0 && gone)
+        {
+            FsTellLost(watch, "gone", true);
+        }
+        else if (folder != nullptr && gone)
+        {
+            FsDropFolders(watch, folder);
+        }
+        else if (folder != nullptr && change != nullptr && event->len > 0)
+        {
+            FsTellChange(watch, folder, event->name, change, entered);
+        }
+
+        SDL_free(folder);
+        return;
+    }
 }
 
 /// @brief Tells the watches what an inotify event says.
 static void FsTellEvent(const struct inotify_event *event)
 {
-    const char *change = nullptr;
-
-    if (event->mask & (u32)(IN_CREATE | IN_MOVED_TO))
-    {
-        change = "added";
-    }
-    else if (event->mask & (u32)(IN_DELETE | IN_MOVED_FROM))
-    {
-        change = "removed";
-    }
-    else if (event->mask & (u32)(IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
-    {
-        change = "changed";
-    }
-
-    // inotify dropped changes of some watched folder, or the folder of a watch is gone
-    bool overflow = (event->mask & IN_Q_OVERFLOW) != 0;
-    bool gone = (event->mask & (u32)(IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) != 0;
-
     // the watches may change while they are told, so they are counted again each time
     for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
         FsWatch *watch = FILESYSTEM.watches[i];
 
-        if (overflow || (gone && watch->descriptor == event->wd))
+        // inotify dropped changes of some watched folder
+        if ((event->mask & IN_Q_OVERFLOW) == 0)
         {
-            FsTellLost(watch, overflow ? "overflow" : "gone", gone);
+            FsTellWatch(watch, event);
+            continue;
         }
-        else if (change != nullptr && event->len > 0 && !watch->stopped && watch->descriptor == event->wd)
+
+        FsTellLost(watch, "overflow", false);
+
+        if (watch->recursive && !watch->stopped)
         {
-            watch->Changed(watch->folder, event->name, change);
+            FsWalkAgain(watch);
         }
     }
 }
 
-/// @brief Reads the changes of the watched folders, and tells each watch of its folder's.
+/// @brief Reads the changes of the watched folders, and tells each watch of its folders'.
 static void FsReadChanges(void *data)
 {
     (void)data;
@@ -437,6 +802,11 @@ static void FsReadChanges(void *data)
     alignas(struct inotify_event) char buffer[4096];
     ssize_t length = 0;
     FILESYSTEM.telling = true;
+
+    for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
+    {
+        FsTellLostFolders(FILESYSTEM.watches[i]);
+    }
 
     // a folder that changes all the time cannot hold the main thread: the rest waits for the next call
     for (usz reads = 0; reads < FS_WATCH_READS && (length = read(FILESYSTEM.inotify, buffer, sizeof(buffer))) > 0; reads++)
@@ -454,23 +824,21 @@ static void FsReadChanges(void *data)
 }
 
 #elif defined(_WIN32)
-/// @brief Starts a watch's next read of changes, which ends when its folder changes.
+/// @brief Starts a watch's next read of changes, which ends when its folder changes, or a folder inside it for a recursive watch.
 static bool FsStartRead(FsWatch *watch)
 {
     const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_ATTRIBUTES;
-    watch->reading = ReadDirectoryChangesW(watch->directory, watch->buffer, FS_WATCH_BUFFER, FALSE, filter, nullptr, &watch->overlapped, nullptr) != 0;
+    watch->reading = ReadDirectoryChangesW(watch->directory, watch->buffer, FS_WATCH_BUFFER, watch->recursive ? TRUE : FALSE, filter, nullptr, &watch->overlapped, nullptr) != 0;
     return watch->reading;
 }
 
 /// @brief Starts watching a folder with ReadDirectoryChangesW.
 static bool FsStartWatching(FsWatch *watch, const char *fullPath)
 {
-    int wideLength = MultiByteToWideChar(CP_UTF8, 0, fullPath, -1, nullptr, 0);
-    WCHAR *wide = wideLength <= 0 ? nullptr : SDL_malloc((usz)wideLength * sizeof(WCHAR));
+    WCHAR *wide = FsWide(fullPath);
 
-    if (wide == nullptr || MultiByteToWideChar(CP_UTF8, 0, fullPath, -1, wide, wideLength) <= 0)
+    if (wide == nullptr)
     {
-        SDL_free(wide);
         return false;
     }
 
@@ -479,6 +847,41 @@ static bool FsStartWatching(FsWatch *watch, const char *fullPath)
     watch->buffer = SDL_malloc(FS_WATCH_BUFFER);
     SDL_free(wide);
     return watch->directory != INVALID_HANDLE_VALUE && watch->buffer != nullptr && FsStartRead(watch);
+}
+
+/// @brief Tells a watch of a change at a path in its folder, as Windows names it, with \ between its folders.
+static void FsTellPath(FsWatch *watch, char *path, const char *change)
+{
+    char *name = path;
+
+    for (char *at = path; *at != '\0'; at++)
+    {
+        if (*at == '\\')
+        {
+            *at = '/';
+            name = at + 1;
+        }
+    }
+
+    // what is inside a folder whose name starts with a dot is not watched; ReadDirectoryChangesW watches it too, so its changes are left out here
+    for (const char *at = path; at < name; at++)
+    {
+        if (*at == '.' && (at == path || at[-1] == '/'))
+        {
+            return;
+        }
+    }
+
+    char *folder = nullptr;
+    char *fullPath = nullptr;
+
+    if (SDL_asprintf(&folder, "%s%.*s", watch->folder, (int)(name - path), path) >= 0 && SDL_asprintf(&fullPath, "%s%.*s", watch->fullPath, (int)(name - path), path) >= 0)
+    {
+        FsTellChange(watch, folder, name, change, SDL_strcmp(change, "added") == 0 && FsIsEntered(fullPath, name));
+    }
+
+    SDL_free(fullPath);
+    SDL_free(folder);
 }
 
 /// @brief Tells a watch the changes that its ended read gave.
@@ -493,14 +896,14 @@ static void FsTellChanges(FsWatch *watch, DWORD length)
                              : action == FILE_ACTION_MODIFIED                                          ? "changed"
                                                                                                        : nullptr;
 
-        // the name is UTF-16, without a zero at its end
-        char name[MAX_PATH * 4];
-        int size = WideCharToMultiByte(CP_UTF8, 0, info->FileName, (int)(info->FileNameLength / sizeof(WCHAR)), name, (int)sizeof(name) - 1, nullptr, nullptr);
+        // the path is UTF-16, without a zero at its end
+        char path[MAX_PATH * 4];
+        int size = WideCharToMultiByte(CP_UTF8, 0, info->FileName, (int)(info->FileNameLength / sizeof(WCHAR)), path, (int)sizeof(path) - 1, nullptr, nullptr);
 
         if (change != nullptr && size > 0)
         {
-            name[size] = '\0';
-            watch->Changed(watch->folder, name, change);
+            path[size] = '\0';
+            FsTellPath(watch, path, change);
         }
 
         if (info->NextEntryOffset == 0)
@@ -586,13 +989,14 @@ static SDL_EnumerationResult SDLCALL FsAddEntry(void *data, const char *folder, 
     }
 
     bool found = SDL_GetPathInfo(path, &info);
+    bool plain = found && info.type == SDL_PATHTYPE_DIRECTORY && FsIsPlainFolder(path);
     SDL_free(path);
     char *copy = found ? SDL_strdup(name) : nullptr;
 
     // an entry removed while the folder is read is left out
     if (copy != nullptr)
     {
-        arrput(read->entries, ((FsEntry){.name = copy, .modified = info.modify_time, .size = info.size}));
+        arrput(read->entries, ((FsEntry){.name = copy, .modified = info.modify_time, .size = info.size, .folder = plain}));
     }
 
     return SDL_ENUM_CONTINUE;
@@ -621,32 +1025,31 @@ static bool FsReadFolder(const char *fullPath, FsEntry **retEntries)
     return true;
 }
 
-/// @brief Starts watching a folder by reading it now, so the next read finds what changed after the watch began.
+/// @brief Starts watching a folder by reading it now.
 static bool FsStartWatching(FsWatch *watch, const char *fullPath)
 {
-    SDL_PathInfo info = {0};
-    return SDL_GetPathInfo(fullPath, &info) && info.type == SDL_PATHTYPE_DIRECTORY && SDL_asprintf(&watch->fullPath, "%s%s", fullPath, FsMissingSeparator(fullPath)) >= 0 &&
-           FsReadFolder(watch->fullPath, &watch->entries);
+    (void)fullPath;
+    return FsAddFolder(watch, "");
 }
 
-/// @brief Tells a watch of the entries added, removed and changed between two reads of its folder, which are sorted by name, so they are walked together.
-static void FsTellChanges(FsWatch *watch, const FsEntry *old, const FsEntry *entries)
+/// @brief Tells a watch of the entries added, removed and changed between two reads of one of its folders, which are sorted by name, so they are walked together.
+static void FsTellChanges(FsWatch *watch, const char *folder, const FsEntry *old, const FsEntry *entries)
 {
     usz oldCount = arrlenu(old);
     usz count = arrlenu(entries);
 
-    for (usz oldAt = 0, at = 0; oldAt < oldCount || at < count;)
+    for (usz oldAt = 0, at = 0; (oldAt < oldCount || at < count) && !watch->stopped;)
     {
         int order = oldAt == oldCount ? 1 : at == count ? -1
                                                         : SDL_strcmp(old[oldAt].name, entries[at].name);
-        const char *name = order < 0 ? old[oldAt].name : entries[at].name;
+        const FsEntry *entry = order < 0 ? &old[oldAt] : &entries[at];
         const char *change = order < 0 ? "removed" : order > 0                                                                        ? "added"
                                                  : old[oldAt].modified != entries[at].modified || old[oldAt].size != entries[at].size ? "changed"
                                                                                                                                       : nullptr;
 
-        if (change != nullptr && !watch->stopped)
+        if (change != nullptr)
         {
-            watch->Changed(watch->folder, name, change);
+            FsTellChange(watch, folder, entry->name, change, entry->folder && entry->name[0] != '.');
         }
 
         oldAt += order <= 0 ? 1 : 0;
@@ -660,27 +1063,44 @@ static void FsReadChanges(void *data)
     (void)data;
     FILESYSTEM.telling = true;
 
-    // the watches may change while they are told, so they are counted again each time
+    // the watches and their folders may change while they are told, so they are counted again each time
     for (usz i = 0; i < arrlenu(FILESYSTEM.watches); i++)
     {
         FsWatch *watch = FILESYSTEM.watches[i];
-        FsEntry *entries = nullptr;
+        FsTellLostFolders(watch);
 
-        if (watch->stopped)
+        for (usz j = 0; j < arrlenu(watch->folders) && !watch->stopped; j++)
         {
-            continue;
-        }
+            FsEntry *entries = nullptr;
 
-        if (!FsReadFolder(watch->fullPath, &entries))
-        {
-            FsTellLost(watch, "gone", true);
-            continue;
-        }
+            if (watch->folders[j].lost)
+            {
+                continue;
+            }
 
-        FsEntry *old = watch->entries;
-        watch->entries = entries;
-        FsTellChanges(watch, old, entries);
-        FsFreeEntries(old);
+            // a folder inside that is gone is told as removed in its own folder, so only the watch's folder is gone
+            if (!FsReadFolder(watch->folders[j].fullPath, &entries))
+            {
+                if (j == 0)
+                {
+                    FsTellLost(watch, "gone", true);
+                }
+
+                continue;
+            }
+
+            FsEntry *old = watch->folders[j].entries;
+            watch->folders[j].entries = entries;
+            char *folder = SDL_strdup(watch->folders[j].folder);
+
+            if (folder != nullptr)
+            {
+                FsTellChanges(watch, folder, old, entries);
+            }
+
+            SDL_free(folder);
+            FsFreeEntries(old);
+        }
     }
 
     FILESYSTEM.telling = false;
@@ -688,7 +1108,7 @@ static void FsReadChanges(void *data)
 }
 #endif
 
-static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const char **retError)
+static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, bool recursive, const char **retError)
 {
     *retError = nullptr;
 
@@ -707,11 +1127,12 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const 
     }
 
     // the watch is added first, so a watch that fails is freed as any other, which stops inotify's watch and the timer when nothing else uses them
-    watch->descriptor = -1;
     watch->Changed = Changed;
+    watch->recursive = recursive;
     arrput(FILESYSTEM.watches, watch);
     char *fullPath = nullptr;
-    bool watching = ECSPath_GetFull(&fullPath, folder) == SHUResult_Ok && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 && FsStartWatching(watch, fullPath) &&
+    bool watching = ECSPath_GetFull(&fullPath, folder) == SHUResult_Ok && SDL_asprintf(&watch->folder, "%s%s", folder, FsMissingSeparator(folder)) >= 0 &&
+                    SDL_asprintf(&watch->fullPath, "%s%s", fullPath, FsMissingSeparator(fullPath)) >= 0 && FsStartWatching(watch, fullPath) &&
                     (FILESYSTEM.timer != nullptr || ECSTimer_Start(FILESYSTEM.plugin, &FILESYSTEM.timer, FS_READ_INTERVAL, true, FsReadChanges, nullptr) == SHUResult_Ok);
     ECSPath_Free(fullPath);
 
@@ -721,6 +1142,14 @@ static void *FsWatchFolder(const char *folder, FsChangedFunction Changed, const 
         FsStop(watch);
         return nullptr;
     }
+
+#ifndef _WIN32
+    // the folders inside are watched before the watch is given, so a change in any of them after that is told
+    if (recursive)
+    {
+        FsEnter(watch, "", false);
+    }
+#endif
 
     return watch;
 }
@@ -803,11 +1232,12 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param to The new path; a relative path starts at the executable's folder\n"
          "@param error Why it failed, or nothing\n"
          "@return False if it fails"},
-        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed, out string error)",
-         "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change\n"
+        {"watch", (ECSFunction)FsWatchFolder, "handle<fs.watch>(string folder, keep fn<void(string folder, string name, string change)> changed, bool recursive, out string error)",
+         "Watch a folder: changed gets each entry that is added, removed or changed in it, with the change; and in the folders inside it too when it is recursive\n"
          "@param folder The folder's path; a relative path starts at the executable's folder\n"
-         "@param changed Called on the main thread for each change: its folder is the folder as given, ending with /, its name the entry's name, and its change \"added\", \"removed\" or \"changed\"; with an empty name, \"overflow\" says that changes were lost, so the folder is read "
-         "again, and \"gone\" that the folder was removed or can no longer be watched; not called after the watch stops\n"
+         "@param changed Called on the main thread for each change: its folder is the folder of the entry, as given and ending with /, its name the entry's name, and its change \"added\", \"removed\" or \"changed\"; with an empty name, "
+         "\"overflow\" says that changes of its folder were lost, so the folder is read again, and \"gone\" that the watched folder was removed or can no longer be watched; not called after the watch stops\n"
+         "@param recursive Watch the folders inside too, as deep as they go, apart from those whose names start with a dot, such as .git; a folder that comes is watched, and what it holds is told as added\n"
          "@param error Why the folder cannot be watched, or nothing\n"
          "@return The watch, or nothing if the folder cannot be watched, or it is a file"},
         {"unwatch", (ECSFunction)FsUnwatch, "void(handle<fs.watch> watch)",
