@@ -11,7 +11,7 @@ local STYLES = ui.styles()
 local STATE_VERSION = 1
 
 local folder = "" -- the shown folder, ending with a slash
-local watches = {}
+local watching = nil ---@type fs.watch?
 local panels = {} ---@type table<ecs.Panel, table>
 
 ---What the tool gives the files panel. Every field may be left out.
@@ -57,57 +57,43 @@ local function pathOf(dir, name)
   return dir == "" and name or (dir .. "/" .. name)
 end
 
--- stops the watches of a folder that is gone and of the folders in it, and forgets their entries
-local function unwatch(dir)
-  for watched, w in pairs(watches) do
-    if watched == dir or watched:sub(1, #dir + 1) == dir .. "/" then
-      if w ~= true then
-        w:stop()
-      end
-      watches[watched] = nil
-      listed[watched] = nil
+-- forgets the entries of a folder and of the folders in it, so they are listed again
+local function forget(dir)
+  for listedDir in pairs(listed) do
+    if listedDir == dir or listedDir:sub(1, #dir + 1) == dir .. "/" then
+      listed[listedDir] = nil
     end
   end
 end
 
--- watches a folder and every folder in it; a folder made later is watched when it comes, and one removed stops its watches
-local function watch(dir)
-  if watches[dir] then
-    return
-  end
-  watches[dir] = fs.watch(folder .. dir, function(_, name, kind)
-    listed[dir] = nil
-    if kind == "removed" then
-      unwatch(pathOf(dir, name))
+-- watches the folder and the folders in it, which fs's recursive watch follows as they come and go; a change's folder is the folder's path and
+-- the path in it, ending with a slash, and its name is empty when the whole folder changed, at "overflow" or "gone"
+local function watch()
+  watching = fs.watch(folder, function(at, name, kind)
+    local dir = at:sub(#folder + 1, -2)
+    if name == "" then
+      listed = {}
     else
-      for _, entry in ipairs(entriesOf(dir)) do
-        if entry.type == "folder" then
-          watch(pathOf(dir, entry.name))
-        end
+      listed[dir] = nil
+      if kind == "removed" then
+        forget(pathOf(dir, name))
       end
     end
     ecs.event.emit("files.changed")
-  end) or true
+  end, true)
   -- what came before the watch started is listed after it, so no change falls between
-  listed[dir] = nil
-  for _, entry in ipairs(entriesOf(dir)) do
-    if entry.type == "folder" then
-      watch(pathOf(dir, entry.name))
-    end
-  end
+  listed = {}
 end
 
 local function setFolder(path)
-  for _, w in pairs(watches) do
-    if w ~= true then
-      w:stop()
-    end
+  if watching then
+    watching:stop()
+    watching = nil
   end
-  watches = {}
   listed = {}
   folder = path
   if folder ~= "" then
-    watch("")
+    watch()
   end
   ecs.event.emit("files.changed")
 end
