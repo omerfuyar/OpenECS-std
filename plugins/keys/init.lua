@@ -20,22 +20,31 @@ local function keyScope(scope)
   return scope ~= TOOL and scope or nil
 end
 
--- a section's title: the whole tool, the keys after the core prefix, or a panel type's title
+-- a section's title: the whole tool, the keys after the core prefix, all of a plugin's panels, or a panel type's title;
+-- a plugin's name has no dot, and a panel type's has one
 local function scopeTitle(scope, titles)
   if scope == TOOL then
     return "Everywhere"
   elseif scope == PREFIX then
     return ("After the prefix, %s"):format(tostring(ecs.setting.get("ecs.prefix")))
+  elseif not scope:find(".", 1, true) then
+    return ("Every panel of %s"):format(scope)
   end
 
   return titles[scope] and ("%s (%s)"):format(titles[scope], scope) or scope
+end
+
+-- sorts plugins and panel types by name, with each plugin just before its own panel types, whatever other plugins' names hold
+local function byScope(a, b)
+  return (a:gsub("%.", "\1")) < (b:gsub("%.", "\1"))
 end
 
 -- each panel's state is an object of Keys, whose functions are methods
 local Keys = {}
 Keys.__index = Keys
 
--- the bindings that run, in their scopes' order: the whole tool, the prefix, then the panel types by name; each scope's by key
+-- the bindings that run, in their scopes' order: the whole tool, the prefix, then the plugins and panel types by name, so a plugin's
+-- section comes before its panel types'; each scope's by key
 function Keys:readBindings()
   local functions, titles = {}, {}
 
@@ -62,12 +71,14 @@ function Keys:readBindings()
   end
 
   local function order(scope)
-    return scope == TOOL and "0" or scope == PREFIX and "1" or "2" .. scope
+    return scope == TOOL and 0 or scope == PREFIX and 1 or 2
   end
 
   table.sort(bindings, function(a, b)
-    if a.scope ~= b.scope then
+    if order(a.scope) ~= order(b.scope) then
       return order(a.scope) < order(b.scope)
+    elseif a.scope ~= b.scope then
+      return byScope(a.scope, b.scope)
     end
 
     return a.key < b.key
@@ -186,15 +197,21 @@ function Keys:bindingRow(binding)
   })
 end
 
--- the scopes a new key may go to: the whole tool, the prefix, and the panel types
+-- the scopes a new key may go to: the whole tool, the prefix, and the panel types, each plugin's before its own
 function Keys:scopeChoices()
-  local scopes, names = { TOOL, PREFIX }, {}
+  local scopes, names, plugins = { TOOL, PREFIX }, {}, {}
 
   for name in pairs(self.titles) do
+    local plugin = name:match("^[^.]+")
     names[#names + 1] = name
+
+    if not plugins[plugin] then
+      plugins[plugin] = true
+      names[#names + 1] = plugin
+    end
   end
 
-  table.sort(names)
+  table.sort(names, byScope)
 
   for _, name in ipairs(names) do
     scopes[#scopes + 1] = name
