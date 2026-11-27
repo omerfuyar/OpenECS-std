@@ -52,12 +52,13 @@ for _, entry in ipairs(SIZES) do
   ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] })
 end
 
--- whether the panels of ui.panelType draw on the GPU; a panel type takes it when it is registered, as its surface cannot change after
+-- whether the panels of ui.panelType draw on the GPU, where gpu can draw; a panel type takes it when it is registered, as its surface cannot
+-- change after
 ecs.setting.declare({
   name = "gpu",
   type = "bool",
-  default = false,
-  description = "Draw ui's panels on the GPU, where there is one; panels take it when their plugin loads, so at the next start",
+  default = true,
+  description = "Draw ui's panels on the GPU, where there is one, else into pixels; panels take it when their plugin loads, so at the next start",
 })
 
 readSizes()
