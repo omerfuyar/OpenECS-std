@@ -1415,7 +1415,7 @@ static inline SHUResult Ui__PanelSave(void *data)
 }
 
 /// @brief Completes a panel type's description with ui's part, for ECSPanelType_Register, as Lua's ui.panelType does: its Draw shows what View
-/// describes, its Event gives each event to ui first, and its Destroy forgets the panel. The type's own functions get the plugin's own state, which its
+/// describes, its Event gives each event to ui first, and its Destroy forgets the panel. Its surface is the GPU when ui.surfaceType says so. The type's own functions get the plugin's own state, which its
 /// Create gives. ECSPanelType_Register(plugin, Ui_PanelType(&ui, &desc)) registers it, so the type is the plugin's own.
 /// @param ui The plugin's Ui, which Ui_Init prepared; it must live as long as the type, as a static one does.
 /// @return What ECSPanelType_Register takes; an empty description, which it refuses, when the description has no View, or has a Draw, or this file
@@ -1432,6 +1432,15 @@ static inline const ECSPanelTypeDesc *Ui_PanelType(Ui *ui, const UiPanelTypeDesc
 
     Ui__PanelType *type = &Ui__panelTypes[Ui__panelTypeCount++];
     *type = (Ui__PanelType){.desc = *desc, .ui = ui, .completed = desc->type};
+
+    // the setting ui.gpu puts the panels on the GPU, where gpu can draw; a type that asks for the GPU itself is on it either way
+    const char *surface = ui->functions.surfaceType();
+
+    if (surface != nullptr && strcmp(surface, "gpu") == 0)
+    {
+        type->completed.surface = ECSSurfaceType_Gpu;
+    }
+
     type->completed.Create = Ui__PanelCreate;
     type->completed.Destroy = Ui__PanelDestroy;
     type->completed.Draw = Ui__PanelDraw;
