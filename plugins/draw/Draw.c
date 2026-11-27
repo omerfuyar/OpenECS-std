@@ -980,6 +980,38 @@ static const char *DrawFontFile(void *fontHandle)
     return font->path;
 }
 
+// the words in the order that styledFont takes them, so a style read back is one that styledFont takes again
+static const char *DrawFontStyle(void *fontHandle)
+{
+    DrawFont *font = fontHandle;
+    static const struct
+    {
+        TTF_FontStyleFlags flag;
+        const char *word;
+    } WORDS[] = {{TTF_STYLE_BOLD, "bold"}, {TTF_STYLE_ITALIC, "italic"}, {TTF_STYLE_UNDERLINE, "underline"}, {TTF_STYLE_STRIKETHROUGH, "strike"}};
+    static const char *STYLES[16] = {0};
+    static char texts[16][32];
+    usz index = (usz)(font->style & 0xFU);
+
+    if (STYLES[index] == nullptr)
+    {
+        texts[index][0] = '\0';
+
+        for (usz i = 0; i < SDL_arraysize(WORDS); i++)
+        {
+            if ((font->style & WORDS[i].flag) != 0)
+            {
+                SDL_strlcat(texts[index], texts[index][0] == '\0' ? "" : " ", sizeof(texts[index]));
+                SDL_strlcat(texts[index], WORDS[i].word, sizeof(texts[index]));
+            }
+        }
+
+        STYLES[index] = texts[index];
+    }
+
+    return STYLES[index];
+}
+
 static void DrawMeasure(void *font, const char *text, f32 size, f32 scale, f32 *retWidth, f32 *retLineHeight);
 
 static f32 DrawText(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
@@ -1307,6 +1339,10 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param style Words separated by spaces: bold, italic, underline and strike, such as \"bold italic\"; empty for the font itself\n"
          "@param error Why there is no font, as memory ran out; nothing if there is one\n"
          "@return The font, the same handle for the same name and style"},
+        {"fontStyle", (ECSFunction)DrawFontStyle, "string(handle<draw.font> font)",
+         "Give the style of a font, as styledFont takes it, for plugins that draw text in other ways, such as gpu\n"
+         "@param font The font\n"
+         "@return Words separated by spaces, of bold, italic, underline and strike in that order; empty for the font itself"},
         {"fontFile", (ECSFunction)DrawFontFile, "string(handle<draw.font> font)",
          "Give the file a font is read from; a setting that names another file changes it\n"
          "@param font The font\n"
