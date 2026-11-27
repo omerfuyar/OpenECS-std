@@ -294,6 +294,12 @@ static GpuFrame *GpuFrameOf(ECSSurface *surface)
     return frame;
 }
 
+// without a GPU device, or a renderer on it, gpu draws nothing, and a plugin chooses pixels instead
+static bool GpuAvailable(void)
+{
+    return GPU.renderer != nullptr;
+}
+
 static void GpuClear(ECSSurface *surface, ECSColor color)
 {
     GpuFrame *frame = GpuFrameOf(surface);
@@ -1930,6 +1936,9 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
         const char *signature;
         const char *description;
     } functions[] = {
+        {"available", (ECSFunction)GpuAvailable, "bool()",
+         "Tell whether gpu can draw: OpenECS has a GPU device, and gpu made its renderer on it; without one, a plugin draws its panels into pixels\n"
+         "@return Whether gpu draws"},
         {"clear", (ECSFunction)GpuClear, "void(handle<ecs.surface> surface, color color)",
          "Fill the whole surface with a colour, replacing what it holds\n"
          "@param surface The GPU panel's surface, as its draw gives it\n"

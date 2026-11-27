@@ -1,5 +1,6 @@
 -- The ui standard plugin: user-interface elements with layout (DESIGN 5).
--- A panel describes its elements in draw, each time, and ui lays them out, draws them with the draw plugin, and calls their callbacks on events.
+-- A panel describes its elements in draw, each time, and ui lays them out, draws them with the draw plugin into pixels or with the gpu plugin
+-- on the GPU, as the panel's surface is, and calls their callbacks on events.
 -- Its elements are generic, so that plugins build their own views from them.
 
 local ecs = require("ecs")
@@ -50,6 +51,14 @@ end
 for _, entry in ipairs(SIZES) do
   ecs.setting.declare({ name = entry[1], type = "number", default = entry[2], description = entry[3] })
 end
+
+-- whether the panels of ui.panelType draw on the GPU; a panel type takes it when it is registered, as its surface cannot change after
+ecs.setting.declare({
+  name = "gpu",
+  type = "bool",
+  default = false,
+  description = "Draw ui's panels on the GPU, where there is one; panels take it when their plugin loads, so at the next start",
+})
 
 readSizes()
 
@@ -219,11 +228,54 @@ local function record(name, left, top, right, bottom)
   return call
 end
 
+-- draws on a GPU surface: gpu's functions take draw's arguments, but for images, which become textures. It also holds what ui asks gpu, as
+-- the main chunk has room for few more locals
+local onGpu
+
+do
+  local gpu = require("gpu")
+
+  onGpu = {
+    fill = gpu.fill,
+    outline = gpu.outline,
+    rounded = gpu.rounded,
+    roundedOutline = gpu.roundedOutline,
+    circle = gpu.circle,
+    text = gpu.text,
+    triangles = gpu.triangles,
+    clip = gpu.clip,
+    available = gpu.available,
+  }
+
+  -- each image's texture: ui reads its images from their files once and never changes their pixels, so a texture made once stays right; an
+  -- image that is collected takes its texture with it
+  local textures = setmetatable({}, { __mode = "k" })
+
+  function onGpu.image(surface, picture, x, y, width, height)
+    local texture = textures[picture]
+
+    if texture == nil then
+      local imageWidth, imageHeight = drawn.imageSize(picture)
+      texture = gpu.texture(imageWidth, imageHeight, drawn.imagePixels(picture)) or false
+      textures[picture] = texture
+    end
+
+    if texture then
+      gpu.image(surface, texture, x, y, width, height)
+    end
+  end
+end
+
+-- the functions that draw on a surface: draw's for pixels, gpu's for a GPU surface
+function onGpu.painterOf(surface)
+  return surface.type == "gpu" and onGpu or drawn
+end
+
 draw = setmetatable({}, { __index = drawn })
 
 function draw.fill(surface, x, y, width, height, color)
   if not recording then
-    return drawn.fill(surface, x, y, width, height, color)
+    return onGpu.painterOf(surface).fill(surface, x, y, width, height, color)
   end
 
   local call = record("fill", x, y, x + width, y + height)
@@ -232,7 +284,7 @@ end
 
 function draw.outline(surface, x, y, width, height, thickness, color)
   if not recording then
-    return drawn.outline(surface, x, y, width, height, thickness, color)
+    return onGpu.painterOf(surface).outline(surface, x, y, width, height, thickness, color)
   end
 
   local call = record("outline", x, y, x + width, y + height)
@@ -241,7 +293,7 @@ end
 
 function draw.rounded(surface, x, y, width, height, radius, color)
   if not recording then
-    return drawn.rounded(surface, x, y, width, height, radius, color)
+    return onGpu.painterOf(surface).rounded(surface, x, y, width, height, radius, color)
   end
 
   local call = record("rounded", x, y, x + width, y + height)
@@ -250,7 +302,7 @@ end
 
 function draw.roundedOutline(surface, x, y, width, height, radius, thickness, color)
   if not recording then
-    return drawn.roundedOutline(surface, x, y, width, height, radius, thickness, color)
+    return onGpu.painterOf(surface).roundedOutline(surface, x, y, width, height, radius, thickness, color)
   end
 
   local call = record("roundedOutline", x, y, x + width, y + height)
@@ -259,7 +311,7 @@ end
 
 function draw.circle(surface, x, y, radius, thickness, color)
   if not recording then
-    return drawn.circle(surface, x, y, radius, thickness, color)
+    return onGpu.painterOf(surface).circle(surface, x, y, radius, thickness, color)
   end
 
   local call = record("circle", x - radius, y - radius, x + radius, y + radius)
@@ -268,7 +320,7 @@ end
 
 function draw.image(surface, picture, x, y, width, height)
   if not recording then
-    return drawn.image(surface, picture, x, y, width, height)
+    return onGpu.painterOf(surface).image(surface, picture, x, y, width, height)
   end
 
   local call = record("image", x, y, x + width, y + height)
@@ -277,7 +329,7 @@ end
 
 function draw.text(surface, font, text, x, y, textSize, color)
   if not recording then
-    return drawn.text(surface, font, text, x, y, textSize, color)
+    return onGpu.painterOf(surface).text(surface, font, text, x, y, textSize, color)
   end
 
   local width, line = measureKept(font, text, textSize)
@@ -294,7 +346,7 @@ end
 -- triangles compare by the bytes of their buffers, which a plugin may fill again in place, so their call keeps the bytes as its key
 function draw.triangles(surface, points, indices, color)
   if not recording then
-    return drawn.triangles(surface, points, indices, color)
+    return onGpu.painterOf(surface).triangles(surface, points, indices, color)
   end
 
   local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
@@ -336,7 +388,7 @@ end
 
 function draw.clip(surface, x, y, width, height, body)
   if not recording then
-    return drawn.clip(surface, x, y, width, height, body)
+    return onGpu.painterOf(surface).clip(surface, x, y, width, height, body)
   end
 
   local outer = recordClip
@@ -796,12 +848,12 @@ do
   end
 end
 
--- what a replay draws: drawn.clip takes a function, so the replay's functions read it here, made once, and not from closures made each show
-local replaying = { surface = nil, calls = nil, count = 0, area = nil, from = 1, to = 0 }
+-- what a replay draws, and with which functions: their clip takes a function, so the replay's functions read it here, made once, and not from closures made each show
+local replaying = { surface = nil, calls = nil, count = 0, area = nil, from = 1, to = 0, paint = drawn }
 
 -- makes the recorded calls from replaying.from to replaying.to that reach the area, or all of them
 local function replayGroup()
-  local surface, calls, area = replaying.surface, replaying.calls, replaying.area
+  local surface, calls, area, painter = replaying.surface, replaying.calls, replaying.area, replaying.paint
 
   for k = replaying.from, replaying.to do
     local call = calls[k]
@@ -810,21 +862,21 @@ local function replayGroup()
       local name = call.name
 
       if name == "fill" then
-        drawn.fill(surface, call[1], call[2], call[3], call[4], call[5])
+        painter.fill(surface, call[1], call[2], call[3], call[4], call[5])
       elseif name == "text" then
-        drawn.text(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+        painter.text(surface, call[1], call[2], call[3], call[4], call[5], call[6])
       elseif name == "outline" then
-        drawn.outline(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+        painter.outline(surface, call[1], call[2], call[3], call[4], call[5], call[6])
       elseif name == "circle" then
-        drawn.circle(surface, call[1], call[2], call[3], call[4], call[5])
+        painter.circle(surface, call[1], call[2], call[3], call[4], call[5])
       elseif name == "rounded" then
-        drawn.rounded(surface, call[1], call[2], call[3], call[4], call[5], call[6])
+        painter.rounded(surface, call[1], call[2], call[3], call[4], call[5], call[6])
       elseif name == "roundedOutline" then
-        drawn.roundedOutline(surface, call[1], call[2], call[3], call[4], call[5], call[6], call[7])
+        painter.roundedOutline(surface, call[1], call[2], call[3], call[4], call[5], call[6], call[7])
       elseif name == "image" then
-        drawn.image(surface, call[1], call[2], call[3], call[4], call[5])
+        painter.image(surface, call[1], call[2], call[3], call[4], call[5])
       else
-        drawn.triangles(surface, call[1], call[2], call[3])
+        painter.triangles(surface, call[1], call[2], call[3])
       end
     end
   end
@@ -853,7 +905,7 @@ local function replayCalls()
     replaying.from, replaying.to = i, last
 
     if reaches and clip then
-      drawn.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], replayGroup)
+      replaying.paint.clip(surface, clip[1], clip[2], clip[3] - clip[1], clip[4] - clip[2], replayGroup)
     elseif reaches then
       replayGroup()
     end
@@ -865,9 +917,11 @@ end
 -- makes the recorded calls that reach an area, or all of them, each inside its clip
 local function replay(surface, calls, count, area)
   replaying.surface, replaying.calls, replaying.count, replaying.area = surface, calls, count, area
+  -- a GPU surface keeps nothing of its last draw, but a show fills the whole surface first, so nothing of it shows
+  replaying.paint = onGpu.painterOf(surface)
 
   if area then
-    drawn.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], replayCalls)
+    replaying.paint.clip(surface, area[1], area[2], area[3] - area[1], area[4] - area[2], replayCalls)
   else
     replayCalls()
   end
@@ -5468,6 +5522,11 @@ end
 -- type's own event the events ui did not take, and its destroy forgets the panel before the type's own destroy. Each panel's state is the
 -- type's own, which its create gives, kept with the panel, so the type's functions get their own state, as C's Ui_PanelType does. The plugin
 -- registers what it gives with ecs.panel.registerType, so the type is the plugin's own.
+-- the surface that ui.panelType gives its panels now: "gpu" when the setting ui.gpu is on and gpu can draw, else "pixels"
+function services.surfaceType()
+  return ecs.setting.get("ui.gpu") and onGpu.available() and "gpu" or "pixels"
+end
+
 function services.panelType(desc)
   ecs.check(type(desc) == "table" and type(desc.view) == "function", "ui.panelType needs view, a function that gives the panel's elements.")
   ecs.check(desc.draw == nil, "ui.panelType draws the panel itself; a panel type built with it gives view, not draw.")
@@ -5479,6 +5538,11 @@ function services.panelType(desc)
 
   local create, view, event, destroy, saveState, save = desc.create, desc.view, desc.event, desc.destroy, desc.saveState, desc.save
   completed.view = nil
+
+  -- the setting ui.gpu puts the panels on the GPU, where gpu can draw; a type that asks for the GPU itself is on it either way
+  if services.surfaceType() == "gpu" then
+    completed.surface = "gpu"
+  end
 
   function completed.create(panel, saved, version)
     return { panel = panel, own = create and create(panel, saved, version) }
@@ -5897,6 +5961,13 @@ ecs.service.register({
         .. "its event gets only the events that ui did not take, and its functions get the state that its create gives (ui.PanelTypeDesc)\n"
         .. "@return The description, with draw, event and destroy, and the functions that get each panel's state given it with its panel",
     fn = services.panelType,
+  },
+  surfaceType = {
+    sig = "string()",
+    doc = "Give the surface that ui.panelType and Ui_PanelType give a panel type now: gpu when the setting ui.gpu is on and the gpu plugin can draw, "
+        .. "else pixels; a panel type takes it when it is completed, as its plugin loads\n"
+        .. "@return \"gpu\" or \"pixels\"",
+    fn = services.surfaceType,
   },
   rect = {
     sig = "value<ui.Rect?>(handle<ecs.panel> panel, string id)",
