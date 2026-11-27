@@ -41,6 +41,8 @@ typedef struct GpuFrame
     SDL_GPUCommandBuffer *commands; // the command buffer of the open render pass, or nullptr
     SDL_GPURenderPass *pass;        // the render pass that pipelines draw in, or nullptr
     bool depthCleared;              // the frame's first render pass cleared the depth texture
+    bool clipped;                   // a clip is on: shapes and pipelines draw only inside clip
+    SDL_Rect clip;                  // in pixels, empty when the clips do not overlap
 } GpuFrame;
 
 /// @brief A buffer on the GPU of vertices or of indices, 32-bit numbers.
@@ -56,6 +58,7 @@ typedef struct GpuFont
 {
     char *file;
     i32 pixels;
+    TTF_FontStyleFlags style;
     TTF_Font *font;
 } GpuFont;
 
@@ -89,10 +92,11 @@ static struct
     } depthTextures[GPU_DEPTH_TEXTURES]; // by size
     usz nextDepthTexture;                // the one a new size replaces
     bool ttfStarted;
-    TTF_TextEngine *textEngine;          // keeps the glyphs of text in textures on the device, or nullptr without a GPU renderer
-    const char *(*FontFile)(void *font); // draw.fontFile, which gives the file of a draw.font
-    GpuFont *fonts;                      // stb_ds array of every font file and size that text was drawn in
-    GpuAtlas *atlases;                   // stb_ds array of the text engine's textures, as the renderer sees them
+    TTF_TextEngine *textEngine;           // keeps the glyphs of text in textures on the device, or nullptr without a GPU renderer
+    const char *(*FontFile)(void *font);  // draw.fontFile, which gives the file of a draw.font
+    const char *(*FontStyle)(void *font); // draw.fontStyle, which gives its style in words
+    GpuFont *fonts;                       // stb_ds array of every font file and size that text was drawn in
+    GpuAtlas *atlases;                    // stb_ds array of the text engine's textures, as the renderer sees them
     bool glslangStarted;
     SDL_SharedObject *d3dcompiler; // Windows' HLSL compiler, d3dcompiler_47.dll, loaded the first time a shader needs DXBC
     void *compiled;                // the SPIR-V that gpu.compile gave last, kept until its next call
@@ -219,6 +223,7 @@ static void GpuTarget(GpuFrame *frame, ECSColor color)
     GpuEndPass(frame);
     GPU.rendered = true;
     SDL_SetRenderTarget(GPU.renderer, frame->target);
+    SDL_SetRenderClipRect(GPU.renderer, frame->clipped ? &frame->clip : nullptr);
     SDL_SetRenderDrawColor(GPU.renderer, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, (color >> 24) & 0xFF);
 }
 
@@ -298,9 +303,20 @@ static void GpuClear(ECSSurface *surface, ECSColor color)
         return;
     }
 
-    // clearing replaces the pixels, whatever the blend mode
+    // clearing replaces the pixels, whatever the blend mode; inside a clip, only the clip's
     GpuTarget(frame, color);
-    SDL_RenderClear(GPU.renderer);
+
+    if (frame->clipped)
+    {
+        const SDL_FRect rect = {(f32)frame->clip.x, (f32)frame->clip.y, (f32)frame->clip.w, (f32)frame->clip.h};
+        SDL_SetRenderDrawBlendMode(GPU.renderer, SDL_BLENDMODE_NONE);
+        SDL_RenderFillRect(GPU.renderer, &rect);
+        SDL_SetRenderDrawBlendMode(GPU.renderer, SDL_BLENDMODE_BLEND);
+    }
+    else
+    {
+        SDL_RenderClear(GPU.renderer);
+    }
 }
 
 static void GpuFill(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, ECSColor color)
@@ -452,6 +468,252 @@ static void GpuMesh(ECSSurface *surface, SHUSlice points, SHUSlice colors, SHUSl
     SDL_free(pointColors);
 }
 
+static void GpuOutline(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 thickness, ECSColor color)
+{
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
+    // whole pixels, as draw's outline, so the two draw the same edge
+    f32 scale = surface->scale;
+    f32 left = SDL_roundf(x * scale);
+    f32 top = SDL_roundf(y * scale);
+    f32 w = SDL_roundf(width * scale);
+    f32 h = SDL_roundf(height * scale);
+    f32 edge = SDL_max(1.0f, SDL_roundf(thickness * scale));
+    edge = SDL_min(edge, SDL_floorf(SDL_min(w, h) / 2.0f) + 1.0f);
+
+    if (w <= 0.0f || h <= 0.0f)
+    {
+        return;
+    }
+
+    const SDL_FRect rects[] = {{left, top, w, edge}, {left, top + h - edge, w, edge}, {left, top + edge, edge, h - 2.0f * edge}, {left + w - edge, top + edge, edge, h - 2.0f * edge}};
+    GpuTarget(frame, color);
+
+    for (usz i = 0; i < SDL_arraysize(rects); i++)
+    {
+        if (rects[i].w > 0.0f && rects[i].h > 0.0f)
+        {
+            SDL_RenderFillRect(GPU.renderer, &rects[i]);
+        }
+    }
+}
+
+/// @brief The most points a corner of a rounded shape has.
+#define GPU_CORNER_POINTS 33
+
+/// @brief A rectangle with rounded corners in pixels, whose edges are drawn as rings of points around it.
+typedef struct GpuRounded
+{
+    f32 centerX;
+    f32 centerY;
+    f32 halfWidth;
+    f32 halfHeight;
+    f32 radius;   // of the corners, at most half the shorter side
+    i32 segments; // of each corner, the same for every ring, so rings pair point by point
+} GpuRounded;
+
+/// @brief Puts the points of the shape's edge moved outward by a distance, inward when negative, at points, 4 * (segments + 1) of them; the
+/// corners grow or shrink with it, and a corner that would shrink past nothing stays sharp.
+static void GpuRoundedRing(const GpuRounded *shape, f32 distance, f32 *points)
+{
+    f32 halfWidth = SDL_max(shape->halfWidth + distance, 0.0f);
+    f32 halfHeight = SDL_max(shape->halfHeight + distance, 0.0f);
+    f32 radius = SDL_clamp(shape->radius + distance, 0.0f, SDL_min(halfWidth, halfHeight));
+    // the corners' centres, going round from the bottom right, as the angles go with y down
+    const f32 signs[4][2] = {{1.0f, 1.0f}, {-1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}};
+    usz written = 0;
+
+    for (i32 corner = 0; corner < 4; corner++)
+    {
+        f32 cornerX = shape->centerX + signs[corner][0] * (halfWidth - radius);
+        f32 cornerY = shape->centerY + signs[corner][1] * (halfHeight - radius);
+
+        for (i32 i = 0; i <= shape->segments; i++)
+        {
+            f32 angle = ((f32)corner + (f32)i / (f32)shape->segments) * SDL_PI_F / 2.0f;
+            points[written++] = cornerX + SDL_cosf(angle) * radius;
+            points[written++] = cornerY + SDL_sinf(angle) * radius;
+        }
+    }
+}
+
+/// @brief Puts at indices the triangles that join a ring to the one before it, two for each pair of points, and gives how many indices it put.
+static i32 GpuRoundedJoin(int *indices, i32 ring, i32 ringPoints)
+{
+    for (i32 i = 0; i < ringPoints; i++)
+    {
+        int outerHere = (ring - 1) * ringPoints + i;
+        int outerNext = (ring - 1) * ringPoints + (i + 1) % ringPoints;
+        int innerHere = ring * ringPoints + i;
+        int innerNext = ring * ringPoints + (i + 1) % ringPoints;
+        const int quad[] = {outerHere, outerNext, innerNext, outerHere, innerNext, innerHere};
+        SDL_memcpy(indices + (usz)i * 6, quad, sizeof(quad));
+    }
+
+    return 6 * ringPoints;
+}
+
+/// @brief Puts at indices the triangles that fan from the middle point to a ring's points, and gives how many indices it put.
+static i32 GpuRoundedFan(int *indices, i32 ring, i32 ringPoints, int middle)
+{
+    for (i32 i = 0; i < ringPoints; i++)
+    {
+        const int fan[] = {middle, ring * ringPoints + i, ring * ringPoints + (i + 1) % ringPoints};
+        SDL_memcpy(indices + (usz)i * 3, fan, sizeof(fan));
+    }
+
+    return 3 * ringPoints;
+}
+
+/// @brief Draws a rounded rectangle in pixels, or a ring of one inward from its edge, with edges half a pixel soft on each side, as draw's
+/// are: rings of points at each soft edge, the inner points of the colour and the outer clear, joined by triangles.
+static void GpuRoundedPixels(GpuFrame *frame, f32 x, f32 y, f32 width, f32 height, f32 radius, f32 thickness, ECSColor color)
+{
+    if (width <= 0.0f || height <= 0.0f)
+    {
+        return;
+    }
+
+    GpuRounded shape = {x + width / 2.0f, y + height / 2.0f, width / 2.0f, height / 2.0f, SDL_clamp(radius, 0.0f, SDL_min(width, height) / 2.0f), 1};
+    // a point about every two pixels of the corner's curve, for the widest ring
+    shape.segments = SDL_clamp((i32)SDL_ceilf((shape.radius + 0.5f) * SDL_PI_F / 4.0f), 1, GPU_CORNER_POINTS - 1);
+    // a ring that reaches the middle is the whole shape
+    bool filled = thickness <= 0.0f || thickness >= SDL_min(shape.halfWidth, shape.halfHeight);
+
+    // the rings' distances out from the edge, and whether their points are clear; the solid rings of a band, half a pixel inside each of its
+    // edges, meet in its middle when it is thin; a fill has a point in the middle too
+    const f32 ringsBy[4] = {0.5f, filled ? -0.5f : SDL_max(-0.5f, -thickness / 2.0f), filled ? 0.0f : SDL_min(0.5f - thickness, -thickness / 2.0f), -thickness - 0.5f};
+    const bool clear[4] = {true, false, false, true};
+    i32 ringCount = filled ? 2 : 4;
+    i32 ringPoints = 4 * (shape.segments + 1);
+    i32 count = ringCount * ringPoints + (filled ? 1 : 0);
+    usz indexCount = (usz)ringPoints * ((usz)ringCount * 6 - 6 + (filled ? 3 : 0));
+    f32 *points = SDL_malloc((usz)count * 2 * sizeof(f32));
+    SDL_FColor *colors = SDL_malloc((usz)count * sizeof(SDL_FColor));
+    int *indices = SDL_malloc(indexCount * sizeof(int));
+
+    if (points != nullptr && colors != nullptr && indices != nullptr)
+    {
+        const SDL_FColor solid = GpuToFColor(color);
+        const SDL_FColor faded = {solid.r, solid.g, solid.b, 0.0f};
+        i32 written = 0;
+
+        for (i32 ring = 0; ring < ringCount; ring++)
+        {
+            GpuRoundedRing(&shape, ringsBy[ring], points + (usz)ring * (usz)ringPoints * 2);
+
+            for (i32 i = 0; i < ringPoints; i++)
+            {
+                colors[ring * ringPoints + i] = clear[ring] ? faded : solid;
+            }
+
+            written += ring > 0 ? GpuRoundedJoin(indices + written, ring, ringPoints) : 0;
+        }
+
+        // a fill: the inner ring's points fan from the middle
+        if (filled)
+        {
+            usz middle = (usz)count - 1;
+            points[2 * middle] = shape.centerX;
+            points[2 * middle + 1] = shape.centerY;
+            colors[middle] = solid;
+            written += GpuRoundedFan(indices + written, 1, ringPoints, (int)middle);
+        }
+
+        GpuTarget(frame, color);
+        SDL_RenderGeometryRaw(GPU.renderer, nullptr, points, 2 * sizeof(f32), colors, sizeof(SDL_FColor), nullptr, 0, count, indices, written, sizeof(int));
+    }
+
+    SDL_free(points);
+    SDL_free(colors);
+    SDL_free(indices);
+}
+
+// a circle is a square whose corners are rounded by half its size, as draw's
+static void GpuCircle(ECSSurface *surface, f32 x, f32 y, f32 radius, f32 thickness, ECSColor color)
+{
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame != nullptr)
+    {
+        f32 scale = surface->scale;
+        f32 pixelRadius = radius * scale;
+        GpuRoundedPixels(frame, x * scale - pixelRadius, y * scale - pixelRadius, 2.0f * pixelRadius, 2.0f * pixelRadius, pixelRadius, thickness > 0.0f ? SDL_max(thickness * scale, 1.0f) : 0.0f, color);
+    }
+}
+
+static void GpuRoundedFill(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 radius, ECSColor color)
+{
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame != nullptr)
+    {
+        f32 scale = surface->scale;
+        GpuRoundedPixels(frame, x * scale, y * scale, width * scale, height * scale, radius * scale, 0.0f, color);
+    }
+}
+
+static void GpuRoundedOutline(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, f32 radius, f32 thickness, ECSColor color)
+{
+    GpuFrame *frame = GpuFrameOf(surface);
+
+    if (frame != nullptr)
+    {
+        f32 scale = surface->scale;
+        GpuRoundedPixels(frame, x * scale, y * scale, width * scale, height * scale, radius * scale, SDL_max(thickness * scale, 1.0f), color);
+    }
+}
+
+/// @brief Draws only inside a rectangle while a function runs, and inside the clip around it; the clip before comes back when it returns. Shapes
+/// take the clip through the renderer's clip rectangle, which GpuTarget sets, and pipelines through the render pass's scissor.
+static void GpuClipTo(ECSSurface *surface, f32 x, f32 y, f32 width, f32 height, void (*body)(void))
+{
+    GpuFrame *frame = body == nullptr ? nullptr : GpuFrameOf(surface);
+
+    if (frame == nullptr)
+    {
+        return;
+    }
+
+    bool wasClipped = frame->clipped;
+    SDL_Rect before = frame->clip;
+    SDL_Rect outer = wasClipped ? before : (SDL_Rect){0, 0, surface->width, surface->height};
+    f32 scale = surface->scale;
+    SDL_Rect rect = {(int)SDL_roundf(x * scale), (int)SDL_roundf(y * scale), (int)SDL_roundf(width * scale), (int)SDL_roundf(height * scale)};
+
+    // an empty overlap leaves nothing to draw into
+    if (!SDL_GetRectIntersection(&rect, &outer, &rect))
+    {
+        rect = (SDL_Rect){0};
+    }
+
+    frame->clipped = true;
+    frame->clip = rect;
+
+    // the pipelines' render pass is open, so its scissor changes now
+    if (frame->pass != nullptr)
+    {
+        SDL_SetGPUScissor(frame->pass, &rect);
+    }
+
+    // an error in the function is reported, and the clip still ends here
+    body();
+
+    frame->clipped = wasClipped;
+    frame->clip = before;
+
+    if (frame->pass != nullptr)
+    {
+        const SDL_Rect whole = {0, 0, surface->width, surface->height};
+        SDL_SetGPUScissor(frame->pass, wasClipped ? &before : &whole);
+    }
+}
+
 static void *GpuNewTexture(i32 width, i32 height, SHUSlice pixels, const char **retError)
 {
     *retError = nullptr;
@@ -544,15 +806,26 @@ static void GpuImage(ECSSurface *surface, void *texture, f32 x, f32 y, f32 width
 
 #pragma region Text
 
-/// @brief Finds a font file at a size in pixels, and opens it the first time.
+/// @brief Reads a style in words, as draw.fontStyle gives it.
+static TTF_FontStyleFlags GpuReadStyle(const char *style)
+{
+    TTF_FontStyleFlags flags = TTF_STYLE_NORMAL;
+    flags |= SDL_strstr(style, "bold") != nullptr ? TTF_STYLE_BOLD : 0;
+    flags |= SDL_strstr(style, "italic") != nullptr ? TTF_STYLE_ITALIC : 0;
+    flags |= SDL_strstr(style, "underline") != nullptr ? TTF_STYLE_UNDERLINE : 0;
+    flags |= SDL_strstr(style, "strike") != nullptr ? TTF_STYLE_STRIKETHROUGH : 0;
+    return flags;
+}
+
+/// @brief Finds a font file at a size in pixels and in a style, and opens it the first time.
 /// @return The font, or nullptr if it cannot be opened; the reason is logged.
-static TTF_Font *GpuFindOrOpenFont(const char *file, f32 pixels)
+static TTF_Font *GpuFindOrOpenFont(const char *file, f32 pixels, TTF_FontStyleFlags style)
 {
     i32 size = (i32)SDL_max(1.0f, SDL_roundf(pixels));
 
     for (usz i = 0; i < arrlenu(GPU.fonts); i++)
     {
-        if (GPU.fonts[i].pixels == size && SDL_strcmp(GPU.fonts[i].file, file) == 0)
+        if (GPU.fonts[i].pixels == size && GPU.fonts[i].style == style && SDL_strcmp(GPU.fonts[i].file, file) == 0)
         {
             return GPU.fonts[i].font;
         }
@@ -568,7 +841,8 @@ static TTF_Font *GpuFindOrOpenFont(const char *file, f32 pixels)
         return nullptr;
     }
 
-    arrput(GPU.fonts, ((GpuFont){.file = copy, .pixels = size, .font = opened}));
+    TTF_SetFontStyle(opened, style);
+    arrput(GPU.fonts, ((GpuFont){.file = copy, .pixels = size, .style = style, .font = opened}));
     return opened;
 }
 
@@ -614,7 +888,7 @@ static TTF_Text *GpuMakeText(void *font, const char *text, f32 pixels)
         return nullptr;
     }
 
-    TTF_Font *opened = GpuFindOrOpenFont(GPU.FontFile(font), pixels);
+    TTF_Font *opened = GpuFindOrOpenFont(GPU.FontFile(font), pixels, GpuReadStyle(GPU.FontStyle(font)));
     return opened == nullptr ? nullptr : TTF_CreateText(GPU.textEngine, opened, text, 0);
 }
 
@@ -1502,6 +1776,10 @@ static SDL_GPURenderPass *GpuBeginPass(GpuFrame *frame)
         SDL_SubmitGPUCommandBuffer(frame->commands);
         frame->commands = nullptr;
     }
+    else if (frame->clipped)
+    {
+        SDL_SetGPUScissor(frame->pass, &frame->clip);
+    }
 
     return frame->pass;
 }
@@ -1639,6 +1917,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
     const ECSPluginDesc desc = {.Destroy = GpuFree};
     SHU_ReturnResult(ECSPlugin_Register(plugin, &desc), GpuFree(nullptr););
     SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&GPU.FontFile, "draw.fontFile", "string(handle<draw.font> font)"), GpuFree(nullptr););
+    SHU_ReturnResult(ECSService_GetFunction(plugin, (ECSFunction *)&GPU.FontStyle, "draw.fontStyle", "string(handle<draw.font> font)"), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "texture", GpuTextureDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "buffer", GpuBufferDestroy), GpuFree(nullptr););
     SHU_ReturnResult(ECSHandle_RegisterType(plugin, "shader", GpuShaderDestroy), GpuFree(nullptr););
@@ -1663,6 +1942,50 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param width The rectangle's width, in layout units\n"
          "@param height The rectangle's height, in layout units\n"
          "@param color The colour, blended by its alpha"},
+        {"outline", (ECSFunction)GpuOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float thickness, color color)",
+         "Draw the edge of a rectangle, in whole pixels, as draw's outline\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param thickness The edge's thickness inward, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"circle", (ECSFunction)GpuCircle, "void(handle<ecs.surface> surface, float x, float y, float radius, float thickness, color color)",
+         "Draw a circle with smooth edges: a ring of a thickness, or filled with a thickness of 0\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The centre's x, in layout units\n"
+         "@param y The centre's y, in layout units\n"
+         "@param radius The radius, in layout units\n"
+         "@param thickness The ring's thickness inward from the edge, in layout units, and at least a pixel; 0 or less fills the circle\n"
+         "@param color The colour, blended by its alpha"},
+        {"rounded", (ECSFunction)GpuRoundedFill, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, color color)",
+         "Fill a rectangle with corners rounded by a radius, with smooth edges\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param radius The corners' radius, in layout units; at most half the shorter side\n"
+         "@param color The colour, blended by its alpha"},
+        {"roundedOutline", (ECSFunction)GpuRoundedOutline, "void(handle<ecs.surface> surface, float x, float y, float width, float height, float radius, float thickness, color color)",
+         "Draw the edge of a rectangle with corners rounded by a radius, with smooth edges\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The rectangle's left, in layout units\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param radius The corners' radius, in layout units; at most half the shorter side\n"
+         "@param thickness The edge's thickness inward, in layout units; at least a pixel\n"
+         "@param color The colour, blended by its alpha"},
+        {"clip", (ECSFunction)GpuClipTo, "void(handle<ecs.surface> surface, float x, float y, float width, float height, fn<void()> body)",
+         "Draw only inside a rectangle while a function runs: shapes, images, text, clear and pipelines alike\n"
+         "@param surface The GPU panel's surface, as its draw gives it\n"
+         "@param x The rectangle's left, in layout units, rounded to whole pixels\n"
+         "@param y The rectangle's top, in layout units\n"
+         "@param width The rectangle's width, in layout units\n"
+         "@param height The rectangle's height, in layout units\n"
+         "@param body Draws inside the rectangle, and inside a clip around this one; the clip ends when it returns, also when it fails, whose error is reported"},
         {"line", (ECSFunction)GpuLine, "void(handle<ecs.surface> surface, float x1, float y1, float x2, float y2, float thickness, color color)",
          "Draw a line\n"
          "@param surface The GPU panel's surface, as its draw gives it\n"
@@ -1764,7 +2087,7 @@ SHUResult ECSPlugin_Init(ECSPlugin plugin)
          "@param angle The turn in degrees, clockwise; 0 leaves it upright\n"
          "@param color The colour each pixel's colour is multiplied by; its alpha fades the whole texture, and white leaves it as it is"},
         {"text", (ECSFunction)GpuText, "float(handle<ecs.surface> surface, handle<draw.font> font, string text, float x, float y, float size, color color)",
-         "Draw text in one of draw's fonts with its line's top left at a position, and give its width\n"
+         "Draw text in one of draw's fonts, in its style, such as draw.styledFont gives, with its line's top left at a position, and give its width\n"
          "@param surface The GPU panel's surface, as its draw gives it\n"
          "@param font The font, such as draw.font gives\n"
          "@param text The text, in UTF-8\n"
