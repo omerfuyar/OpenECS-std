@@ -32,6 +32,9 @@
 /// @brief The width and height of each texture that the text engine keeps glyphs in.
 #define GPU_ATLAS_SIZE 1024
 
+/// @brief How many texts gpu.text keeps laid out; past it, those not drawn in the last half of that many draws go.
+#define GPU_KEPT_TEXTS 1024
+
 /// @brief Drawing into one GPU surface during its Draw, until the core says the Draw returned. Shapes go through the renderer; pipelines draw in a
 /// render pass of their own.
 typedef struct GpuFrame
@@ -61,6 +64,14 @@ typedef struct GpuFont
     TTF_FontStyleFlags style;
     TTF_Font *font;
 } GpuFont;
+
+/// @brief A text that gpu.text laid out, kept for its next draws: by its font and its words, as "font pointer, then the words" in the key.
+typedef struct GpuKeptText
+{
+    char *key;
+    TTF_Text *text;
+    u64 drawn; // the count of gpu.text's draws when it was drawn last
+} GpuKeptText;
 
 /// @brief A texture of the text engine's glyphs, and the renderer's view of it.
 typedef struct GpuAtlas
@@ -97,6 +108,10 @@ static struct
     const char *(*FontStyle)(void *font); // draw.fontStyle, which gives its style in words
     GpuFont *fonts;                       // stb_ds array of every font file and size that text was drawn in
     GpuAtlas *atlases;                    // stb_ds array of the text engine's textures, as the renderer sees them
+    GpuKeptText *keptTexts;               // stb_ds string map of the texts that gpu.text laid out, by font and words
+    u64 textDraws;                        // the count of gpu.text's draws
+    char *textKey;                        // stb_ds array: the key of the text being looked for, kept between draws
+    SDL_FPoint *textPoints;               // stb_ds array: the vertices of the text being drawn, kept between draws
     bool glslangStarted;
     SDL_SharedObject *d3dcompiler; // Windows' HLSL compiler, d3dcompiler_47.dll, loaded the first time a shader needs DXBC
     void *compiled;                // the SPIR-V that gpu.compile gave last, kept until its next call
@@ -112,6 +127,16 @@ static void GpuFree(void *data)
     {
         SDL_DestroyTexture(GPU.atlases[i].texture);
     }
+
+    // the kept texts go before their fonts and the text engine
+    for (i64 i = 0; i < shlen(GPU.keptTexts); i++)
+    {
+        TTF_DestroyText(GPU.keptTexts[i].text);
+    }
+
+    shfree(GPU.keptTexts);
+    arrfree(GPU.textKey);
+    arrfree(GPU.textPoints);
 
     for (usz i = 0; i < arrlenu(GPU.fonts); i++)
     {
@@ -898,12 +923,82 @@ static TTF_Text *GpuMakeText(void *font, const char *text, f32 pixels)
     return opened == nullptr ? nullptr : TTF_CreateText(GPU.textEngine, opened, text, 0);
 }
 
+/// @brief Finds the text of a draw.font at a size in pixels that gpu.text laid out before, or lays it out and keeps it. A text is kept until
+/// GPU_KEPT_TEXTS are kept, when those not drawn in the last half of that many draws go, so a panel's words are laid out once, and a counter
+/// that changes at each frame does not fill the memory.
+/// @return The text, owned by the kept texts, or nullptr as GpuMakeText gives it.
+static TTF_Text *GpuFindOrKeepText(void *font, const char *text, f32 pixels)
+{
+    if (text[0] == '\0' || GPU.textEngine == nullptr)
+    {
+        return nullptr;
+    }
+
+    TTF_Font *opened = GpuFindOrOpenFont(GPU.FontFile(font), pixels, GpuReadStyle(GPU.FontStyle(font)));
+
+    if (opened == nullptr)
+    {
+        return nullptr;
+    }
+
+    // the font's pointer, each of its bytes as two letters, since a zero byte would end the key, then the words
+    usz length = SDL_strlen(text);
+    u8 bytes[sizeof(opened)];
+    SDL_memcpy(bytes, &opened, sizeof(opened));
+    arrsetlen(GPU.textKey, 2 * sizeof(opened) + length + 1);
+
+    for (usz i = 0; i < sizeof(opened); i++)
+    {
+        GPU.textKey[2 * i] = (char)('a' + (bytes[i] >> 4));
+        GPU.textKey[2 * i + 1] = (char)('a' + (bytes[i] & 15));
+    }
+
+    SDL_memcpy(GPU.textKey + 2 * sizeof(opened), text, length + 1);
+
+    if (GPU.keptTexts == nullptr)
+    {
+        sh_new_strdup(GPU.keptTexts);
+    }
+
+    GPU.textDraws++;
+    i64 found = shgeti(GPU.keptTexts, GPU.textKey);
+
+    if (found >= 0)
+    {
+        GPU.keptTexts[found].drawn = GPU.textDraws;
+        return GPU.keptTexts[found].text;
+    }
+
+    TTF_Text *made = TTF_CreateText(GPU.textEngine, opened, text, 0);
+
+    if (made == nullptr)
+    {
+        return nullptr;
+    }
+
+    if (shlen(GPU.keptTexts) >= GPU_KEPT_TEXTS)
+    {
+        for (i64 i = shlen(GPU.keptTexts) - 1; i >= 0; i--)
+        {
+            if (GPU.keptTexts[i].drawn + GPU_KEPT_TEXTS / 2 < GPU.textDraws)
+            {
+                TTF_DestroyText(GPU.keptTexts[i].text);
+                shdel(GPU.keptTexts, GPU.keptTexts[i].key);
+            }
+        }
+    }
+
+    GpuKeptText kept = {.key = GPU.textKey, .text = made, .drawn = GPU.textDraws};
+    shputs(GPU.keptTexts, kept);
+    return made;
+}
+
 /// @brief Draws text with SDL3_ttf's GPU text engine, which keeps its glyphs in textures on the device: the renderer draws their rectangles from
 /// those textures, after the shapes drawn before, so text and shapes keep their order.
 static f32 GpuText(ECSSurface *surface, void *font, const char *text, f32 x, f32 y, f32 size, ECSColor color)
 {
     GpuFrame *frame = text[0] == '\0' || GPU.textEngine == nullptr ? nullptr : GpuFrameOf(surface);
-    TTF_Text *drawn = frame == nullptr ? nullptr : GpuMakeText(font, text, size * surface->scale);
+    TTF_Text *drawn = frame == nullptr ? nullptr : GpuFindOrKeepText(font, text, size * surface->scale);
 
     if (drawn == nullptr)
     {
@@ -918,12 +1013,8 @@ static f32 GpuText(ECSSurface *surface, void *font, const char *text, f32 x, f32
     // the engine's y goes up from the line's top, as the GPU's does, and the surface's goes down
     for (TTF_GPUAtlasDrawSequence *sequence = TTF_GetGPUTextDrawData(drawn); sequence != nullptr; sequence = sequence->next)
     {
-        SDL_FPoint *points = SDL_malloc((usz)sequence->num_vertices * sizeof(SDL_FPoint));
-
-        if (points == nullptr)
-        {
-            break;
-        }
+        arrsetlen(GPU.textPoints, (usz)sequence->num_vertices);
+        SDL_FPoint *points = GPU.textPoints;
 
         for (int i = 0; i < sequence->num_vertices; i++)
         {
@@ -932,12 +1023,10 @@ static f32 GpuText(ECSSurface *surface, void *font, const char *text, f32 x, f32
 
         SDL_RenderGeometryRaw(GPU.renderer, GpuAtlasTexture(sequence->atlas_texture), &points->x, sizeof(SDL_FPoint), &textColor, 0, &sequence->uv->x, sizeof(SDL_FPoint),
                               sequence->num_vertices, sequence->indices, sequence->num_indices, sizeof(int));
-        SDL_free(points);
     }
 
     int width = 0;
     TTF_GetTextSize(drawn, &width, nullptr);
-    TTF_DestroyText(drawn);
     return (f32)width / surface->scale;
 }
 
